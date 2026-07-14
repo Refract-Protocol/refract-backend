@@ -114,6 +114,21 @@ export class PolicyService {
     return this.policies.get(id);
   }
 
+  /** Active, unexpired policies — the pool ClaimService scans for triggers. */
+  listActive(): StoredPolicy[] {
+    const now = Math.floor(Date.now() / 1000);
+    return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
+  }
+
+  /** Marks a policy inactive after a claim has been paid out. */
+  deactivate(id: string): void {
+    const policy = this.policies.get(id);
+    if (policy) {
+      policy.isActive = false;
+      this.policies.set(id, policy);
+    }
+  }
+
   buy(dto: BuyPolicyDto): { policy: StoredPolicy; txXdr: string; message: string } {
     const { holder, coverageType, coverageAmount, durationDays } = dto;
     const coverage = BigInt(coverageAmount);
