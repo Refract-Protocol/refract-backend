@@ -81,6 +81,24 @@ export class OracleService {
     };
   }
 
+  async checkLiquidationShield(): Promise<OracleReading> {
+    // No public keyless API exists for this — it requires reading
+    // liquidation events from the (hypothetical) NEXUS Protocol contract
+    // on-chain. Stays mocked; ClaimService consumes this the same way it
+    // would consume a real reading once that integration exists.
+    const collateralRatio = 0.92 + (Math.random() - 0.5) * 0.1;
+    const threshold = 0.85; // shield triggers below 85% collateralization
+
+    return {
+      coverageType: "LiquidationShield",
+      type: "oracle_update",
+      value: collateralRatio,
+      threshold,
+      severity: collateralRatio < threshold ? "triggered" : "low",
+      message: `Collateral ratio ${(collateralRatio * 100).toFixed(1)}% (shield triggers below ${(threshold * 100).toFixed(0)}%)`,
+    };
+  }
+
   async checkFlightDelay(flightNumber: string): Promise<OracleReading> {
     // TODO: AviationStack requires a paid API key we don't have — this
     // trigger type stays mocked until a keyless (or budgeted) flight-data
