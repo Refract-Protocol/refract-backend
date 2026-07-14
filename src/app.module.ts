@@ -7,6 +7,7 @@ import { QuoteModule } from "./quote/quote.module";
 import { PolicyModule } from "./policy/policy.module";
 import { PoolModule } from "./pool/pool.module";
 import { OracleModule } from "./oracle/oracle.module";
+import { ClaimModule } from "./claim/claim.module";
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { OracleModule } from "./oracle/oracle.module";
     PolicyModule,
     PoolModule,
     OracleModule,
+    ClaimModule,
   ],
 })
 export class AppModule {}
