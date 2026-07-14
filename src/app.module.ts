@@ -4,6 +4,7 @@ import configuration from "./config/configuration";
 import { HealthModule } from "./health/health.module";
 import { QuoteModule } from "./quote/quote.module";
 import { PolicyModule } from "./policy/policy.module";
+import { PoolModule } from "./pool/pool.module";
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { PolicyModule } from "./policy/policy.module";
     HealthModule,
     QuoteModule,
     PolicyModule,
+    PoolModule,
   ],
 })
 export class AppModule {}
