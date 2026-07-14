@@ -1,25 +1,20 @@
-export type Severity = "low" | "medium" | "high" | "triggered";
-
-export interface OracleReading {
-  coverageType: string;
-  type: "oracle_update";
-  value: number;
-  threshold: number;
-  severity: Severity;
-  message: string;
-}
+import { Injectable } from "@nestjs/common";
+import { OracleReading, Severity } from "./oracle-reading";
 
 /**
- * OracleMonitor aggregates real-world data for Refract trigger conditions.
+ * OracleService aggregates real-world data for Refract trigger conditions.
  *
- * Production integrations:
- *  - StablecoinDepeg: CoinGecko / CoinMarketCap USDC/USDT price
- *  - MarketCrash: Stellar DEX price feeds
- *  - LiquidationShield: NEXUS Protocol liquidation events (on-chain)
- *  - SmartContractRisk: Forta Network / DeFiLlama hacks feed
- *  - FlightDelay: AviationStack / FlightAware API
+ * Data sources are still mocked here (ported as-is from the old
+ * src/services/oracleMonitor.ts). A follow-up PR wires this up to real,
+ * keyless public APIs:
+ *  - StablecoinDepeg: CoinGecko simple price API
+ *  - MarketCrash: Stellar Horizon testnet (XLM/USDC DEX data)
+ *  - SmartContractRisk: DeFiLlama TVL/protocol API
+ *  - FlightDelay: stays mocked — AviationStack requires a paid API key
+ *    we don't have; see README for the TODO.
  */
-export class OracleMonitor {
+@Injectable()
+export class OracleService {
   async checkAll(): Promise<OracleReading[]> {
     return Promise.all([
       this.checkStablecoinDepeg(),
@@ -87,7 +82,9 @@ export class OracleMonitor {
   }
 
   async checkFlightDelay(flightNumber: string): Promise<OracleReading> {
-    // In production: fetch from AviationStack API
+    // TODO: AviationStack requires a paid API key we don't have — this
+    // trigger type stays mocked until a keyless (or budgeted) flight-data
+    // source is available. See README's "Oracle data sources" section.
     const delayMinutes = Math.floor(Math.random() * 300);
     const threshold = 120; // 2h delay triggers
 
