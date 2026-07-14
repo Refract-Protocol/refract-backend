@@ -28,6 +28,8 @@ export interface AppConfig {
     coingeckoBaseUrl: string;
     horizonUrl: string;
     defiLlamaBaseUrl: string;
+    defiLlamaProtocolSlug: string;
+    httpTimeoutMs: number;
   };
 }
 
@@ -53,5 +55,11 @@ export default (): AppConfig => ({
     coingeckoBaseUrl: process.env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",
     horizonUrl: process.env.STELLAR_HORIZON_URL || "https://horizon-testnet.stellar.org",
     defiLlamaBaseUrl: process.env.DEFILLAMA_BASE_URL || "https://api.llama.fi",
+    // Placeholder "covered protocol" for the SmartContractRisk TVL-drop
+    // check until Refract defines a real list of covered Soroban
+    // protocols. Defaults to a large, consistently-tracked protocol so
+    // the drop-detection logic has real data to run against.
+    defiLlamaProtocolSlug: process.env.DEFILLAMA_PROTOCOL_SLUG || "aave",
+    httpTimeoutMs: parseInt(process.env.ORACLE_HTTP_TIMEOUT_MS || "5000", 10),
   },
 });
