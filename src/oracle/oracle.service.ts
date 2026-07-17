@@ -1,4 +1,7 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import axios from "axios";
+import { AppConfig } from "../config/configuration";
 import { OracleReading, Severity } from "./oracle-reading";
 
 /**
@@ -15,6 +18,16 @@ import { OracleReading, Severity } from "./oracle-reading";
  */
 @Injectable()
 export class OracleService {
+  private readonly logger = new Logger(OracleService.name);
+  private readonly timeoutMs: number;
+  private readonly coingeckoBaseUrl: string;
+
+  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+    const oracles = this.configService.get("oracles", { infer: true });
+    this.timeoutMs = oracles.httpTimeoutMs;
+    this.coingeckoBaseUrl = oracles.coingeckoBaseUrl;
+  }
+
   async checkAll(): Promise<OracleReading[]> {
     return Promise.all([
       this.checkStablecoinDepeg(),
@@ -24,25 +37,32 @@ export class OracleService {
   }
 
   async checkStablecoinDepeg(): Promise<OracleReading> {
-    // In production: fetch from https://api.coingecko.com/api/v3/simple/price?ids=usd-coin&vs_currencies=usd
-    const usdcPrice = 0.9998 + (Math.random() - 0.5) * 0.003;
     const threshold = 0.95; // 5% depeg
-    const deviation = (1 - usdcPrice) * 100;
+    try {
+      const { data } = await axios.get<Record<string, { usd: number }>>(
+        `${this.coingeckoBaseUrl}/simple/price`,
+        { params: { ids: "usd-coin", vs_currencies: "usd" }, timeout: this.timeoutMs }
+      );
+      const usdcPrice = data["usd-coin"].usd;
+      const deviation = (1 - usdcPrice) * 100;
 
-    const severity: Severity =
-      usdcPrice < threshold ? "triggered"
-      : usdcPrice < 0.98   ? "high"
-      : usdcPrice < 0.99   ? "medium"
-      : "low";
+      const severity: Severity =
+        usdcPrice < threshold ? "triggered"
+        : usdcPrice < 0.98   ? "high"
+        : usdcPrice < 0.99   ? "medium"
+        : "low";
 
-    return {
-      coverageType: "StablecoinDepeg",
-      type: "oracle_update",
-      value: usdcPrice,
-      threshold,
-      severity,
-      message: `USDC price: $${usdcPrice.toFixed(4)} (${deviation > 0 ? "-" : "+"}${Math.abs(deviation).toFixed(3)}% from peg)`,
-    };
+      return {
+        coverageType: "StablecoinDepeg",
+        type: "oracle_update",
+        value: usdcPrice,
+        threshold,
+        severity,
+        message: `USDC price: $${usdcPrice.toFixed(4)} (${deviation > 0 ? "-" : "+"}${Math.abs(deviation).toFixed(3)}% from peg) [CoinGecko]`,
+      };
+    } catch (err) {
+      return this.degraded("StablecoinDepeg", threshold, "CoinGecko", err);
+    }
   }
 
   async checkMarketCrash(): Promise<OracleReading> {
@@ -113,6 +133,28 @@ export class OracleService {
       threshold,
       severity: delayMinutes >= threshold ? "triggered" : "low",
       message: `Flight ${flightNumber}: ${delayMinutes}m delay (trigger at ${threshold}m)`,
+    };
+  }
+
+  /**
+   * Fail-safe fallback for a real check whose upstream API errored or
+   * timed out: logs the failure and returns a "low" severity reading.
+   * All three real checks trigger on strict `value < threshold`, so
+   * `value === threshold` is always non-triggering — an outage can
+   * never itself cause a false claim trigger.
+   */
+  private degraded(coverageType: string, threshold: number, source: string, err: unknown): OracleReading {
+    this.logger.error(
+      `${source} request failed for ${coverageType} check`,
+      err instanceof Error ? err.message : String(err)
+    );
+    return {
+      coverageType,
+      type: "oracle_update",
+      value: threshold,
+      threshold,
+      severity: "low",
+      message: `${source} unavailable — degraded to a non-triggering reading`,
     };
   }
 }
