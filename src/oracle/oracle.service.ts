@@ -183,7 +183,9 @@ export class OracleService {
     // liquidation events from the (hypothetical) NEXUS Protocol contract
     // on-chain. Stays mocked; ClaimService consumes this the same way it
     // would consume a real reading once that integration exists.
-    const collateralRatio = 0.92 + (Math.random() - 0.5) * 0.1;
+    // Spread is wide enough to actually cross the trigger threshold
+    // sometimes — a ±0.05 spread around 0.92 never dips below 0.85.
+    const collateralRatio = 0.92 + (Math.random() - 0.5) * 0.3;
     const threshold = 0.85; // shield triggers below 85% collateralization
 
     return {

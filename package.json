@@ -11,6 +11,12 @@
     "lint": "eslint \"src/**/*.ts\"",
     "test": "jest"
   },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$"
+  },
   "dependencies": {
     "@nestjs/common": "^11.1.28",
     "@nestjs/config": "^4.0.4",
