@@ -187,6 +187,15 @@ describe("OracleService", () => {
       expect(reading.severity).toBe("low");
       expect(reading.message).toContain("[mocked — no NEXUS Protocol integration]");
     });
+
+    it("can trigger when the random collateral ratio dips below the threshold", async () => {
+      jest.spyOn(Math, "random").mockReturnValue(0); // collateralRatio = 0.92 + (0 - 0.5) * 0.3 = 0.77
+
+      const reading = await service.checkLiquidationShield();
+
+      expect(reading.value).toBeCloseTo(0.77);
+      expect(reading.severity).toBe("triggered");
+    });
   });
 
   describe("checkFlightDelay", () => {
