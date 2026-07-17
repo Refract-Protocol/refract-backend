@@ -133,9 +133,10 @@ export class PolicyService {
     const { holder, coverageType, coverageAmount, durationDays } = dto;
     const coverage = BigInt(coverageAmount);
     const multiplier = RISK_MULTIPLIERS[coverageType];
-    const ratePerDay = (BASE_RATE_BPS * multiplier) / 36500;
-    const premiumBps = ratePerDay * durationDays;
-    const premium = BigInt(Math.floor(Number(coverage) * premiumBps));
+    const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
+    const dailyRate = annualRate / 365;
+    const premiumFraction = dailyRate * durationDays;
+    const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
 
     const policyId = uuidv4();
     const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
