@@ -21,11 +21,13 @@ export class OracleService {
   private readonly logger = new Logger(OracleService.name);
   private readonly timeoutMs: number;
   private readonly coingeckoBaseUrl: string;
+  private readonly horizonUrl: string;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const oracles = this.configService.get("oracles", { infer: true });
     this.timeoutMs = oracles.httpTimeoutMs;
     this.coingeckoBaseUrl = oracles.coingeckoBaseUrl;
+    this.horizonUrl = oracles.horizonUrl;
   }
 
   async checkAll(): Promise<OracleReading[]> {
@@ -66,24 +68,49 @@ export class OracleService {
   }
 
   async checkMarketCrash(): Promise<OracleReading> {
-    // In production: fetch XLM/USDC 24h change from Stellar Horizon
-    const change24h = -5.2 + (Math.random() - 0.5) * 10; // simulate ±10%
     const threshold = -30; // 30% crash triggers
+    try {
+      const priceRequest = axios.get<Record<string, { usd: number; usd_24h_change: number }>>(
+        `${this.coingeckoBaseUrl}/simple/price`,
+        {
+          params: { ids: "stellar", vs_currencies: "usd", include_24hr_change: true },
+          timeout: this.timeoutMs,
+        }
+      );
+      // Best-effort: attach real chain context, but never let a Horizon
+      // hiccup fail the whole check — the price signal comes from CoinGecko.
+      const ledgerRequest = axios
+        .get<{ _embedded: { records: Array<{ sequence: number; closed_at: string }> } }>(
+          `${this.horizonUrl}/ledgers`,
+          { params: { order: "desc", limit: 1 }, timeout: this.timeoutMs }
+        )
+        .catch(() => null);
 
-    const severity: Severity =
-      change24h < threshold   ? "triggered"
-      : change24h < -20      ? "high"
-      : change24h < -10      ? "medium"
-      : "low";
+      const [priceRes, ledgerRes] = await Promise.all([priceRequest, ledgerRequest]);
+      const change24h = priceRes.data.stellar.usd_24h_change;
+      const ledger = ledgerRes?.data?._embedded?.records?.[0];
 
-    return {
-      coverageType: "MarketCrash",
-      type: "oracle_update",
-      value: change24h,
-      threshold,
-      severity,
-      message: `XLM 24h change: ${change24h.toFixed(2)}% (trigger at ${threshold}%)`,
-    };
+      const severity: Severity =
+        change24h < threshold   ? "triggered"
+        : change24h < -20      ? "high"
+        : change24h < -10      ? "medium"
+        : "low";
+
+      const chainContext = ledger
+        ? ` [CoinGecko; Horizon testnet ledger #${ledger.sequence} @ ${ledger.closed_at}]`
+        : " [CoinGecko]";
+
+      return {
+        coverageType: "MarketCrash",
+        type: "oracle_update",
+        value: change24h,
+        threshold,
+        severity,
+        message: `XLM 24h change: ${change24h.toFixed(2)}% (trigger at ${threshold}%)${chainContext}`,
+      };
+    } catch (err) {
+      return this.degraded("MarketCrash", threshold, "CoinGecko", err);
+    }
   }
 
   async checkSmartContractRisk(): Promise<OracleReading> {
