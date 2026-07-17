@@ -62,9 +62,17 @@ npm run dev                  # http://localhost:4001
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
 | `WS` | `/` | Live oracle alert stream |
 
-> ⚠️ Oracle reads and claim settlement are currently **mocked** (deterministic
-> placeholders) so the service runs without external API keys. Wiring real data
-> sources and Soroban transactions is the main open work — see
+> ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
+> `SmartContractRisk` now call real, keyless public APIs — CoinGecko
+> (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama
+> (protocol TVL). No API key is required for any of them. `LiquidationShield`
+> and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
+> liquidation events, and AviationStack (flight data) requires a paid key
+> this project doesn't have. See `src/oracle/oracle.service.ts` for details.
+> Claim settlement (the actual Soroban payout transaction) is still a
+> logged stub — real transaction building is tracked as follow-up work.
+> This README predates the NestJS migration in some other places (route
+> layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## License

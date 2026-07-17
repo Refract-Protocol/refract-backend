@@ -89,10 +89,7 @@ export class ClaimService {
       case 4: // FlightDelay: triggers when the delay exceeds the threshold
         triggered = oracle.value > oracle.threshold;
         break;
-      case 3: // SmartContractRisk: OracleService reports a 0/1 hack-detected flag
-        triggered = oracle.value >= oracle.threshold;
-        break;
-      default: // StablecoinDepeg, MarketCrash, LiquidationShield: trigger below threshold
+      default: // StablecoinDepeg, MarketCrash, LiquidationShield, SmartContractRisk: trigger below threshold
         triggered = oracle.value < oracle.threshold;
     }
 
