@@ -12,14 +12,30 @@ interface DefiLlamaTvlPoint {
 /**
  * OracleService aggregates real-world data for Refract trigger conditions.
  *
- * Data sources are still mocked here (ported as-is from the old
- * src/services/oracleMonitor.ts). A follow-up PR wires this up to real,
- * keyless public APIs:
- *  - StablecoinDepeg: CoinGecko simple price API
- *  - MarketCrash: Stellar Horizon testnet (XLM/USDC DEX data)
- *  - SmartContractRisk: DeFiLlama TVL/protocol API
- *  - FlightDelay: stays mocked — AviationStack requires a paid API key
- *    we don't have; see README for the TODO.
+ * Three of the five checks call real, keyless public APIs:
+ *  - StablecoinDepeg: CoinGecko simple-price API (USDC/USD)
+ *  - MarketCrash: CoinGecko simple-price API (XLM/USD, 24h change), plus
+ *    a genuine Stellar Horizon testnet call for chain context. Horizon's
+ *    testnet XLM/USDC order books and trade_aggregations are effectively
+ *    empty (near-zero real liquidity on testnet), so it isn't a usable
+ *    24h-price source — CoinGecko is used for the actual price signal,
+ *    and Horizon supplies the latest ledger as real on-chain context
+ *    attached to the reading.
+ *  - SmartContractRisk: DeFiLlama's per-protocol TVL history, checking
+ *    for a >X% drop over the trailing 24h. `defiLlamaProtocolSlug`
+ *    (default: "aave") stands in for a real "covered protocol" list
+ *    until Refract defines one.
+ *
+ * Two checks stay mocked, honestly:
+ *  - LiquidationShield: there's no public API for NEXUS Protocol
+ *    liquidation events (NEXUS is a placeholder protocol in this repo).
+ *  - FlightDelay: AviationStack requires a paid API key this project
+ *    doesn't have. See README's "Oracle data sources" section.
+ *
+ * Every real check fails safe: if the upstream API errors or times out,
+ * the check logs it and returns a "low" severity reading whose `value`
+ * sits on the non-triggering side of its `threshold`, so a third-party
+ * outage can never itself cause a false claim trigger.
  */
 @Injectable()
 export class OracleService {
@@ -176,7 +192,7 @@ export class OracleService {
       value: collateralRatio,
       threshold,
       severity: collateralRatio < threshold ? "triggered" : "low",
-      message: `Collateral ratio ${(collateralRatio * 100).toFixed(1)}% (shield triggers below ${(threshold * 100).toFixed(0)}%)`,
+      message: `Collateral ratio ${(collateralRatio * 100).toFixed(1)}% (shield triggers below ${(threshold * 100).toFixed(0)}%) [mocked — no NEXUS Protocol integration]`,
     };
   }
 
@@ -193,7 +209,7 @@ export class OracleService {
       value: delayMinutes,
       threshold,
       severity: delayMinutes >= threshold ? "triggered" : "low",
-      message: `Flight ${flightNumber}: ${delayMinutes}m delay (trigger at ${threshold}m)`,
+      message: `Flight ${flightNumber}: ${delayMinutes}m delay (trigger at ${threshold}m) [mocked — AviationStack requires a paid key]`,
     };
   }
 
