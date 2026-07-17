@@ -69,8 +69,16 @@ npm run dev                  # http://localhost:4001
 > and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
 > liquidation events, and AviationStack (flight data) requires a paid key
 > this project doesn't have. See `src/oracle/oracle.service.ts` for details.
-> Claim settlement (the actual Soroban payout transaction) is still a
-> logged stub — real transaction building is tracked as follow-up work.
+> Claim settlement now builds, signs, and submits a real
+> `pool.process_claim()` Soroban transaction via `ClaimSettlementService`
+> (falls back to a safe no-op when `REFRACT_POOL_CONTRACT_ID` /
+> `ORACLE_RELAYER_SECRET` aren't set). **The contract's exact function
+> signature is an unverified best-effort guess** — this repo doesn't
+> include the `refract-contracts` source, so it needs confirmation
+> against the real deployed contract; see
+> `src/claim/claim-settlement.service.ts` for details. A policy only
+> deactivates once settlement actually confirms on-chain — a failed or
+> unconfirmed payout leaves it active for the next scheduled retry.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).

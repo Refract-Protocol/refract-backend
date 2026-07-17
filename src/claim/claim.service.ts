@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
+import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
 
 const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
@@ -28,13 +29,14 @@ export class ClaimService {
 
   constructor(
     private readonly policyService: PolicyService,
-    private readonly oracleService: OracleService
+    private readonly oracleService: OracleService,
+    private readonly claimSettlementService: ClaimSettlementService
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
     const activePolicies = this.policyService.listActive();
-    const triggered: ClaimResult[] = [];
-    if (activePolicies.length === 0) return triggered;
+    const settled: ClaimResult[] = [];
+    if (activePolicies.length === 0) return settled;
 
     this.logger.log(`Scanning ${activePolicies.length} active polic${activePolicies.length === 1 ? "y" : "ies"}`);
 
@@ -44,15 +46,18 @@ export class ClaimService {
         const oracle = await this.fetchOracleData(policy);
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         if (result.triggered) {
-          await this.processPayout(policy, result);
-          triggered.push(result);
+          // Only counted/deactivated once the on-chain payout actually
+          // confirms — a failed or unconfirmed settlement leaves the
+          // policy active so the next scheduled scan retries it.
+          const settledResult = await this.processPayout(policy, result);
+          if (settledResult) settled.push(settledResult);
         }
       } catch (err) {
         this.logger.error(`Error scanning policy ${policy.id}`, err instanceof Error ? err.stack : String(err));
       }
     }
 
-    return triggered;
+    return settled;
   }
 
   private async fetchOracleData(policy: StoredPolicy): Promise<OracleReading> {
@@ -108,19 +113,23 @@ export class ClaimService {
     };
   }
 
-  private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<void> {
+  /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */
+  private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<ClaimResult | undefined> {
     this.logger.warn(
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
 
-    // TODO: build/sign/submit the pool.process_claim() Soroban transaction
-    // here — tracked as a dedicated follow-up PR (real @stellar/stellar-sdk
-    // transaction building, targeting testnet). Mirrors the stub that was
-    // already present in the pre-migration ClaimProcessor.processPayout.
+    const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
+    if (!settlement.settled) {
+      this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
+      return undefined;
+    }
 
+    this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
     this.policyService.deactivate(policy.id);
     this.processedCount++;
     this.payoutTotal += BigInt(result.payout);
+    return { ...result, settlementTxHash: settlement.txHash };
   }
 
   getStats() {
