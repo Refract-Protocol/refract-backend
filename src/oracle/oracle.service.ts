@@ -4,6 +4,11 @@ import axios from "axios";
 import { AppConfig } from "../config/configuration";
 import { OracleReading, Severity } from "./oracle-reading";
 
+interface DefiLlamaTvlPoint {
+  date: number; // unix seconds
+  totalLiquidityUSD: number;
+}
+
 /**
  * OracleService aggregates real-world data for Refract trigger conditions.
  *
@@ -22,12 +27,16 @@ export class OracleService {
   private readonly timeoutMs: number;
   private readonly coingeckoBaseUrl: string;
   private readonly horizonUrl: string;
+  private readonly defiLlamaBaseUrl: string;
+  private readonly defiLlamaProtocolSlug: string;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const oracles = this.configService.get("oracles", { infer: true });
     this.timeoutMs = oracles.httpTimeoutMs;
     this.coingeckoBaseUrl = oracles.coingeckoBaseUrl;
     this.horizonUrl = oracles.horizonUrl;
+    this.defiLlamaBaseUrl = oracles.defiLlamaBaseUrl;
+    this.defiLlamaProtocolSlug = oracles.defiLlamaProtocolSlug;
   }
 
   async checkAll(): Promise<OracleReading[]> {
@@ -114,18 +123,43 @@ export class OracleService {
   }
 
   async checkSmartContractRisk(): Promise<OracleReading> {
-    // In production: poll DeFiLlama hacks feed
-    // https://defillama.com/hacks
-    const hackDetected = Math.random() < 0.001; // 0.1% chance per minute
+    const threshold = -50; // 50% TVL drop in 24h triggers
+    try {
+      const { data } = await axios.get<{ name?: string; tvl?: DefiLlamaTvlPoint[] }>(
+        `${this.defiLlamaBaseUrl}/protocol/${this.defiLlamaProtocolSlug}`,
+        { timeout: this.timeoutMs }
+      );
+      const points = data.tvl ?? [];
+      if (points.length < 2) throw new Error("DeFiLlama returned insufficient TVL history");
 
-    return {
-      coverageType: "SmartContractRisk",
-      type: "oracle_update",
-      value: hackDetected ? 1 : 0,
-      threshold: 1,
-      severity: hackDetected ? "triggered" : "low",
-      message: hackDetected ? "⚠️ Smart contract exploit detected!" : "No exploits detected",
-    };
+      const latest = points[points.length - 1];
+      const dayAgoCutoff = latest.date - 86_400;
+      let reference = points[0];
+      for (const point of points) {
+        if (point.date <= dayAgoCutoff) reference = point;
+        else break;
+      }
+
+      const pctChange =
+        ((latest.totalLiquidityUSD - reference.totalLiquidityUSD) / reference.totalLiquidityUSD) * 100;
+
+      const severity: Severity =
+        pctChange < threshold ? "triggered"
+        : pctChange < -25    ? "high"
+        : pctChange < -10    ? "medium"
+        : "low";
+
+      return {
+        coverageType: "SmartContractRisk",
+        type: "oracle_update",
+        value: pctChange,
+        threshold,
+        severity,
+        message: `${data.name ?? this.defiLlamaProtocolSlug} TVL 24h change: ${pctChange.toFixed(2)}% (trigger at ${threshold}%) [DeFiLlama]`,
+      };
+    } catch (err) {
+      return this.degraded("SmartContractRisk", threshold, "DeFiLlama", err);
+    }
   }
 
   async checkLiquidationShield(): Promise<OracleReading> {
