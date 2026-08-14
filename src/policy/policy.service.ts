@@ -1,6 +1,8 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { v4 as uuidv4 } from "uuid";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+
+const FLIGHT_DELAY_COVERAGE_TYPE = 4;
 
 export interface CoverageTypeCatalogEntry {
   id: number;
@@ -132,6 +134,13 @@ export class PolicyService {
 
   buy(dto: BuyPolicyDto): { policy: StoredPolicy; txXdr: string; message: string } {
     const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
+
+    if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
+      throw new BadRequestException({
+        error: "Flight Delay coverage requires triggerParams.flightNumber",
+      });
+    }
+
     const coverage = BigInt(coverageAmount);
     const multiplier = RISK_MULTIPLIERS[coverageType];
     const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)

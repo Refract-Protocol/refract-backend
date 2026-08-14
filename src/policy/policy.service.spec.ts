@@ -1,3 +1,4 @@
+import { BadRequestException } from "@nestjs/common";
 import { PolicyService } from "./policy.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
@@ -33,8 +34,9 @@ describe("PolicyService", () => {
       [4, 2.4],
     ])("charges the catalog's annual base rate for coverageType %d over a 365-day policy", (coverageType, baseRatePct) => {
       const coverageAmount = "1000000000000";
+      const triggerParams = coverageType === 4 ? { flightNumber: "BA249" } : undefined;
 
-      const { policy } = service.buy(buildDto({ coverageType, coverageAmount, durationDays: 365 }));
+      const { policy } = service.buy(buildDto({ coverageType, coverageAmount, durationDays: 365, triggerParams }));
 
       const expectedPremium = BigInt(Math.floor(Number(BigInt(coverageAmount)) * (baseRatePct / 100)));
       const actualPremium = BigInt(policy.premium);
@@ -86,6 +88,36 @@ describe("PolicyService", () => {
       const { policy } = service.buy(buildDto({ coverageType: 0 }));
 
       expect(policy.triggerParams).toBeUndefined();
+    });
+
+    it("rejects buying Flight Delay coverage without a flightNumber in triggerParams", () => {
+      expect.assertions(2);
+      try {
+        service.buy(buildDto({ coverageType: 4 }));
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string };
+        expect(response.error).toBe("Flight Delay coverage requires triggerParams.flightNumber");
+      }
+    });
+
+    it("rejects Flight Delay coverage when triggerParams is present but flightNumber isn't a string", () => {
+      expect.assertions(1);
+      try {
+        service.buy(buildDto({ coverageType: 4, triggerParams: { flightNumber: 123 } }));
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+      }
+    });
+
+    it("allows buying Flight Delay coverage once a flightNumber is supplied", () => {
+      const { policy } = service.buy(buildDto({ coverageType: 4, triggerParams: { flightNumber: "BA249" } }));
+
+      expect(policy.triggerParams).toEqual({ flightNumber: "BA249" });
+    });
+
+    it("does not require triggerParams for non-Flight-Delay coverage types", () => {
+      expect(() => service.buy(buildDto({ coverageType: 0 }))).not.toThrow();
     });
   });
 
