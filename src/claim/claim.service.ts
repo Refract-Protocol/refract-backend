@@ -139,6 +139,11 @@ export class ClaimService {
       activePolicies: this.policyService.listActive().length,
       processedClaims: this.processedCount,
       totalPayout: this.payoutTotal.toString(),
+      // Surfaces whether ClaimSettlementService actually has a pool
+      // contract ID + relayer secret configured, so ops can tell from the
+      // API whether triggered claims will settle on-chain or just log a
+      // "not configured" error, without digging through env/logs.
+      settlementConfigured: this.claimSettlementService.isConfigured(),
     };
   }
 

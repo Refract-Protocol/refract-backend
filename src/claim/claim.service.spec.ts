@@ -51,6 +51,7 @@ function buildServices() {
     // don't need to know about settlement plumbing unless they're testing
     // it directly.
     settleClaim: jest.fn().mockResolvedValue({ settled: true, txHash: "mock-tx-hash" } satisfies SettlementResult),
+    isConfigured: jest.fn().mockReturnValue(true),
   } as unknown as jest.Mocked<ClaimSettlementService>;
 
   return { policyService, oracleService, claimSettlementService };
@@ -231,6 +232,14 @@ describe("ClaimService", () => {
       expect(stats.activePolicies).toBe(0);
       expect(stats.processedClaims).toBe(1);
       expect(stats.totalPayout).toBe("7000000000");
+    });
+
+    it("reflects ClaimSettlementService.isConfigured()", () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      claimSettlementService.isConfigured.mockReturnValue(false);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      expect(service.getStats().settlementConfigured).toBe(false);
     });
   });
 
