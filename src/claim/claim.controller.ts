@@ -1,4 +1,4 @@
-import { Controller, Get } from "@nestjs/common";
+import { Controller, Get, Param } from "@nestjs/common";
 import { ClaimService } from "./claim.service";
 
 /**
@@ -14,5 +14,10 @@ export class ClaimController {
   @Get("stats")
   getStats() {
     return this.claimService.getStats();
+  }
+
+  @Get("holder/:address")
+  getHistoryForHolder(@Param("address") address: string) {
+    return { claims: this.claimService.getHistoryForHolder(address) };
   }
 }

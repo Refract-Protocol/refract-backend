@@ -26,6 +26,10 @@ export class ClaimService {
   private readonly logger = new Logger(ClaimService.name);
   private processedCount = 0;
   private payoutTotal = BigInt(0);
+  // In-memory settlement history — same lifetime/limitations as
+  // PolicyService's in-memory store; replaced together once the
+  // Postgres-backed repository lands.
+  private readonly history: ClaimResult[] = [];
 
   constructor(
     private readonly policyService: PolicyService,
@@ -125,7 +129,9 @@ export class ClaimService {
     this.policyService.deactivate(policy.id);
     this.processedCount++;
     this.payoutTotal += BigInt(result.payout);
-    return { ...result, settlementTxHash: settlement.txHash };
+    const settledResult = { ...result, settlementTxHash: settlement.txHash };
+    this.history.push(settledResult);
+    return settledResult;
   }
 
   getStats() {
@@ -134,5 +140,10 @@ export class ClaimService {
       processedClaims: this.processedCount,
       totalPayout: this.payoutTotal.toString(),
     };
+  }
+
+  /** Settled claim history for a holder, most recent first. */
+  getHistoryForHolder(address: string): ClaimResult[] {
+    return this.history.filter((claim) => claim.holder === address).sort((a, b) => b.processedAt - a.processedAt);
   }
 }

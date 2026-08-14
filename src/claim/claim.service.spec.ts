@@ -233,4 +233,40 @@ describe("ClaimService", () => {
       expect(stats.totalPayout).toBe("7000000000");
     });
   });
+
+  describe("getHistoryForHolder", () => {
+    it("returns only settled claims for the given holder, most recent first", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const alice = buildPolicy({ id: "policy-alice", holder: "GALICE", coverageType: 0 });
+      const bob = buildPolicy({ id: "policy-bob", holder: "GBOB", coverageType: 0 });
+      policyService.listActive.mockReturnValue([alice, bob]);
+      oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      await service.processTriggered();
+
+      const aliceHistory = service.getHistoryForHolder("GALICE");
+      expect(aliceHistory).toHaveLength(1);
+      expect(aliceHistory[0].policyId).toBe("policy-alice");
+    });
+
+    it("returns an empty array for a holder with no settled claims", () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      expect(service.getHistoryForHolder("GNOBODY")).toEqual([]);
+    });
+
+    it("excludes claims that were evaluated but didn't trigger", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const policy = buildPolicy({ holder: "GALICE", coverageType: 0 });
+      policyService.listActive.mockReturnValue([policy]);
+      oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 1.0, threshold: 0.95 }));
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      await service.processTriggered();
+
+      expect(service.getHistoryForHolder("GALICE")).toEqual([]);
+    });
+  });
 });
