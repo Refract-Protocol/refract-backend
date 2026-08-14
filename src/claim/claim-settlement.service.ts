@@ -17,21 +17,26 @@ export interface SettlementResult {
  * that actually pays out a triggered claim — replaces the logged stub that
  * used to live in ClaimService.processPayout().
  *
- * ASSUMED CONTRACT INTERFACE — UNVERIFIED AGAINST refract-contracts:
- * This repo only has the backend; the pool contract's real source/ABI
- * lives in the separate refract-contracts repo, which isn't available
- * here. The signature below —
+ * CONFIRMED MISMATCH AGAINST refract-contracts — DO NOT DEPLOY AS-IS:
+ * refract-contracts/pool/src/lib.rs's real signature is
  *
- *   process_claim(policy_id: String, holder: Address, payout: i128) -> bool
+ *   pub fn process_claim(env: Env, policy_id: u64) -> Result<i128, PoolError>
  *
- * — is a best-effort guess based on the fields ClaimService already has on
- * hand (StoredPolicy.id, StoredPolicy.holder, the payout amount in 1e7
- * base units). Soroban validates arguments against the contract's on-chain
- * spec during simulation, before any state changes or fees are spent, so a
- * wrong function name/argument order/type fails loudly at
- * prepareTransaction() rather than silently misbehaving — but this still
- * needs to be confirmed against the real deployed contract before it's
- * trusted to pay out real claims.
+ * i.e. it takes a single u64 policy id — no holder, no payout — and looks
+ * up the holder/payout/trigger condition itself from on-chain Policy
+ * storage, returning the payout amount. The call built below still passes
+ * the old guessed 3-argument shape (String policy_id, Address holder, i128
+ * payout), which fails Soroban's argument-count/type check during
+ * simulation on every invocation.
+ *
+ * That argument mismatch is also downstream of a bigger gap: StoredPolicy.id
+ * (see policy.service.ts) is a uuidv4() string minted entirely off-chain,
+ * never the u64 the real buy_policy() call returns on-chain (buy_policy
+ * itself is also still a txXdr stub — see PolicyService.buy()). There is
+ * currently no code path that produces a real on-chain policy id to submit
+ * here, so fixing the argument shape alone isn't sufficient; the buy flow
+ * needs to actually invoke buy_policy() and thread its returned id through
+ * before this can settle a real claim.
  */
 @Injectable()
 export class ClaimSettlementService {
