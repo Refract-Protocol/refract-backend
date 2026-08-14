@@ -85,7 +85,7 @@ describe("ClaimService", () => {
       expect(oracleService[method]).toHaveBeenCalledTimes(1);
     });
 
-    it("routes coverageType 4 (FlightDelay) to OracleService.checkFlightDelay with a placeholder flight number", async () => {
+    it("falls back to a placeholder flight number when the policy has no triggerParams", async () => {
       const { policyService, oracleService, claimSettlementService } = buildServices();
       policyService.listActive.mockReturnValue([buildPolicy({ coverageType: 4 })]);
       oracleService.checkFlightDelay.mockResolvedValue(buildReading({ value: 0, threshold: 120 }));
@@ -94,6 +94,19 @@ describe("ClaimService", () => {
       await service.processTriggered();
 
       expect(oracleService.checkFlightDelay).toHaveBeenCalledWith("UNKNOWN");
+    });
+
+    it("routes coverageType 4 (FlightDelay) to OracleService.checkFlightDelay using the buy-time flight number", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      policyService.listActive.mockReturnValue([
+        buildPolicy({ coverageType: 4, triggerParams: { flightNumber: "BA249" } }),
+      ]);
+      oracleService.checkFlightDelay.mockResolvedValue(buildReading({ value: 0, threshold: 120 }));
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      await service.processTriggered();
+
+      expect(oracleService.checkFlightDelay).toHaveBeenCalledWith("BA249");
     });
 
     it("triggers, settles on-chain, and pays out a below-threshold policy (StablecoinDepeg-style)", async () => {

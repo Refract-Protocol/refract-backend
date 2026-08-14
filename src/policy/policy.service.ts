@@ -25,6 +25,7 @@ export interface StoredPolicy {
   expiresAt: number;
   isActive: boolean;
   createdAt: string;
+  triggerParams?: Record<string, unknown>;
 }
 
 const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
@@ -130,7 +131,7 @@ export class PolicyService {
   }
 
   buy(dto: BuyPolicyDto): { policy: StoredPolicy; txXdr: string; message: string } {
-    const { holder, coverageType, coverageAmount, durationDays } = dto;
+    const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
     const coverage = BigInt(coverageAmount);
     const multiplier = RISK_MULTIPLIERS[coverageType];
     const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
@@ -152,6 +153,7 @@ export class PolicyService {
       expiresAt,
       isActive: true,
       createdAt: new Date().toISOString(),
+      triggerParams,
     };
 
     this.policies.set(policyId, policy);

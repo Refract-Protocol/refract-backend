@@ -70,14 +70,10 @@ export class ClaimService {
         return this.oracleService.checkLiquidationShield();
       case 3:
         return this.oracleService.checkSmartContractRisk();
-      case 4:
-        // TODO: PolicyService doesn't persist the buy-time triggerParams
-        // (e.g. flight number) yet — same gap that existed pre-migration,
-        // since routes/policies.ts accepted but silently dropped it. Wire
-        // trigger_params (see schema.sql) through PolicyService once the
-        // Postgres-backed repository lands, then read the real flight
-        // number here.
-        return this.oracleService.checkFlightDelay("UNKNOWN");
+      case 4: {
+        const flightNumber = policy.triggerParams?.flightNumber;
+        return this.oracleService.checkFlightDelay(typeof flightNumber === "string" ? flightNumber : "UNKNOWN");
+      }
       default:
         throw new Error(`Unknown coverageType ${policy.coverageType}`);
     }

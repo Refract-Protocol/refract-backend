@@ -72,6 +72,21 @@ describe("PolicyService", () => {
       expect(txXdr).toBe("// TODO: Soroban invoke XDR");
       expect(message).toBe("Sign and submit to activate coverage");
     });
+
+    it("persists triggerParams so ClaimService can read them back for scanning (e.g. flight number)", () => {
+      const dto = buildDto({ coverageType: 4, triggerParams: { flightNumber: "BA249" } });
+
+      const { policy } = service.buy(dto);
+      const stored = service.findById(policy.id);
+
+      expect(stored?.triggerParams).toEqual({ flightNumber: "BA249" });
+    });
+
+    it("leaves triggerParams undefined when the buyer didn't supply any", () => {
+      const { policy } = service.buy(buildDto({ coverageType: 0 }));
+
+      expect(policy.triggerParams).toBeUndefined();
+    });
   });
 
   describe("lookups and lifecycle", () => {
