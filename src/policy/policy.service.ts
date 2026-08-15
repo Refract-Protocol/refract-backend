@@ -142,6 +142,22 @@ export class PolicyService {
     }
 
     const coverage = BigInt(coverageAmount);
+    if (coverage <= 0n) {
+      throw new BadRequestException({ error: "coverageAmount must be greater than zero" });
+    }
+
+    // listTypes() advertises maxCoverage per catalog entry, but nothing
+    // enforced it here — a buyer could request coverage far beyond the
+    // advertised cap (e.g. 500,000 on a Flight Delay policy capped at
+    // 2,000) and it would be silently accepted. The Soroban pool contract
+    // enforces the equivalent check in buy_policy(); mirror it here.
+    const maxCoverage = COVERAGE_TYPES[coverageType].maxCoverage;
+    if (coverage > BigInt(maxCoverage) * 10_000_000n) {
+      throw new BadRequestException({
+        error: `coverageAmount exceeds the ${COVERAGE_NAMES[coverageType]} maximum of ${maxCoverage} USDC`,
+        maxCoverage,
+      });
+    }
     const multiplier = RISK_MULTIPLIERS[coverageType];
     const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
     const dailyRate = annualRate / 365;

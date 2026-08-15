@@ -33,7 +33,9 @@ describe("PolicyService", () => {
       [3, 9.0],
       [4, 2.4],
     ])("charges the catalog's annual base rate for coverageType %d over a 365-day policy", (coverageType, baseRatePct) => {
-      const coverageAmount = "1000000000000";
+      // 1,000 USDC — under every coverage type's maxCoverage (the lowest,
+      // Flight Delay, caps at 2,000), so this covers all five rows.
+      const coverageAmount = "10000000000";
       const triggerParams = coverageType === 4 ? { flightNumber: "BA249" } : undefined;
 
       const { policy } = service.buy(buildDto({ coverageType, coverageAmount, durationDays: 365, triggerParams }));
@@ -76,7 +78,8 @@ describe("PolicyService", () => {
     });
 
     it("persists triggerParams so ClaimService can read them back for scanning (e.g. flight number)", () => {
-      const dto = buildDto({ coverageType: 4, triggerParams: { flightNumber: "BA249" } });
+      // Flight Delay caps at 2,000 USDC — stay under it.
+      const dto = buildDto({ coverageType: 4, coverageAmount: "10000000000", triggerParams: { flightNumber: "BA249" } });
 
       const { policy } = service.buy(dto);
       const stored = service.findById(policy.id);
@@ -111,13 +114,50 @@ describe("PolicyService", () => {
     });
 
     it("allows buying Flight Delay coverage once a flightNumber is supplied", () => {
-      const { policy } = service.buy(buildDto({ coverageType: 4, triggerParams: { flightNumber: "BA249" } }));
+      const { policy } = service.buy(
+        buildDto({ coverageType: 4, coverageAmount: "10000000000", triggerParams: { flightNumber: "BA249" } })
+      );
 
       expect(policy.triggerParams).toEqual({ flightNumber: "BA249" });
     });
 
     it("does not require triggerParams for non-Flight-Delay coverage types", () => {
       expect(() => service.buy(buildDto({ coverageType: 0 }))).not.toThrow();
+    });
+
+    it("rejects a zero coverageAmount", () => {
+      expect.assertions(2);
+      try {
+        service.buy(buildDto({ coverageAmount: "0" }));
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string };
+        expect(response.error).toBe("coverageAmount must be greater than zero");
+      }
+    });
+
+    it("allows coverageAmount exactly at a type's advertised maxCoverage", () => {
+      // Flight Delay caps at 2,000 USDC.
+      expect(() =>
+        service.buy(
+          buildDto({ coverageType: 4, coverageAmount: "20000000000", triggerParams: { flightNumber: "BA249" } })
+        )
+      ).not.toThrow();
+    });
+
+    it("rejects coverageAmount beyond a type's advertised maxCoverage", () => {
+      // Flight Delay caps at 2,000 USDC; ask for 2,000.000001.
+      expect.assertions(3);
+      try {
+        service.buy(
+          buildDto({ coverageType: 4, coverageAmount: "20000000001", triggerParams: { flightNumber: "BA249" } })
+        );
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string; maxCoverage: number };
+        expect(response.error).toContain("Flight Delay maximum of 2000 USDC");
+        expect(response.maxCoverage).toBe(2000);
+      }
     });
   });
 
