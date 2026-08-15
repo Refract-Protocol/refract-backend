@@ -278,4 +278,41 @@ describe("ClaimService", () => {
       expect(service.getHistoryForHolder("GALICE")).toEqual([]);
     });
   });
+
+  describe("getRecentSettlements", () => {
+    it("returns settled claims across all holders, most recent first", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const alice = buildPolicy({ id: "policy-alice", holder: "GALICE", coverageType: 0 });
+      const bob = buildPolicy({ id: "policy-bob", holder: "GBOB", coverageType: 0 });
+      policyService.listActive.mockReturnValue([alice, bob]);
+      oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      await service.processTriggered();
+
+      const recent = service.getRecentSettlements();
+      expect(recent.map((c) => c.policyId).sort()).toEqual(["policy-alice", "policy-bob"]);
+    });
+
+    it("caps results at the given limit", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const policies = Array.from({ length: 5 }, (_, i) =>
+        buildPolicy({ id: `policy-${i}`, holder: `GHOLDER${i}`, coverageType: 0 })
+      );
+      policyService.listActive.mockReturnValue(policies);
+      oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      await service.processTriggered();
+
+      expect(service.getRecentSettlements(2)).toHaveLength(2);
+    });
+
+    it("returns an empty array when nothing has settled yet", () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      expect(service.getRecentSettlements()).toEqual([]);
+    });
+  });
 });

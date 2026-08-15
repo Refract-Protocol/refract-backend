@@ -151,4 +151,9 @@ export class ClaimService {
   getHistoryForHolder(address: string): ClaimResult[] {
     return this.history.filter((claim) => claim.holder === address).sort((a, b) => b.processedAt - a.processedAt);
   }
+
+  /** Most recent settled claims across all holders, for public "recent activity" displays. */
+  getRecentSettlements(limit = 10): ClaimResult[] {
+    return [...this.history].sort((a, b) => b.processedAt - a.processedAt).slice(0, limit);
+  }
 }

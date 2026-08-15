@@ -20,4 +20,9 @@ export class ClaimController {
   getHistoryForHolder(@Param("address") address: string) {
     return { claims: this.claimService.getHistoryForHolder(address) };
   }
+
+  @Get("recent")
+  getRecent() {
+    return { claims: this.claimService.getRecentSettlements() };
+  }
 }
