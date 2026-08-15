@@ -2,9 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
-
-const CONFIRMATION_POLL_INTERVAL_MS = 2000;
-const CONFIRMATION_MAX_ATTEMPTS = 15; // ~30s at the interval above
+import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
 export interface SettlementResult {
   settled: boolean;
@@ -97,25 +95,12 @@ export class ClaimSettlementService {
         return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
       }
 
-      return await this.pollForConfirmation(sendResult.hash);
+      const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+      return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
       return { settled: false, error: message };
     }
-  }
-
-  private async pollForConfirmation(hash: string): Promise<SettlementResult> {
-    for (let attempt = 0; attempt < CONFIRMATION_MAX_ATTEMPTS; attempt++) {
-      const result = await this.server.getTransaction(hash);
-      if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-        return { settled: true, txHash: hash };
-      }
-      if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-        return { settled: false, txHash: hash, error: "Transaction failed on-chain" };
-      }
-      await new Promise((resolve) => setTimeout(resolve, CONFIRMATION_POLL_INTERVAL_MS));
-    }
-    return { settled: false, txHash: hash, error: "Timed out waiting for confirmation" };
   }
 }
