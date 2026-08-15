@@ -1,4 +1,7 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { Address, BASE_FEE, Contract, TransactionBuilder, nativeToScVal, rpc, xdr } from "@stellar/stellar-sdk";
+import { AppConfig } from "../config/configuration";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
@@ -35,6 +38,53 @@ export interface PremiumHistoryEntry {
 
 @Injectable()
 export class PoolService {
+  private readonly server: rpc.Server;
+  private readonly networkPassphrase: string;
+  private readonly poolContractId: string;
+
+  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+    const stellar = this.configService.get("stellar", { infer: true });
+    this.server = new rpc.Server(stellar.sorobanRpcUrl);
+    this.networkPassphrase = stellar.networkPassphrase;
+    this.poolContractId = stellar.poolContractId;
+  }
+
+  /**
+   * Builds an unsigned, simulation-prepared invocation of the deployed
+   * RefractPool contract for `provider` to sign in their own wallet —
+   * provide_capital()/withdraw_capital() both call `require_auth()` on the
+   * provider, so unlike ClaimSettlementService's relayer-signed flow, the
+   * server can never sign this itself.
+   */
+  private async buildUnsignedInvoke(sourcePublicKey: string, method: string, args: xdr.ScVal[]): Promise<string> {
+    if (!this.poolContractId) {
+      throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
+    }
+    try {
+      const sourceAccount = await this.server.getAccount(sourcePublicKey);
+      const contract = new Contract(this.poolContractId);
+      const operation = contract.call(method, ...args);
+
+      const builtTx = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
+
+      // Simulates against the live contract and fills in Soroban resource
+      // fees/footprint — surfaces contract-level rejections (e.g.
+      // InsufficientCapacity, CapitalLocked) as part of building the tx,
+      // rather than only after the caller signs and submits it.
+      const preparedTx = await this.server.prepareTransaction(builtTx);
+      return preparedTx.toXDR();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new BadRequestException({ error: `Failed to build Soroban transaction: ${message}` });
+    }
+  }
+
   getStats(): PoolStats {
     return {
       totalUsdc: mockPool.totalUsdc.toString(),
@@ -61,7 +111,7 @@ export class PoolService {
     };
   }
 
-  provide(dto: DepositDto) {
+  async provide(dto: DepositDto) {
     const { provider, amount } = dto;
     const amountBn = BigInt(amount);
     if (amountBn <= 0n) {
@@ -69,17 +119,22 @@ export class PoolService {
     }
     const sharesOut = (amountBn * mockPool.totalShares) / mockPool.totalUsdc;
 
+    const txXdr = await this.buildUnsignedInvoke(provider, "provide_capital", [
+      new Address(provider).toScVal(),
+      nativeToScVal(amountBn, { type: "i128" }),
+    ]);
+
     return {
       provider,
       amountUsdc: amount,
       sharesOut: sharesOut.toString(),
       sharePrice: mockPool.sharePrice,
-      txXdr: "// TODO: Soroban invoke XDR",
+      txXdr,
       message: "Sign and submit to provide capital to Refract risk pool",
     };
   }
 
-  withdraw(dto: WithdrawDto) {
+  async withdraw(dto: WithdrawDto) {
     const { provider, shares } = dto;
     const sharesBn = BigInt(shares);
     if (sharesBn <= 0n) {
@@ -95,12 +150,17 @@ export class PoolService {
       });
     }
 
+    const txXdr = await this.buildUnsignedInvoke(provider, "withdraw_capital", [
+      new Address(provider).toScVal(),
+      nativeToScVal(sharesBn, { type: "i128" }),
+    ]);
+
     return {
       provider,
       sharesIn: shares,
       usdcOut: usdcOut.toString(),
       sharePrice: mockPool.sharePrice,
-      txXdr: "// TODO: Soroban invoke XDR",
+      txXdr,
     };
   }
 
