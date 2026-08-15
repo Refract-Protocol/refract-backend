@@ -1,6 +1,16 @@
 import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Account, Keypair, StrKey, Transaction, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Keypair,
+  StrKey,
+  Transaction,
+  TransactionBuilder,
+  nativeToScVal,
+  rpc,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { PoolService } from "./pool.service";
 
@@ -43,6 +53,11 @@ function decodeInvocation(txXdr: string) {
   };
 }
 
+/** A minimal simulateTransaction success response carrying just a return value. */
+function simulateSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionResponse {
+  return { result: { retval, auth: [] } } as unknown as rpc.Api.SimulateTransactionResponse;
+}
+
 describe("PoolService", () => {
   let service: PoolService;
   let provider: string;
@@ -56,6 +71,9 @@ describe("PoolService", () => {
     // approach as ClaimSettlementService's tests).
     jest.spyOn(rpc.Server.prototype, "getAccount").mockImplementation(async (id: string) => new Account(id, "1"));
     jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+    // Default: no lockup on file (Option<u64>::None -> ScVal::Void) — the
+    // withdraw-lockup tests below override this per case.
+    jest.spyOn(rpc.Server.prototype, "simulateTransaction").mockResolvedValue(simulateSuccess(xdr.ScVal.scvVoid()));
   });
 
   afterEach(() => {
@@ -180,6 +198,75 @@ describe("PoolService", () => {
         expect(err).toBeInstanceOf(BadRequestException);
         const response = (err as BadRequestException).getResponse() as { error: string };
         expect(response.error).toBe("Withdrawal shares must be greater than zero");
+      }
+    });
+
+    it("rejects a withdrawal while the on-chain lockup hasn't expired yet, without building a tx", async () => {
+      const futureUnlock = BigInt(Math.floor(Date.now() / 1000) + 3_600);
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateSuccess(nativeToScVal(futureUnlock, { type: "u64" })));
+      const prepareSpy = jest.spyOn(rpc.Server.prototype, "prepareTransaction");
+      const shares = (1_000n * 10_000_000n).toString();
+      expect.assertions(3);
+
+      try {
+        await service.withdraw({ provider, shares });
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string; lockupExpiresAt: string };
+        expect(response.lockupExpiresAt).toBe(futureUnlock.toString());
+        expect(prepareSpy).not.toHaveBeenCalled();
+      }
+    });
+
+    it("allows a withdrawal once the on-chain lockup has expired", async () => {
+      const pastUnlock = BigInt(Math.floor(Date.now() / 1000) - 1);
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateSuccess(nativeToScVal(pastUnlock, { type: "u64" })));
+      const shares = (1_000n * 10_000_000n).toString();
+
+      await expect(service.withdraw({ provider, shares })).resolves.not.toThrow();
+    });
+  });
+
+  describe("lockupExpiresAt", () => {
+    it("returns null when the contract reports no lockup (Option::None)", async () => {
+      jest.spyOn(rpc.Server.prototype, "simulateTransaction").mockResolvedValue(simulateSuccess(xdr.ScVal.scvVoid()));
+
+      expect(await service.lockupExpiresAt(provider)).toBeNull();
+    });
+
+    it("returns the unlock timestamp when the contract reports one", async () => {
+      const unlocksAt = 1_800_000_000n;
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateSuccess(nativeToScVal(unlocksAt, { type: "u64" })));
+
+      expect(await service.lockupExpiresAt(provider)).toBe(unlocksAt);
+    });
+
+    it("returns null without contacting the network when the pool contract isn't configured", async () => {
+      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
+
+      expect(await unconfigured.lockupExpiresAt(provider)).toBeNull();
+      expect(getAccountSpy).not.toHaveBeenCalled();
+    });
+
+    it("wraps a simulation error in a BadRequestException", async () => {
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue({ error: "boom" } as unknown as rpc.Api.SimulateTransactionResponse);
+      expect.assertions(2);
+
+      try {
+        await service.lockupExpiresAt(provider);
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string };
+        expect(response.error).toContain("boom");
       }
     });
   });

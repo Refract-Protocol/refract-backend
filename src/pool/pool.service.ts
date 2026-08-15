@@ -1,6 +1,15 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Address, BASE_FEE, Contract, TransactionBuilder, nativeToScVal, rpc, xdr } from "@stellar/stellar-sdk";
+import {
+  Address,
+  BASE_FEE,
+  Contract,
+  TransactionBuilder,
+  nativeToScVal,
+  rpc,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
@@ -85,6 +94,39 @@ export class PoolService {
     }
   }
 
+  /**
+   * Reads RefractPool.lockup_expires_at(provider) via simulation — no
+   * signature or submission needed, this never changes state. Returns
+   * null if `provider` has never deposited (never locked) or the pool
+   * contract isn't configured yet, matching the contract's own Option<u64>.
+   */
+  async lockupExpiresAt(provider: string): Promise<bigint | null> {
+    if (!this.poolContractId) {
+      return null;
+    }
+    try {
+      const sourceAccount = await this.server.getAccount(provider);
+      const contract = new Contract(this.poolContractId);
+      const tx = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(contract.call("lockup_expires_at", new Address(provider).toScVal()))
+        .setTimeout(30)
+        .build();
+
+      const sim = await this.server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(sim)) {
+        throw new Error(sim.error);
+      }
+      const value = scValToNative(sim.result!.retval);
+      return value === null ? null : BigInt(value as bigint);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new BadRequestException({ error: `Failed to read lockup status: ${message}` });
+    }
+  }
+
   getStats(): PoolStats {
     return {
       totalUsdc: mockPool.totalUsdc.toString(),
@@ -140,6 +182,18 @@ export class PoolService {
     if (sharesBn <= 0n) {
       throw new BadRequestException({ error: "Withdrawal shares must be greater than zero" });
     }
+
+    // Fails fast with a clear message instead of letting the caller
+    // discover the lockup only once buildUnsignedInvoke's simulation
+    // rejects it with a raw contract error string.
+    const lockupExpiresAt = await this.lockupExpiresAt(provider);
+    if (lockupExpiresAt !== null && BigInt(Math.floor(Date.now() / 1000)) < lockupExpiresAt) {
+      throw new BadRequestException({
+        error: `Withdrawals are locked until ${new Date(Number(lockupExpiresAt) * 1000).toISOString()}`,
+        lockupExpiresAt: lockupExpiresAt.toString(),
+      });
+    }
+
     const usdcOut = (sharesBn * mockPool.totalUsdc) / mockPool.totalShares;
     const available = mockPool.totalUsdc - mockPool.lockedUsdc;
 
