@@ -237,7 +237,7 @@ export class PolicyService {
    * pool is actually configured to allow right now — e.g. after an admin
    * calls set_pool_config() — which the catalog alone can't see.
    */
-  private async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
+  async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
     if (!this.poolContractId) {
       return null;
     }
