@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { CoverageTypeName } from "./coverage-type";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
 
@@ -100,6 +100,19 @@ export class QuoteService {
 
   createQuote(dto: CreateQuoteDto): QuoteResult {
     const { coverageType, coverageAmount, durationDays, triggerThreshold } = dto;
+
+    // Each coverage type advertises its own maxDuration via
+    // listCoverageTypes() (e.g. Flight Delay is capped at 1 day), but the
+    // DTO only enforces a flat 365-day ceiling — this was the only place
+    // that per-type limit was actually supposed to be checked.
+    const catalogEntry = COVERAGE_TYPES.find((t) => t.id === coverageType);
+    if (catalogEntry && durationDays > catalogEntry.maxDuration) {
+      throw new BadRequestException({
+        error: `${catalogEntry.name} coverage is limited to ${catalogEntry.maxDuration} day(s)`,
+        maxDuration: catalogEntry.maxDuration,
+      });
+    }
+
     const premium = this.calcPremium(coverageAmount, coverageType, durationDays);
 
     return {
