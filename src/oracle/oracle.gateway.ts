@@ -24,9 +24,17 @@ export class OracleGateway implements OnGatewayConnection {
     const payload = JSON.stringify({ ...alert, timestamp: Date.now() });
     let sent = 0;
     for (const client of this.server.clients) {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      // A single client whose socket is mid-close can throw synchronously
+      // from send() (readyState can still read OPEN in that window). Without
+      // catching it here, that throw would abort this whole loop — silently
+      // dropping the alert for every other connected client too, not just
+      // the bad one.
+      try {
         client.send(payload);
         sent++;
+      } catch (err) {
+        this.logger.warn(`Failed to send oracle alert to a client: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     this.logger.debug(`Broadcast ${alert.coverageType} alert to ${sent} client(s)`);
