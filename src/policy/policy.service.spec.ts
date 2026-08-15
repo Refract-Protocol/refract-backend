@@ -1,6 +1,16 @@
 import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Account, Keypair, StrKey, Transaction, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Keypair,
+  StrKey,
+  Transaction,
+  TransactionBuilder,
+  nativeToScVal,
+  rpc,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { PolicyService } from "./policy.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
@@ -43,6 +53,40 @@ function buildDto(holder: string, overrides: Partial<BuyPolicyDto> = {}): BuyPol
   };
 }
 
+/** A minimal simulateTransaction success response carrying just a return value. */
+function simulateSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionResponse {
+  return { result: { retval, auth: [] } } as unknown as rpc.Api.SimulateTransactionResponse;
+}
+
+/** Mirrors refract-contracts' PoolConfig struct — only min/max coverage matter to this service. */
+function poolConfigScVal(minCoverage: bigint, maxCoverage: bigint): xdr.ScVal {
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("base_premium_rate_bps"),
+      val: nativeToScVal(300, { type: "u32" }),
+    }),
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("lockup_days"), val: nativeToScVal(7, { type: "u32" }) }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("max_coverage"),
+      val: nativeToScVal(maxCoverage, { type: "i128" }),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("max_utilization_bps"),
+      val: nativeToScVal(8_000, { type: "u32" }),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("min_coverage"),
+      val: nativeToScVal(minCoverage, { type: "i128" }),
+    }),
+  ]);
+}
+
+// Comfortably outside every fixed coverageAmount used across the existing
+// tests below (largest is 500,000 USDC = 5e12 base units), so the default
+// mock never interferes with tests that aren't specifically about
+// on-chain bounds.
+const PERMISSIVE_BOUNDS = poolConfigScVal(0n, 1_000_000_000_000_000n);
+
 describe("PolicyService", () => {
   let service: PolicyService;
   let holder: string;
@@ -56,6 +100,9 @@ describe("PolicyService", () => {
     // approach as ClaimSettlementService's tests).
     jest.spyOn(rpc.Server.prototype, "getAccount").mockImplementation(async (id: string) => new Account(id, "1"));
     jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+    // Default: permissive on-chain bounds, so tests below aren't about
+    // onChainCoverageBounds() unless they explicitly override this.
+    jest.spyOn(rpc.Server.prototype, "simulateTransaction").mockResolvedValue(simulateSuccess(PERMISSIVE_BOUNDS));
   });
 
   afterEach(() => {
@@ -241,6 +288,55 @@ describe("PolicyService", () => {
         const response = (err as BadRequestException).getResponse() as { error: string };
         expect(response.error).toContain("InsufficientCapacity");
       }
+    });
+
+    it("rejects coverageAmount above the pool's real on-chain max_coverage, even when the catalog would allow it", async () => {
+      // SmartContractRisk's catalog maxCoverage is 500,000 USDC, but the
+      // pool is (in this test) actually configured for only 5,000 —
+      // exactly the mismatch between this service's per-type catalog and
+      // the pool's single global bound that onChainCoverageBounds() exists
+      // to catch.
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateSuccess(poolConfigScVal(1_000_000_000n, 50_000_000_000n)));
+      const prepareSpy = jest.spyOn(rpc.Server.prototype, "prepareTransaction");
+      expect.assertions(3);
+
+      try {
+        await service.buy(buildDto(holder, { coverageType: 3, coverageAmount: "100000000000" })); // 10,000 USDC
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string; maxCoverage: string };
+        expect(response.maxCoverage).toBe("50000000000");
+        expect(prepareSpy).not.toHaveBeenCalled();
+      }
+    });
+
+    it("rejects coverageAmount below the pool's real on-chain min_coverage", async () => {
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateSuccess(poolConfigScVal(1_000_000_000n, 50_000_000_000n))); // min 100 USDC
+      expect.assertions(2);
+
+      try {
+        // 10 USDC — under the catalog's own maxCoverage, so only the
+        // on-chain min_coverage check should be able to reject this.
+        await service.buy(buildDto(holder, { coverageType: 0, coverageAmount: "100000000" }));
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string; minCoverage: string };
+        expect(response.minCoverage).toBe("1000000000");
+      }
+    });
+
+    it("allows a coverageAmount within both the catalog's and the pool's on-chain bounds", async () => {
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateSuccess(poolConfigScVal(1_000_000_000n, 50_000_000_000n)));
+
+      await expect(
+        service.buy(buildDto(holder, { coverageType: 0, coverageAmount: "40000000000" })) // 4,000 USDC
+      ).resolves.not.toThrow();
     });
   });
 

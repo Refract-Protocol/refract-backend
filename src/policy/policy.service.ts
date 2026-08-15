@@ -1,6 +1,17 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Address, BASE_FEE, Contract, TransactionBuilder, nativeToScVal, rpc, xdr } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Address,
+  BASE_FEE,
+  Contract,
+  Keypair,
+  TransactionBuilder,
+  nativeToScVal,
+  rpc,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
@@ -211,6 +222,55 @@ export class PolicyService {
     }
   }
 
+  /**
+   * Reads RefractPool.pool_config()'s min_coverage/max_coverage via
+   * simulation — no signature or submission, this never changes state.
+   * Returns null if the pool contract isn't configured or hasn't been
+   * initialized on-chain yet (pool_config() itself returns None then).
+   *
+   * The pool enforces ONE global min/max coverage across every coverage
+   * type (see _check_coverage_capacity in pool/src/lib.rs) — there's no
+   * per-type bound on-chain, unlike COVERAGE_TYPES' maxCoverage below,
+   * which is this catalog's own (stricter, per-type) product policy. Both
+   * checks apply: the catalog caps what buy() will offer per type, this
+   * catches the case where that per-type cap is still above whatever the
+   * pool is actually configured to allow right now — e.g. after an admin
+   * calls set_pool_config() — which the catalog alone can't see.
+   */
+  private async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
+    if (!this.poolContractId) {
+      return null;
+    }
+    try {
+      // pool_config() is a stateless view with no caller-specific args, so
+      // the source account only needs to be well-formed for the tx
+      // envelope — it never touches the network, unlike getAccount().
+      const dummySource = new Account(Keypair.random().publicKey(), "0");
+      const contract = new Contract(this.poolContractId);
+      const tx = new TransactionBuilder(dummySource, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(contract.call("pool_config"))
+        .setTimeout(30)
+        .build();
+
+      const sim = await this.server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(sim)) {
+        throw new Error(sim.error);
+      }
+      const config = scValToNative(sim.result!.retval) as {
+        min_coverage: bigint;
+        max_coverage: bigint;
+      } | null;
+      if (!config) return null;
+      return { minCoverage: config.min_coverage, maxCoverage: config.max_coverage };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new BadRequestException({ error: `Failed to read pool config: ${message}` });
+    }
+  }
+
   listTypes(): CoverageTypeCatalogEntry[] {
     return COVERAGE_TYPES;
   }
@@ -264,6 +324,22 @@ export class PolicyService {
         maxCoverage,
       });
     }
+
+    // The catalog check above is this service's own per-type policy, but
+    // the pool enforces a single global bound across every type (see
+    // onChainCoverageBounds' doc comment) — one that could be far tighter
+    // (or, after a set_pool_config() change, looser) than what the catalog
+    // advertises. Catch a mismatch here with a specific error instead of
+    // letting buildUnsignedBuyInvoke's simulation fail it opaquely.
+    const bounds = await this.onChainCoverageBounds();
+    if (bounds && (coverage < bounds.minCoverage || coverage > bounds.maxCoverage)) {
+      throw new BadRequestException({
+        error: `coverageAmount must be between ${bounds.minCoverage} and ${bounds.maxCoverage} (pool contract units) per the pool's current configuration`,
+        minCoverage: bounds.minCoverage.toString(),
+        maxCoverage: bounds.maxCoverage.toString(),
+      });
+    }
+
     const multiplier = RISK_MULTIPLIERS[coverageType];
     const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
     const dailyRate = annualRate / 365;
