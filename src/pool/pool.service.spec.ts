@@ -64,6 +64,17 @@ describe("PoolService", () => {
       expect(result.sharePrice).toBe(MOCK_POOL.sharePrice);
       expect(result.txXdr).toBe("// TODO: Soroban invoke XDR");
     });
+
+    it("rejects a zero-amount deposit", () => {
+      expect.assertions(2);
+      try {
+        service.provide({ provider: "GPROVIDER", amount: "0" });
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string };
+        expect(response.error).toBe("Deposit amount must be greater than zero");
+      }
+    });
   });
 
   describe("withdraw", () => {
@@ -91,6 +102,17 @@ describe("PoolService", () => {
         const response = (err as BadRequestException).getResponse() as { error: string; available: string };
         expect(response.error).toBe("Pool capacity locked — too many active policies");
         expect(response.available).toBe((MOCK_POOL.totalUsdc - MOCK_POOL.lockedUsdc).toString());
+      }
+    });
+
+    it("rejects a zero-share withdrawal", () => {
+      expect.assertions(2);
+      try {
+        service.withdraw({ provider: "GPROVIDER", shares: "0" });
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string };
+        expect(response.error).toBe("Withdrawal shares must be greater than zero");
       }
     });
   });

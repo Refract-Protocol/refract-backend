@@ -64,6 +64,9 @@ export class PoolService {
   provide(dto: DepositDto) {
     const { provider, amount } = dto;
     const amountBn = BigInt(amount);
+    if (amountBn <= 0n) {
+      throw new BadRequestException({ error: "Deposit amount must be greater than zero" });
+    }
     const sharesOut = (amountBn * mockPool.totalShares) / mockPool.totalUsdc;
 
     return {
@@ -79,6 +82,9 @@ export class PoolService {
   withdraw(dto: WithdrawDto) {
     const { provider, shares } = dto;
     const sharesBn = BigInt(shares);
+    if (sharesBn <= 0n) {
+      throw new BadRequestException({ error: "Withdrawal shares must be greater than zero" });
+    }
     const usdcOut = (sharesBn * mockPool.totalUsdc) / mockPool.totalShares;
     const available = mockPool.totalUsdc - mockPool.lockedUsdc;
 
