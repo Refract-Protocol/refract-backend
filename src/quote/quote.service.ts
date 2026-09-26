@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { CoverageTypeName } from "./coverage-type";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
+import { COVERAGE_PRODUCTS, getCoverageProduct } from "../common/coverage-catalog";
 
 export interface QuoteResult {
   coverageType: CoverageTypeName;
@@ -24,76 +25,12 @@ export interface CoverageTypeInfo {
   riskMultiplier: number;
 }
 
-const RISK_MULTIPLIERS: Record<CoverageTypeName, number> = {
-  [CoverageTypeName.StablecoinDepeg]: 1.0,
-  [CoverageTypeName.MarketCrash]: 1.5,
-  [CoverageTypeName.LiquidationShield]: 2.0,
-  [CoverageTypeName.SmartContractRisk]: 3.0,
-  [CoverageTypeName.FlightDelay]: 0.8,
-};
-
-const DEFAULT_THRESHOLDS: Record<CoverageTypeName, number> = {
-  [CoverageTypeName.StablecoinDepeg]: 500, // 5%
-  [CoverageTypeName.MarketCrash]: 3000, // 30%
-  [CoverageTypeName.LiquidationShield]: 100, // any liquidation
-  [CoverageTypeName.SmartContractRisk]: 100, // any exploit
-  [CoverageTypeName.FlightDelay]: 120, // 2 hours
-};
-
 const BASE_RATE = 0.03; // 3% annual base premium
-
-const COVERAGE_TYPES: CoverageTypeInfo[] = [
-  {
-    id: CoverageTypeName.StablecoinDepeg,
-    name: "Stablecoin Depeg",
-    description: "Pays out if USDC/USDT depegs from $1 by more than 5%",
-    trigger: "USDC < $0.95",
-    riskLevel: "Low",
-    maxDuration: 365,
-    riskMultiplier: 1.0,
-  },
-  {
-    id: CoverageTypeName.MarketCrash,
-    name: "Market Crash",
-    description: "Pays out if XLM or BTC drops >30% in a 24-hour window",
-    trigger: ">30% 24h decline",
-    riskLevel: "Medium",
-    maxDuration: 90,
-    riskMultiplier: 1.5,
-  },
-  {
-    id: CoverageTypeName.LiquidationShield,
-    name: "Liquidation Shield",
-    description: "Covers loss from being auto-liquidated on NEXUS Protocol",
-    trigger: "Position liquidated on NEXUS",
-    riskLevel: "Medium-High",
-    maxDuration: 30,
-    riskMultiplier: 2.0,
-  },
-  {
-    id: CoverageTypeName.SmartContractRisk,
-    name: "Smart Contract Risk",
-    description: "Compensates if a verified Soroban protocol is exploited",
-    trigger: "Verified on-chain exploit",
-    riskLevel: "High",
-    maxDuration: 180,
-    riskMultiplier: 3.0,
-  },
-  {
-    id: CoverageTypeName.FlightDelay,
-    name: "Flight Delay",
-    description: "Pays out automatically if your flight is delayed >2 hours",
-    trigger: ">2hr AviationStack-verified delay",
-    riskLevel: "Very Low",
-    maxDuration: 1,
-    riskMultiplier: 0.8,
-  },
-];
 
 @Injectable()
 export class QuoteService {
   private calcPremium(coverageAmount: number, coverageType: CoverageTypeName, durationDays: number): number {
-    const annualPremium = coverageAmount * BASE_RATE * RISK_MULTIPLIERS[coverageType];
+    const annualPremium = coverageAmount * BASE_RATE * getCoverageProduct(coverageType).riskMultiplier;
     const dailyPremium = annualPremium / 365;
     return parseFloat((dailyPremium * durationDays).toFixed(4));
   }
@@ -105,7 +42,7 @@ export class QuoteService {
     // listCoverageTypes() (e.g. Flight Delay is capped at 1 day), but the
     // DTO only enforces a flat 365-day ceiling — this was the only place
     // that per-type limit was actually supposed to be checked.
-    const catalogEntry = COVERAGE_TYPES.find((t) => t.id === coverageType);
+    const catalogEntry = getCoverageProduct(coverageType);
     if (catalogEntry && durationDays > catalogEntry.maxDuration) {
       throw new BadRequestException({
         error: `${catalogEntry.name} coverage is limited to ${catalogEntry.maxDuration} day(s)`,
@@ -121,7 +58,7 @@ export class QuoteService {
       premium,
       premiumPct: ((premium / coverageAmount) * 100).toFixed(4),
       durationDays,
-      triggerThreshold: triggerThreshold ?? DEFAULT_THRESHOLDS[coverageType],
+      triggerThreshold: triggerThreshold ?? catalogEntry.defaultThreshold,
       expiresAt: new Date(Date.now() + durationDays * 86_400_000).toISOString(),
       poolUtilization: "42%", // live in production
       availableCapacity: "4,200,000",
@@ -129,6 +66,14 @@ export class QuoteService {
   }
 
   listCoverageTypes(): CoverageTypeInfo[] {
-    return COVERAGE_TYPES;
+    return COVERAGE_PRODUCTS.map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      trigger: p.trigger,
+      riskLevel: p.riskLevel,
+      maxDuration: p.maxDuration,
+      riskMultiplier: p.riskMultiplier,
+    }));
   }
 }
