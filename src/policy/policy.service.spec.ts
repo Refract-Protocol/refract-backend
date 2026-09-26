@@ -12,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { testStellarConfig } from "../config/test-stellar";
 import { PolicyService } from "./policy.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
@@ -19,16 +20,10 @@ const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 const POOL_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 1));
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
-  const stellar: AppConfig["stellar"] = {
-    network: "testnet",
-    sorobanRpcUrl: "https://soroban-testnet.stellar.org",
-    networkPassphrase: NETWORK_PASSPHRASE,
+  const stellar = testStellarConfig({
     poolContractId: POOL_CONTRACT_ID,
-    policyContractId: "",
-    oracleContractId: "",
-    relayerSecret: "",
     ...overrides,
-  };
+  });
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
 }
 

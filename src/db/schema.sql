@@ -98,3 +98,29 @@ CREATE TABLE premium_revenue (
   coverage_type   coverage_type   NOT NULL,
   collected_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
+
+-- ─── Event indexer (also in migrations/001_event_indexer.sql) ────────────────
+-- Only ONE replica should run the indexer (leader election / singleton).
+
+CREATE TABLE IF NOT EXISTS indexer_cursors (
+  cursor_key      TEXT            PRIMARY KEY,
+  last_ledger     BIGINT          NOT NULL DEFAULT 0,
+  last_event_id   TEXT            NOT NULL DEFAULT '',
+  updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO indexer_cursors (cursor_key, last_ledger, last_event_id)
+VALUES ('soroban_events', 0, '')
+ON CONFLICT (cursor_key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS processed_events (
+  event_id        TEXT            PRIMARY KEY,
+  ledger          BIGINT          NOT NULL,
+  topic           TEXT            NOT NULL,
+  contract_id     TEXT,
+  tx_hash         TEXT,
+  processed_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_processed_events_ledger
+  ON processed_events (ledger);

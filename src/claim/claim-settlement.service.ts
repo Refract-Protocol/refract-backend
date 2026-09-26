@@ -1,7 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
+import { Address, Contract, Transaction, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { RelayerAccountService } from "../stellar/relayer-account.service";
+import {
+  STELLAR_NOT_CONFIGURED_MESSAGE,
+  StellarConfigValidator,
+} from "../stellar/stellar-config.validator";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
 export interface SettlementResult {
@@ -35,6 +40,9 @@ export interface SettlementResult {
  * here, so fixing the argument shape alone isn't sufficient; the buy flow
  * needs to actually invoke buy_policy() and thread its returned id through
  * before this can settle a real claim.
+ *
+ * Relayer sequence/fees/signing go through RelayerAccountService so concurrent
+ * settlement and oracle publishes cannot collide on sequence numbers.
  */
 @Injectable()
 export class ClaimSettlementService {
@@ -42,60 +50,54 @@ export class ClaimSettlementService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
-  private readonly relayerKeypair: Keypair | null;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly relayerAccount: RelayerAccountService,
+    private readonly stellarConfig: StellarConfigValidator
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
-    this.relayerKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
   }
 
-  /** True once a pool contract ID and relayer secret are configured. */
+  /** True once the Stellar network is fully configured and the relayer can cover fees. */
   isConfigured(): boolean {
-    return Boolean(this.poolContractId && this.relayerKeypair);
+    return this.stellarConfig.isNetworkFullyConfigured() && this.relayerAccount.isReady();
   }
 
   async settleClaim(policyId: string, holder: string, payout: bigint): Promise<SettlementResult> {
-    if (!this.relayerKeypair || !this.poolContractId) {
+    if (!this.isConfigured() || !this.poolContractId) {
       return {
         settled: false,
-        error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET)",
+        error: STELLAR_NOT_CONFIGURED_MESSAGE,
       };
     }
 
     try {
-      const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
-      const contract = new Contract(this.poolContractId);
+      const { hash } = await this.relayerAccount.submitRelayerTransaction(async (account, fee) => {
+        const contract = new Contract(this.poolContractId);
+        const operation = contract.call(
+          "process_claim",
+          nativeToScVal(policyId, { type: "string" }),
+          new Address(holder).toScVal(),
+          nativeToScVal(payout, { type: "i128" })
+        );
 
-      const operation = contract.call(
-        "process_claim",
-        nativeToScVal(policyId, { type: "string" }),
-        new Address(holder).toScVal(),
-        nativeToScVal(payout, { type: "i128" })
-      );
+        const builtTx = new TransactionBuilder(account, {
+          fee,
+          networkPassphrase: this.networkPassphrase,
+        })
+          .addOperation(operation)
+          .setTimeout(30)
+          .build();
 
-      const builtTx = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: this.networkPassphrase,
-      })
-        .addOperation(operation)
-        .setTimeout(30)
-        .build();
+        const prepared = await this.server.prepareTransaction(builtTx);
+        return prepared as Transaction;
+      });
 
-      // Simulates against the live contract and fills in Soroban resource
-      // fees/footprint — this is where a wrong function name or argument
-      // shape for the ASSUMED interface above would surface.
-      const preparedTx = await this.server.prepareTransaction(builtTx);
-      preparedTx.sign(this.relayerKeypair);
-
-      const sendResult = await this.server.sendTransaction(preparedTx);
-      if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
-        return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
-      }
-
-      const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+      const confirmation = await pollForConfirmation(this.server, hash);
       return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

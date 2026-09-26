@@ -8,19 +8,18 @@ export class PoolController {
   constructor(private readonly poolService: PoolService) {}
 
   @Get("stats")
-  getStats() {
+  async getStats() {
     return this.poolService.getStats();
   }
 
   @Get("user/:address")
-  getUserPosition(@Param("address") address: string) {
+  async getUserPosition(@Param("address") address: string) {
     return this.poolService.getUserPosition(address);
   }
 
   /**
-   * Real on-chain read (unlike stats/user, still mocked pending the
-   * Postgres wiring) — lets the frontend show a withdrawal lockup
-   * countdown before the caller ever attempts to submit one.
+   * On-chain lockup read via simulation — lets the frontend show a
+   * withdrawal lockup countdown before the caller attempts to submit one.
    */
   @Get("lockup/:address")
   async getLockupStatus(@Param("address") address: string) {

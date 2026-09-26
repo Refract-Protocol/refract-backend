@@ -10,21 +10,16 @@ import {
   rpc,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { testStellarConfig } from "../config/test-stellar";
 import { TxService } from "./tx.service";
 
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
-  const stellar: AppConfig["stellar"] = {
-    network: "testnet",
-    sorobanRpcUrl: "https://soroban-testnet.stellar.org",
-    networkPassphrase: NETWORK_PASSPHRASE,
+  const stellar = testStellarConfig({
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
-    policyContractId: "",
-    oracleContractId: "",
-    relayerSecret: "",
     ...overrides,
-  };
+  });
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
 }
 
