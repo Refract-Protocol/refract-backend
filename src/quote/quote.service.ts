@@ -2,6 +2,34 @@ import { BadRequestException, Injectable } from "@nestjs/common";
 import { CoverageTypeName } from "./coverage-type";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
 
+/**
+ * Narrow view of pool state a quote needs to assess capacity.
+ *
+ * Implemented by PoolModule and injected into QuoteService so the quote
+ * module depends on this interface rather than on PoolService wholesale.
+ */
+export interface PoolCapacityProvider {
+  getCapacity(): Promise<PoolCapacitySnapshot>;
+}
+
+export interface PoolCapacitySnapshot {
+  /** Pool utilization in basis points (e.g. 4200 = 42%). */
+  utilizationBps: number;
+  /** Utilization ceiling in basis points (e.g. 8000 = 80%). */
+  maxUtilizationBps: number;
+  /** Remaining underwriting capacity in 1e7 base units, as a decimal string. */
+  availableCapacity: string;
+  /** When the underlying pool state was read. */
+  readAt: string;
+}
+
+export interface QuoteCapacityAssessment {
+  /** Whether the requested coverage fits within available capacity. */
+  withinCapacity: boolean;
+  /** Human-readable explanation of the assessment. */
+  reason: string;
+}
+
 export interface QuoteResult {
   coverageType: CoverageTypeName;
   coverageAmount: number;
@@ -10,8 +38,26 @@ export interface QuoteResult {
   durationDays: number;
   triggerThreshold: number;
   expiresAt: string;
-  poolUtilization: string;
-  availableCapacity: string;
+  /**
+   * Pool utilization in basis points, or null when pool state is unavailable.
+   *
+   * BREAKING: previously a pre-formatted display string (e.g. "42%").
+   * Display formatting is now the client's responsibility.
+   */
+  utilizationBps: number | null;
+  /**
+   * Remaining underwriting capacity in 1e7 base units as a decimal string,
+   * or null when pool state is unavailable.
+   *
+   * BREAKING: previously a pre-formatted display string (e.g. "4,200,000").
+   */
+  availableCapacity: string | null;
+  /** Whether the requested coverage fits the pool's capacity. */
+  withinCapacity: boolean | null;
+  /** Explanation of the capacity assessment, or why it could not be made. */
+  capacityReason: string;
+  /** When the pool state backing this quote was read, or null if unavailable. */
+  capacityReadAt: string | null;
 }
 
 export interface CoverageTypeInfo {
@@ -90,15 +136,64 @@ const COVERAGE_TYPES: CoverageTypeInfo[] = [
   },
 ];
 
+const BASE_UNITS = 10_000_000n; // 1e7 base units per whole unit
+
 @Injectable()
 export class QuoteService {
+  constructor(private readonly poolCapacity: PoolCapacityProvider) {}
+
   private calcPremium(coverageAmount: number, coverageType: CoverageTypeName, durationDays: number): number {
     const annualPremium = coverageAmount * BASE_RATE * RISK_MULTIPLIERS[coverageType];
     const dailyPremium = annualPremium / 365;
     return parseFloat((dailyPremium * durationDays).toFixed(4));
   }
 
-  createQuote(dto: CreateQuoteDto): QuoteResult {
+  private assessCapacity(
+    coverageAmount: number,
+    snapshot: PoolCapacitySnapshot,
+  ): QuoteCapacityAssessment {
+    // availableCapacity is a BigInt-derived value; keep it in BigInt space
+    // rather than routing it through Number.
+    let available: bigint;
+    try {
+      available = BigInt(snapshot.availableCapacity);
+    } catch {
+      return {
+        withinCapacity: false,
+        reason: "Pool available capacity could not be parsed",
+      };
+    }
+
+    const requested = BigInt(Math.round(coverageAmount)) * BASE_UNITS;
+
+    if (requested > available) {
+      return {
+        withinCapacity: false,
+        reason: "Requested coverage exceeds the pool's available capacity",
+      };
+    }
+
+    // Projected utilization after writing this policy, in basis points.
+    const totalCapacity = available + (BigInt(snapshot.utilizationBps) * available) / BigInt(10_000 - snapshot.utilizationBps || 1);
+    const projectedBps =
+      totalCapacity > 0n
+        ? Number(((available - requested + (totalCapacity - available)) * 10_000n) / totalCapacity)
+        : 0;
+
+    if (projectedBps > snapshot.maxUtilizationBps) {
+      return {
+        withinCapacity: false,
+        reason: `Writing this policy would push utilization to ${projectedBps} bps, above the ${snapshot.maxUtilizationBps} bps ceiling`,
+      };
+    }
+
+    return {
+      withinCapacity: true,
+      reason: "Requested coverage fits within the pool's available capacity",
+    };
+  }
+
+  async createQuote(dto: CreateQuoteDto): Promise<QuoteResult> {
     const { coverageType, coverageAmount, durationDays, triggerThreshold } = dto;
 
     // Each coverage type advertises its own maxDuration via
@@ -115,6 +210,17 @@ export class QuoteService {
 
     const premium = this.calcPremium(coverageAmount, coverageType, durationDays);
 
+    let snapshot: PoolCapacitySnapshot | null = null;
+    try {
+      snapshot = await this.poolCapacity.getCapacity();
+    } catch {
+      snapshot = null;
+    }
+
+    const assessment = snapshot
+      ? this.assessCapacity(coverageAmount, snapshot)
+      : null;
+
     return {
       coverageType,
       coverageAmount,
@@ -123,8 +229,13 @@ export class QuoteService {
       durationDays,
       triggerThreshold: triggerThreshold ?? DEFAULT_THRESHOLDS[coverageType],
       expiresAt: new Date(Date.now() + durationDays * 86_400_000).toISOString(),
-      poolUtilization: "42%", // live in production
-      availableCapacity: "4,200,000",
+      utilizationBps: snapshot ? snapshot.utilizationBps : null,
+      availableCapacity: snapshot ? snapshot.availableCapacity : null,
+      withinCapacity: assessment ? assessment.withinCapacity : null,
+      capacityReason: assessment
+        ? assessment.reason
+        : "Pool state unavailable; capacity could not be assessed",
+      capacityReadAt: snapshot ? snapshot.readAt : null,
     };
   }
 

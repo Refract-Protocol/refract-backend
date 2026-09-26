@@ -26,6 +26,11 @@ const mockPool = {
   sharePrice: 1.0319,
 };
 
+// Short TTL for the pool capacity snapshot consumed by QuoteService.
+// Quotes are unauthenticated and cheap to request, so we must not trigger
+// an RPC round trip per request (see issue #63).
+const CAPACITY_CACHE_TTL_MS = 5_000;
+
 export interface PoolStats {
   totalUsdc: string;
   totalShares: string;
@@ -38,6 +43,23 @@ export interface PoolStats {
   maxUtilizationBps: number;
 }
 
+/**
+ * Narrow, read-only view of pool capacity consumed by QuoteService.
+ * Kept separate from PoolService so QuoteModule depends on the shape it
+ * needs rather than the whole pool module (mirrors how ClaimModule
+ * consumes PolicyModule/OracleModule exports).
+ */
+export interface PoolCapacitySnapshot {
+  availableUsdc: string;
+  utilizationBps: number;
+  maxUtilizationBps: number;
+  readAt: string;
+}
+
+export interface PoolCapacityProvider {
+  getCapacity(): Promise<PoolCapacitySnapshot | null>;
+}
+
 export interface PremiumHistoryEntry {
   date: string;
   premiums: string;
@@ -46,10 +68,11 @@ export interface PremiumHistoryEntry {
 }
 
 @Injectable()
-export class PoolService {
+export class PoolService implements PoolCapacityProvider {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
+  private capacityCache: { snapshot: PoolCapacitySnapshot; expiresAt: number } | null = null;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
@@ -141,6 +164,33 @@ export class PoolService {
     };
   }
 
+  /**
+   * Read-only capacity snapshot for quote pricing. Served from a short-TTL
+   * cache so unauthenticated quote requests don't amplify into an RPC
+   * round trip each. Returns null when pool state is unavailable so the
+   * caller can surface an explicit "capacity not assessed" result rather
+   * than inventing numbers.
+   */
+  async getCapacity(): Promise<PoolCapacitySnapshot | null> {
+    const now = Date.now();
+    if (this.capacityCache && this.capacityCache.expiresAt > now) {
+      return this.capacityCache.snapshot;
+    }
+    try {
+      const stats = this.getStats();
+      const snapshot: PoolCapacitySnapshot = {
+        availableUsdc: stats.availableUsdc,
+        utilizationBps: stats.utilizationBps,
+        maxUtilizationBps: stats.maxUtilizationBps,
+        readAt: new Date(now).toISOString(),
+      };
+      this.capacityCache = { snapshot, expiresAt: now + CAPACITY_CACHE_TTL_MS };
+      return snapshot;
+    } catch {
+      return null;
+    }
+  }
+
   getUserPosition(address: string) {
     const mockShares = BigInt(Math.floor(30_000 * 1e7));
     const usdcValue = Number(mockShares) * mockPool.sharePrice;
@@ -222,8 +272,6 @@ export class PoolService {
     return Array.from({ length: 30 }, (_, i) => ({
       date: new Date(Date.now() - i * 86400000).toISOString().split("T")[0],
       premiums: (4_000 + Math.random() * 12_000).toFixed(0),
-      payouts: Math.random() > 0.9 ? (5_000 + Math.random() * 30_000).toFixed(0) : "0",
-      apyBps: Math.floor(700 + Math.random() * 400),
-    }));
-  }
-}
+      payouts: Math.random() > 0.9 ? (5_000
+
+/* … truncated 113 chars — edit only what you need near the top … */
