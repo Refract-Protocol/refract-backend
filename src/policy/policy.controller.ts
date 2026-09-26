@@ -1,5 +1,9 @@
 import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+import {
+  BuyPolicyResponseDto,
+  PolicyResponseDto,
+} from "./dto/policy.response";
 import { PolicyService } from "./policy.service";
 
 @Controller("api/v1/policies")
@@ -30,18 +34,27 @@ export class PolicyController {
 
   @Get("holder/:address")
   findByHolder(@Param("address") address: string) {
-    return { policies: this.policyService.findByHolder(address) };
+    return {
+      policies: this.policyService
+        .findByHolder(address)
+        .map((policy) => PolicyResponseDto.from(policy)),
+    };
   }
 
   @Get(":id")
   findById(@Param("id") id: string) {
     const policy = this.policyService.findById(id);
     if (!policy) throw new NotFoundException({ error: "Policy not found" });
-    return { policy };
+    return { policy: PolicyResponseDto.from(policy) };
   }
 
   @Post("buy")
-  buy(@Body() dto: BuyPolicyDto) {
-    return this.policyService.buy(dto);
+  buy(@Body() dto: BuyPolicyDto): BuyPolicyResponseDto {
+    const result = this.policyService.buy(dto);
+    return Object.assign(new BuyPolicyResponseDto(), {
+      policyId: result.policyId,
+      txXdr: result.txXdr,
+      policy: PolicyResponseDto.from(result.policy),
+    });
   }
 }

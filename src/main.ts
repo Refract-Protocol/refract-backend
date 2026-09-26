@@ -2,7 +2,8 @@ import "reflect-metadata";
 import helmet from "helmet";
 import { NestFactory } from "@nestjs/core";
 import { ConfigService } from "@nestjs/config";
-import { ValidationPipe } from "@nestjs/common";
+import { ClassSerializerInterceptor, ValidationPipe } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
 import { WsAdapter } from "@nestjs/platform-ws";
 import { AppModule } from "./app.module";
 import { winstonLogger } from "./common/logger";
@@ -22,6 +23,15 @@ async function bootstrap() {
       whitelist: true,
       transform: true,
       forbidNonWhitelisted: true,
+    })
+  );
+  // Response DTOs govern what leaves the API: with `excludeAll`, only fields
+  // explicitly decorated with `@Expose()` are serialized, so a new internal
+  // field is invisible by default and must be deliberately exposed.
+  app.useGlobalInterceptors(
+    new ClassSerializerInterceptor(app.get(Reflector), {
+      strategy: "excludeAll",
+      excludeExtraneousValues: true,
     })
   );
   // Use the plain `ws` protocol adapter (not Nest's default socket.io) so
