@@ -54,10 +54,12 @@ CREATE TABLE claims (
   policy_id       UUID            NOT NULL REFERENCES policies(id),
   holder          VARCHAR(56)     NOT NULL,
   coverage_type   coverage_type   NOT NULL,
-  payout          NUMERIC(30, 0)  NOT NULL,
+  payout          NUMERIC(30, 0)  NOT NULL,            -- authoritative (on-chain actual when known)
+  expected_payout NUMERIC(30, 0)  NOT NULL,            -- locally-computed expectation for reconciliation
   trigger_value   NUMERIC(20, 6)  NOT NULL,    -- oracle value that triggered
   trigger_source  VARCHAR(40)     NOT NULL,
   tx_hash         VARCHAR(64),
+  payout_discrepancy BOOLEAN      NOT NULL DEFAULT false,
   processed_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 

@@ -11,6 +11,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { mapSorobanErrorToHttp } from "../stellar/soroban-http";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
@@ -47,13 +49,14 @@ export interface PremiumHistoryEntry {
 
 @Injectable()
 export class PoolService {
-  private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly sorobanRpc: SorobanRpcService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
-    this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
   }
@@ -70,7 +73,7 @@ export class PoolService {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
     }
     try {
-      const sourceAccount = await this.server.getAccount(sourcePublicKey);
+      const sourceAccount = await this.sorobanRpc.getAccount(sourcePublicKey);
       const contract = new Contract(this.poolContractId);
       const operation = contract.call(method, ...args);
 
@@ -86,11 +89,13 @@ export class PoolService {
       // fees/footprint — surfaces contract-level rejections (e.g.
       // InsufficientCapacity, CapitalLocked) as part of building the tx,
       // rather than only after the caller signs and submits it.
-      const preparedTx = await this.server.prepareTransaction(builtTx);
+      const preparedTx = await this.sorobanRpc.prepareTransaction(builtTx, {
+        autoRestore: false,
+        restoreSourcePublicKey: sourcePublicKey,
+      });
       return preparedTx.toXDR();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to build Soroban transaction: ${message}` });
+      mapSorobanErrorToHttp(err, "Failed to build Soroban transaction");
     }
   }
 
@@ -105,7 +110,7 @@ export class PoolService {
       return null;
     }
     try {
-      const sourceAccount = await this.server.getAccount(provider);
+      const sourceAccount = await this.sorobanRpc.getAccount(provider);
       const contract = new Contract(this.poolContractId);
       const tx = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -115,15 +120,17 @@ export class PoolService {
         .setTimeout(30)
         .build();
 
-      const sim = await this.server.simulateTransaction(tx);
-      if (rpc.Api.isSimulationError(sim)) {
-        throw new Error(sim.error);
+      const sim = await this.sorobanRpc.simulateTransaction(tx, {
+        autoRestore: false,
+        restoreSourcePublicKey: provider,
+      });
+      if (!rpc.Api.isSimulationSuccess(sim)) {
+        return null;
       }
       const value = scValToNative(sim.result!.retval);
       return value === null ? null : BigInt(value as bigint);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to read lockup status: ${message}` });
+      mapSorobanErrorToHttp(err, "Failed to read lockup status");
     }
   }
 

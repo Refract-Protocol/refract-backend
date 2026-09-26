@@ -12,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { PoolService } from "./pool.service";
 
 // Mirrors the module-private `mockPool` constants in pool.service.ts.
@@ -37,9 +38,22 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     policyContractId: "",
     oracleContractId: "",
     relayerSecret: "",
+    rpcTimeoutMs: 10000,
+    rpcMaxRetries: 3,
+    restoreFeeCeiling: "5000000",
+    restoreMaxAttemptsPerPolicy: 3,
+    ttlExtensionLedgers: 17280,
+    proactiveTtlExtendWithinDays: 30,
     ...overrides,
   };
-  return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+  return {
+    get: jest.fn((key: string) => (key === "stellar" ? stellar : undefined)),
+  } as unknown as ConfigService<AppConfig, true>;
+}
+
+function createPoolService(overrides: Partial<AppConfig["stellar"]> = {}): PoolService {
+  const config = buildConfig(overrides);
+  return new PoolService(config, new SorobanRpcService(config));
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -55,7 +69,26 @@ function decodeInvocation(txXdr: string) {
 
 /** A minimal simulateTransaction success response carrying just a return value. */
 function simulateSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionResponse {
-  return { result: { retval, auth: [] } } as unknown as rpc.Api.SimulateTransactionResponse;
+  return {
+    _parsed: true,
+    id: "test",
+    latestLedger: 1,
+    events: [],
+    transactionData: {} as never,
+    minResourceFee: "0",
+    cost: { cpuInsns: "0", memBytes: "0" },
+    result: { retval, auth: [] },
+  } as unknown as rpc.Api.SimulateTransactionResponse;
+}
+
+function simulateContractError(message: string): rpc.Api.SimulateTransactionResponse {
+  return {
+    _parsed: true,
+    id: "test",
+    latestLedger: 1,
+    events: [],
+    error: message,
+  } as unknown as rpc.Api.SimulateTransactionResponse;
 }
 
 describe("PoolService", () => {
@@ -63,7 +96,7 @@ describe("PoolService", () => {
   let provider: string;
 
   beforeEach(() => {
-    service = new PoolService(buildConfig());
+    service = createPoolService();
     provider = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
@@ -146,11 +179,16 @@ describe("PoolService", () => {
     });
 
     it("wraps a Soroban build failure (e.g. simulation rejection) in a BadRequestException", async () => {
+      const fastService = createPoolService({ rpcMaxRetries: 0 });
+      jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(provider, "1"));
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateContractError("simulation failed: InsufficientCapacity"));
       jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockRejectedValue(new Error("InsufficientCapacity"));
       expect.assertions(2);
 
       try {
-        await service.provide({ provider, amount: "100" });
+        await fastService.provide({ provider, amount: "100" });
       } catch (err) {
         expect(err).toBeInstanceOf(BadRequestException);
         const response = (err as BadRequestException).getResponse() as { error: string };
@@ -248,7 +286,7 @@ describe("PoolService", () => {
     });
 
     it("returns null without contacting the network when the pool contract isn't configured", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = createPoolService({ poolContractId: "" });
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       expect(await unconfigured.lockupExpiresAt(provider)).toBeNull();
@@ -273,7 +311,7 @@ describe("PoolService", () => {
 
   describe("unconfigured pool contract", () => {
     it("rejects provide/withdraw with a clear error instead of calling a non-existent contract", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = createPoolService({ poolContractId: "" });
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);
 

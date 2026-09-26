@@ -1,7 +1,8 @@
 import { ConfigService } from "@nestjs/config";
-import { Account, Keypair, StrKey, rpc } from "@stellar/stellar-sdk";
-import { ClaimSettlementService } from "./claim-settlement.service";
+import { Account, Keypair, StrKey, nativeToScVal, rpc, xdr } from "@stellar/stellar-sdk";
+import { ClaimSettlementService, decodePoolErrorMessage } from "./claim-settlement.service";
 import { AppConfig } from "../config/configuration";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
   const stellar: AppConfig["stellar"] = {
@@ -12,12 +13,44 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     policyContractId: "",
     oracleContractId: "",
     relayerSecret: Keypair.random().secret(),
+    rpcTimeoutMs: 10000,
+    rpcMaxRetries: 3,
+    restoreFeeCeiling: "5000000",
+    restoreMaxAttemptsPerPolicy: 3,
+    ttlExtensionLedgers: 17280,
+    proactiveTtlExtendWithinDays: 30,
     ...overrides,
   };
-  return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+  return {
+    get: jest.fn((key: string) => (key === "stellar" ? stellar : undefined)),
+  } as unknown as ConfigService<AppConfig, true>;
+}
+
+function createService(overrides: Partial<AppConfig["stellar"]> = {}): ClaimSettlementService {
+  const config = buildConfig(overrides);
+  const rpcSvc = new SorobanRpcService(config);
+  return new ClaimSettlementService(config, rpcSvc);
 }
 
 const PENDING_SEND_RESULT = { status: "PENDING" as const, hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 };
+
+function successTxResponse(returnValue?: ReturnType<typeof nativeToScVal>) {
+  return {
+    status: rpc.Api.GetTransactionStatus.SUCCESS,
+    latestLedger: 2,
+    latestLedgerCloseTime: 2,
+    oldestLedger: 1,
+    oldestLedgerCloseTime: 1,
+    ledger: 2,
+    createdAt: 2,
+    applicationOrder: 1,
+    feeBump: false,
+    envelopeXdr: {} as never,
+    resultXdr: {} as never,
+    resultMetaXdr: {} as never,
+    ...(returnValue !== undefined ? { returnValue } : {}),
+  };
+}
 
 describe("ClaimSettlementService", () => {
   afterEach(() => {
@@ -27,24 +60,24 @@ describe("ClaimSettlementService", () => {
 
   describe("isConfigured", () => {
     it("is false when the pool contract ID is missing", () => {
-      const service = new ClaimSettlementService(buildConfig({ poolContractId: "" }));
+      const service = createService({ poolContractId: "" });
       expect(service.isConfigured()).toBe(false);
     });
 
     it("is false when the relayer secret is missing", () => {
-      const service = new ClaimSettlementService(buildConfig({ relayerSecret: "" }));
+      const service = createService({ relayerSecret: "" });
       expect(service.isConfigured()).toBe(false);
     });
 
     it("is true once both the pool contract ID and relayer secret are set", () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = createService();
       expect(service.isConfigured()).toBe(true);
     });
   });
 
   describe("settleClaim", () => {
     it("returns settled:false without touching the network when unconfigured", async () => {
-      const service = new ClaimSettlementService(buildConfig({ poolContractId: "" }));
+      const service = createService({ poolContractId: "" });
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       const result = await service.settleClaim("policy-1", Keypair.random().publicKey(), 100n);
@@ -55,37 +88,77 @@ describe("ClaimSettlementService", () => {
     });
 
     it("builds, signs, submits, and confirms a successful settlement", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = createService();
+      const holder = Keypair.random().publicKey();
+      const payout = 5_000_000_000n;
+
+      jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
+      jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+      jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
+      jest.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue(
+        successTxResponse(nativeToScVal(payout, { type: "i128" }))
+      );
+
+      const result = await service.settleClaim("policy-1", holder, payout);
+
+      expect(result).toEqual({ settled: true, txHash: "mock-tx-hash", actualPayout: payout });
+    });
+
+    it("decodes large i128 actualPayout values", async () => {
+      const service = createService();
+      const holder = Keypair.random().publicKey();
+      const payout = 9_007_199_254_740_993n;
+
+      jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
+      jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+      jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
+      jest.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue(
+        successTxResponse(nativeToScVal(payout, { type: "i128" }))
+      );
+
+      const result = await service.settleClaim("policy-1", holder, payout);
+
+      expect(result.settled).toBe(true);
+      expect(result.actualPayout).toBe(payout);
+    });
+
+    it("settles with null actualPayout when returnValue is omitted", async () => {
+      const service = createService();
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
-      // prepareTransaction normally simulates against a live network and
-      // fills in Soroban resource fees — that's SDK behavior, not this
-      // service's logic, so it's short-circuited to identity here.
       jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
       jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
-      jest.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue({
-        status: rpc.Api.GetTransactionStatus.SUCCESS,
-        latestLedger: 2,
-        latestLedgerCloseTime: 2,
-        oldestLedger: 1,
-        oldestLedgerCloseTime: 1,
-        ledger: 2,
-        createdAt: 2,
-        applicationOrder: 1,
-        feeBump: false,
-        envelopeXdr: {} as never,
-        resultXdr: {} as never,
-        resultMetaXdr: {} as never,
-      });
+      jest.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue(successTxResponse());
 
-      const result = await service.settleClaim("policy-1", holder, 5_000_000_000n);
+      const result = await service.settleClaim("policy-1", holder, 100n);
 
-      expect(result).toEqual({ settled: true, txHash: "mock-tx-hash" });
+      expect(result).toEqual({ settled: true, txHash: "mock-tx-hash", actualPayout: null });
+    });
+
+    it("maps PoolError-style return values to actionable errors", async () => {
+      const service = createService();
+      const holder = Keypair.random().publicKey();
+      const errReturn = xdr.ScVal.scvMap([
+        new xdr.ScMapEntry({
+          key: xdr.ScVal.scvSymbol("error"),
+          val: xdr.ScVal.scvU32(6),
+        }),
+      ]);
+
+      jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
+      jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+      jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
+      jest.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue(successTxResponse(errReturn));
+
+      const result = await service.settleClaim("policy-1", holder, 100n);
+
+      expect(result.settled).toBe(false);
+      expect(result.error).toContain("PolicyNotFound");
     });
 
     it("does not settle when the submission is rejected outright", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = createService();
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
@@ -103,7 +176,7 @@ describe("ClaimSettlementService", () => {
     });
 
     it("does not settle when the submitted transaction fails on-chain", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = createService();
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
@@ -131,7 +204,7 @@ describe("ClaimSettlementService", () => {
 
     it("gives up and reports a timeout once confirmation polling is exhausted", async () => {
       jest.useFakeTimers();
-      const service = new ClaimSettlementService(buildConfig());
+      const service = createService();
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
@@ -153,7 +226,7 @@ describe("ClaimSettlementService", () => {
     });
 
     it("catches an unexpected error (e.g. a network failure) and reports settled:false", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = createService({ rpcMaxRetries: 0 });
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockRejectedValue(new Error("connection refused"));
@@ -162,6 +235,12 @@ describe("ClaimSettlementService", () => {
 
       expect(result.settled).toBe(false);
       expect(result.error).toBe("connection refused");
+    });
+  });
+
+  describe("decodePoolErrorMessage", () => {
+    it("maps numeric PoolError codes", () => {
+      expect(decodePoolErrorMessage("error code: 6")).toContain("PolicyNotFound");
     });
   });
 });

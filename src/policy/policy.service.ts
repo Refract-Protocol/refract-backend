@@ -14,6 +14,8 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { mapSorobanErrorToHttp } from "../stellar/soroban-http";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
@@ -141,13 +143,14 @@ export class PolicyService {
   // follow-up PR that wires the app onto src/db/schema.sql.
   private readonly policies = new Map<string, StoredPolicy>();
 
-  private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly sorobanRpc: SorobanRpcService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
-    this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
   }
@@ -202,7 +205,7 @@ export class PolicyService {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
     }
     try {
-      const sourceAccount = await this.server.getAccount(holder);
+      const sourceAccount = await this.sorobanRpc.getAccount(holder);
       const contract = new Contract(this.poolContractId);
       const operation = contract.call("buy_policy", new Address(holder).toScVal(), paramsScVal);
 
@@ -214,11 +217,13 @@ export class PolicyService {
         .setTimeout(30)
         .build();
 
-      const preparedTx = await this.server.prepareTransaction(builtTx);
+      const preparedTx = await this.sorobanRpc.prepareTransaction(builtTx, {
+        autoRestore: false,
+        restoreSourcePublicKey: holder,
+      });
       return preparedTx.toXDR();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to build Soroban transaction: ${message}` });
+      mapSorobanErrorToHttp(err, "Failed to build Soroban transaction");
     }
   }
 
@@ -255,9 +260,12 @@ export class PolicyService {
         .setTimeout(30)
         .build();
 
-      const sim = await this.server.simulateTransaction(tx);
-      if (rpc.Api.isSimulationError(sim)) {
-        throw new Error(sim.error);
+      const sim = await this.sorobanRpc.simulateTransaction(tx, {
+        autoRestore: false,
+        restoreSourcePublicKey: dummySource.accountId(),
+      });
+      if (!rpc.Api.isSimulationSuccess(sim)) {
+        return null;
       }
       const config = scValToNative(sim.result!.retval) as {
         min_coverage: bigint;
@@ -266,8 +274,7 @@ export class PolicyService {
       if (!config) return null;
       return { minCoverage: config.min_coverage, maxCoverage: config.max_coverage };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to read pool config: ${message}` });
+      mapSorobanErrorToHttp(err, "Failed to read pool config");
     }
   }
 

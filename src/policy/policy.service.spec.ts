@@ -12,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { PolicyService } from "./policy.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
@@ -27,9 +28,17 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     policyContractId: "",
     oracleContractId: "",
     relayerSecret: "",
+    rpcTimeoutMs: 10000,
+    rpcMaxRetries: 3,
+    restoreFeeCeiling: "5000000",
+    restoreMaxAttemptsPerPolicy: 3,
+    ttlExtensionLedgers: 17280,
+    proactiveTtlExtendWithinDays: 30,
     ...overrides,
   };
-  return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+  return {
+    get: jest.fn((key: string) => (key === "stellar" ? stellar : undefined)),
+  } as unknown as ConfigService<AppConfig, true>;
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -55,7 +64,26 @@ function buildDto(holder: string, overrides: Partial<BuyPolicyDto> = {}): BuyPol
 
 /** A minimal simulateTransaction success response carrying just a return value. */
 function simulateSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionResponse {
-  return { result: { retval, auth: [] } } as unknown as rpc.Api.SimulateTransactionResponse;
+  return {
+    _parsed: true,
+    id: "test",
+    latestLedger: 1,
+    events: [],
+    transactionData: {} as never,
+    minResourceFee: "0",
+    cost: { cpuInsns: "0", memBytes: "0" },
+    result: { retval, auth: [] },
+  } as unknown as rpc.Api.SimulateTransactionResponse;
+}
+
+function simulateContractError(message: string): rpc.Api.SimulateTransactionResponse {
+  return {
+    _parsed: true,
+    id: "test",
+    latestLedger: 1,
+    events: [],
+    error: message,
+  } as unknown as rpc.Api.SimulateTransactionResponse;
 }
 
 /** Mirrors refract-contracts' PoolConfig struct — only min/max coverage matter to this service. */
@@ -92,7 +120,8 @@ describe("PolicyService", () => {
   let holder: string;
 
   beforeEach(() => {
-    service = new PolicyService(buildConfig());
+    const config = buildConfig();
+    service = new PolicyService(config, new SorobanRpcService(config));
     holder = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
@@ -278,6 +307,9 @@ describe("PolicyService", () => {
     });
 
     it("wraps a Soroban build failure (e.g. simulation rejection) in a BadRequestException", async () => {
+      jest
+        .spyOn(rpc.Server.prototype, "simulateTransaction")
+        .mockResolvedValue(simulateContractError("simulation failed: InsufficientCapacity"));
       jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockRejectedValue(new Error("InsufficientCapacity"));
       expect.assertions(2);
 

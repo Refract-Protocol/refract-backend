@@ -16,35 +16,58 @@ function buildResult(overrides: Partial<ClaimResult> = {}): ClaimResult {
   };
 }
 
+function buildClaimServiceMock(overrides: Partial<jest.Mocked<ClaimService>> = {}) {
+  return {
+    processTriggered: jest.fn().mockResolvedValue([buildResult()]),
+    tryBeginScan: jest.fn().mockReturnValue(true),
+    endScan: jest.fn(),
+    ...overrides,
+  } as unknown as jest.Mocked<ClaimService>;
+}
+
 describe("ClaimScheduler", () => {
   describe("scanAndSettle", () => {
     it("calls processTriggered() and does not throw when it settles claims", async () => {
-      const claimService = {
-        processTriggered: jest.fn().mockResolvedValue([buildResult()]),
-      } as unknown as jest.Mocked<ClaimService>;
+      const claimService = buildClaimServiceMock();
       const scheduler = new ClaimScheduler(claimService);
 
       await scheduler.scanAndSettle();
 
+      expect(claimService.tryBeginScan).toHaveBeenCalledTimes(1);
       expect(claimService.processTriggered).toHaveBeenCalledTimes(1);
+      expect(claimService.endScan).toHaveBeenCalledTimes(1);
     });
 
     it("does not throw when nothing settles this tick", async () => {
-      const claimService = {
+      const claimService = buildClaimServiceMock({
         processTriggered: jest.fn().mockResolvedValue([]),
-      } as unknown as jest.Mocked<ClaimService>;
+      });
       const scheduler = new ClaimScheduler(claimService);
 
       await expect(scheduler.scanAndSettle()).resolves.toBeUndefined();
+      expect(claimService.endScan).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips the tick when tryBeginScan returns false (overlapping scan)", async () => {
+      const claimService = buildClaimServiceMock({
+        tryBeginScan: jest.fn().mockReturnValue(false),
+      });
+      const scheduler = new ClaimScheduler(claimService);
+
+      await scheduler.scanAndSettle();
+
+      expect(claimService.processTriggered).not.toHaveBeenCalled();
+      expect(claimService.endScan).not.toHaveBeenCalled();
     });
 
     it("catches and logs an error from processTriggered() instead of throwing", async () => {
-      const claimService = {
+      const claimService = buildClaimServiceMock({
         processTriggered: jest.fn().mockRejectedValue(new Error("oracle sources unreachable")),
-      } as unknown as jest.Mocked<ClaimService>;
+      });
       const scheduler = new ClaimScheduler(claimService);
 
       await expect(scheduler.scanAndSettle()).resolves.toBeUndefined();
+      expect(claimService.endScan).toHaveBeenCalledTimes(1);
     });
   });
 });

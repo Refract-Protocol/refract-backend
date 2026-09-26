@@ -9,6 +9,7 @@ import { PoolModule } from "./pool/pool.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { ClaimModule } from "./claim/claim.module";
 import { TxModule } from "./tx/tx.module";
+import { StellarModule } from "./stellar/stellar.module";
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { TxModule } from "./tx/tx.module";
       load: [configuration],
     }),
     ScheduleModule.forRoot(),
+    StellarModule,
     HealthModule,
     QuoteModule,
     PolicyModule,

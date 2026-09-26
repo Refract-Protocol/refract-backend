@@ -5,6 +5,10 @@ import { ClaimService } from "./claim.service";
 /**
  * Auto-processes triggered policies every 5 minutes — same cadence as the
  * setInterval loop that used to live in src/index.ts.
+ *
+ * Overlapping runs are skipped: if processTriggered is still in flight when
+ * the next @Interval fires, we log a warning and return rather than stacking
+ * concurrent scans.
  */
 @Injectable()
 export class ClaimScheduler {
@@ -14,6 +18,9 @@ export class ClaimScheduler {
 
   @Interval(300_000)
   async scanAndSettle(): Promise<void> {
+    if (!this.claimService.tryBeginScan()) {
+      return;
+    }
     try {
       const processed = await this.claimService.processTriggered();
       if (processed.length > 0) {
@@ -21,6 +28,8 @@ export class ClaimScheduler {
       }
     } catch (err) {
       this.logger.error("Claim processor error", err instanceof Error ? err.stack : String(err));
+    } finally {
+      this.claimService.endScan();
     }
   }
 }

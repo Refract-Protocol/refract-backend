@@ -23,6 +23,22 @@ export interface AppConfig {
     policyContractId: string;
     oracleContractId: string;
     relayerSecret: string;
+    /** Per-RPC-call timeout (ms). */
+    rpcTimeoutMs: number;
+    /** Max retries for transient RPC failures (sendTransaction always 0). */
+    rpcMaxRetries: number;
+    /** Max stroops the relayer will pay for a single RestoreFootprint. */
+    restoreFeeCeiling: string;
+    /** Cap automatic restores per policy across scheduler scans. */
+    restoreMaxAttemptsPerPolicy: number;
+    /** Ledgers to extend when proactively bumping TTL. */
+    ttlExtensionLedgers: number;
+    /**
+     * When a policy's remaining life is within this many days, the relayer
+     * may submit ExtendFootprintTTL so archival can't race settlement.
+     * Testnet vs mainnet TTL windows differ — keep this config-driven.
+     */
+    proactiveTtlExtendWithinDays: number;
   };
   oracles: {
     coingeckoBaseUrl: string;
@@ -30,6 +46,15 @@ export interface AppConfig {
     defiLlamaBaseUrl: string;
     defiLlamaProtocolSlug: string;
     httpTimeoutMs: number;
+  };
+  claims: {
+    /** Max parallel oracle/evaluate workers in a claim scan. */
+    scanConcurrency: number;
+    /**
+     * Allowed |actual - expected| payout delta before logging a discrepancy.
+     * Default "0" = exact equality.
+     */
+    payoutMismatchTolerance: string;
   };
 }
 
@@ -50,6 +75,13 @@ export default (): AppConfig => ({
     policyContractId: process.env.REFRACT_POLICY_CONTRACT_ID || "",
     oracleContractId: process.env.REFRACT_ORACLE_CONTRACT_ID || "",
     relayerSecret: process.env.ORACLE_RELAYER_SECRET || "",
+    rpcTimeoutMs: parseInt(process.env.SOROBAN_RPC_TIMEOUT_MS || "10000", 10),
+    rpcMaxRetries: parseInt(process.env.SOROBAN_RPC_MAX_RETRIES || "3", 10),
+    // ~0.5 XLM in stroops — restore fees above this are rejected and alerted.
+    restoreFeeCeiling: process.env.SOROBAN_RESTORE_FEE_CEILING || "5000000",
+    restoreMaxAttemptsPerPolicy: parseInt(process.env.SOROBAN_RESTORE_MAX_ATTEMPTS || "3", 10),
+    ttlExtensionLedgers: parseInt(process.env.SOROBAN_TTL_EXTENSION_LEDGERS || "17280", 10),
+    proactiveTtlExtendWithinDays: parseInt(process.env.SOROBAN_PROACTIVE_TTL_EXTEND_DAYS || "30", 10),
   },
   oracles: {
     coingeckoBaseUrl: process.env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",
@@ -61,5 +93,9 @@ export default (): AppConfig => ({
     // the drop-detection logic has real data to run against.
     defiLlamaProtocolSlug: process.env.DEFILLAMA_PROTOCOL_SLUG || "aave",
     httpTimeoutMs: parseInt(process.env.ORACLE_HTTP_TIMEOUT_MS || "5000", 10),
+  },
+  claims: {
+    scanConcurrency: parseInt(process.env.CLAIM_SCAN_CONCURRENCY || "8", 10),
+    payoutMismatchTolerance: process.env.CLAIM_PAYOUT_MISMATCH_TOLERANCE || "0",
   },
 });
