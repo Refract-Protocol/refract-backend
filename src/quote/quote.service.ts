@@ -1,6 +1,13 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { CoverageTypeName } from "./coverage-type";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
+import {
+  BPS_DENOMINATOR,
+  DAYS_PER_YEAR,
+  FIXED_POINT_SCALE,
+  formatPercent,
+  mulBps,
+} from "../common/fixed-point";
 
 /**
  * Narrow view of pool state a quote needs to assess capacity.
@@ -70,12 +77,16 @@ export interface CoverageTypeInfo {
   riskMultiplier: number;
 }
 
-const RISK_MULTIPLIERS: Record<CoverageTypeName, number> = {
-  [CoverageTypeName.StablecoinDepeg]: 1.0,
-  [CoverageTypeName.MarketCrash]: 1.5,
-  [CoverageTypeName.LiquidationShield]: 2.0,
-  [CoverageTypeName.SmartContractRisk]: 3.0,
-  [CoverageTypeName.FlightDelay]: 0.8,
+/**
+ * Risk multipliers as scaled integers where 10000 = 1.0x.
+ * Kept in lockstep with PolicyService so quote and purchase agree exactly.
+ */
+export const RISK_MULTIPLIERS_BPS: Record<CoverageTypeName, bigint> = {
+  [CoverageTypeName.StablecoinDepeg]: 10_000n, // 1.0x
+  [CoverageTypeName.MarketCrash]: 15_000n, // 1.5x
+  [CoverageTypeName.LiquidationShield]: 20_000n, // 2.0x
+  [CoverageTypeName.SmartContractRisk]: 30_000n, // 3.0x
+  [CoverageTypeName.FlightDelay]: 8_000n, // 0.8x
 };
 
 const DEFAULT_THRESHOLDS: Record<CoverageTypeName, number> = {
@@ -86,7 +97,8 @@ const DEFAULT_THRESHOLDS: Record<CoverageTypeName, number> = {
   [CoverageTypeName.FlightDelay]: 120, // 2 hours
 };
 
-const BASE_RATE = 0.03; // 3% annual base premium
+/** 3% annual base premium, expressed in basis points. */
+export const BASE_RATE_BPS = 300n;
 
 const COVERAGE_TYPES: CoverageTypeInfo[] = [
   {
@@ -136,16 +148,36 @@ const COVERAGE_TYPES: CoverageTypeInfo[] = [
   },
 ];
 
-const BASE_UNITS = 10_000_000n; // 1e7 base units per whole unit
+const BASE_UNITS = FIXED_POINT_SCALE; // 1e7 base units per whole unit
+
+/**
+ * Exact premium in 1e7 fixed-point base units.
+ *
+ * annual = coverage * BASE_RATE_BPS * riskBps / (10000 * 10000)
+ * premium = annual * durationDays / 365
+ *
+ * All multiplication happens before any division, and the single final
+ * division rounds down (favourable to the pool). Shared with PolicyService
+ * so quote and purchase produce identical premiums.
+ */
+export function calcPremiumFixed(
+  coverageAmount: bigint,
+  coverageType: CoverageTypeName,
+  durationDays: number,
+): bigint {
+  const riskBps = RISK_MULTIPLIERS_BPS[coverageType];
+  const annual = mulBps(mulBps(coverageAmount, BASE_RATE_BPS), riskBps);
+  return (annual * BigInt(durationDays)) / DAYS_PER_YEAR;
+}
 
 @Injectable()
 export class QuoteService {
   constructor(private readonly poolCapacity: PoolCapacityProvider) {}
 
   private calcPremium(coverageAmount: number, coverageType: CoverageTypeName, durationDays: number): number {
-    const annualPremium = coverageAmount * BASE_RATE * RISK_MULTIPLIERS[coverageType];
-    const dailyPremium = annualPremium / 365;
-    return parseFloat((dailyPremium * durationDays).toFixed(4));
+    const coverageFixed = BigInt(Math.round(coverageAmount)) * BASE_UNITS;
+    const premiumFixed = calcPremiumFixed(coverageFixed, coverageType, durationDays);
+    return Number(premiumFixed) / Number(BASE_UNITS);
   }
 
   private assessCapacity(
@@ -208,7 +240,9 @@ export class QuoteService {
       });
     }
 
-    const premium = this.calcPremium(coverageAmount, coverageType, durationDays);
+    const coverageFixed = BigInt(Math.round(coverageAmount)) * BASE_UNITS;
+    const premiumFixed = calcPremiumFixed(coverageFixed, coverageType, durationDays);
+    const premium = Number(premiumFixed) / Number(BASE_UNITS);
 
     let snapshot: PoolCapacitySnapshot | null = null;
     try {
@@ -225,7 +259,7 @@ export class QuoteService {
       coverageType,
       coverageAmount,
       premium,
-      premiumPct: ((premium / coverageAmount) * 100).toFixed(4),
+      premiumPct: formatPercent(premiumFixed, coverageFixed),
       durationDays,
       triggerThreshold: triggerThreshold ?? DEFAULT_THRESHOLDS[coverageType],
       expiresAt: new Date(Date.now() + durationDays * 86_400_000).toISOString(),
@@ -234,7 +268,7 @@ export class QuoteService {
       withinCapacity: assessment ? assessment.withinCapacity : null,
       capacityReason: assessment
         ? assessment.reason
-        : "Pool state unavailable; capacity could not be assessed",
+        : "Pool capacity could not be determined",
       capacityReadAt: snapshot ? snapshot.readAt : null,
     };
   }
