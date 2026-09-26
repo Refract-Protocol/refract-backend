@@ -7,6 +7,45 @@ import { ClaimResult } from "./claim-result";
 
 const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
 
+/** Per-policy outcome of a scan, including dry-run evaluations. */
+export interface ScanPolicyResult {
+  policyId: string;
+  holder: string;
+  coverageType: number;
+  triggered: boolean;
+  reason: string;
+  oracleValue: number;
+  oracleThreshold: number;
+  oracleMessage: string;
+  settled: boolean;
+  settlementTxHash?: string;
+  error?: string;
+}
+
+/** Structured result of a single scan run (manual or scheduled). */
+export interface ScanRunResult {
+  dryRun: boolean;
+  startedAt: number;
+  durationMs: number;
+  scanned: number;
+  triggered: number;
+  settled: number;
+  failed: number;
+  results: ScanPolicyResult[];
+}
+
+/** A recorded scan run for the ops scan-history endpoint. */
+export interface ScanHistoryEntry {
+  dryRun: boolean;
+  startedAt: number;
+  durationMs: number;
+  scanned: number;
+  triggered: number;
+  settled: number;
+  failed: number;
+  errors: string[];
+}
+
 /**
  * ClaimService scans active policies for triggered conditions and settles
  * payouts. This is a migration of src/services/claimProcessor.ts, with one
@@ -30,6 +69,10 @@ export class ClaimService {
   // PolicyService's in-memory store; replaced together once the
   // Postgres-backed repository lands.
   private readonly history: ClaimResult[] = [];
+  // Guards against overlapping scans (scheduled or manual).
+  private scanInProgress = false;
+  // Recent scan runs for the ops scan-history endpoint.
+  private readonly scanHistory: ScanHistoryEntry[] = [];
 
   constructor(
     private readonly policyService: PolicyService,
@@ -37,31 +80,172 @@ export class ClaimService {
     private readonly claimSettlementService: ClaimSettlementService
   ) {}
 
+  /** True while a scan (scheduled or manual) is running. */
+  isScanInProgress(): boolean {
+    return this.scanInProgress;
+  }
+
   async processTriggered(): Promise<ClaimResult[]> {
-    const activePolicies = this.policyService.listActive();
-    const settled: ClaimResult[] = [];
-    if (activePolicies.length === 0) return settled;
+    const run = await this.runScan(false);
+    return run.results
+      .filter((r) => r.settled)
+      .map((r) => ({
+        policyId: r.policyId,
+        holder: r.holder,
+        coverageType: r.coverageType,
+        triggered: r.triggered,
+        payout: r.triggered ? this.policyService.getById(r.policyId)?.coverageAmount ?? "0" : "0",
+        reason: r.reason,
+        processedAt: run.startedAt,
+        settlementTxHash: r.settlementTxHash,
+      }));
+  }
 
-    this.logger.log(`Scanning ${activePolicies.length} active polic${activePolicies.length === 1 ? "y" : "ies"}`);
-
-    for (const policy of activePolicies) {
-      try {
-        const fetchedAt = Math.floor(Date.now() / 1000);
-        const oracle = await this.fetchOracleData(policy);
-        const result = this.evaluatePolicy(policy, oracle, fetchedAt);
-        if (result.triggered) {
-          // Only counted/deactivated once the on-chain payout actually
-          // confirms — a failed or unconfirmed settlement leaves the
-          // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result);
-          if (settledResult) settled.push(settledResult);
-        }
-      } catch (err) {
-        this.logger.error(`Error scanning policy ${policy.id}`, err instanceof Error ? err.stack : String(err));
+  /**
+   * Mode-aware scan body shared by the scheduled scan and the ops endpoints.
+   * When `dryRun` is true every active policy is evaluated through exactly the
+   * same path as a real scan, but no settlement is submitted and no policy is
+   * deactivated — making it provably side-effect-free.
+   */
+  async runScan(dryRun: boolean): Promise<ScanRunResult> {
+    if (this.scanInProgress) {
+      throw new Error("SCAN_IN_PROGRESS");
+    }
+    this.scanInProgress = true;
+    const startedAt = Date.now();
+    const results: ScanPolicyResult[] = [];
+    try {
+      const activePolicies = this.policyService.listActive();
+      if (activePolicies.length > 0) {
+        this.logger.log(
+          `${dryRun ? "Dry-run scanning" : "Scanning"} ${activePolicies.length} active polic${
+            activePolicies.length === 1 ? "y" : "ies"
+          }`
+        );
       }
+
+      for (const policy of activePolicies) {
+        results.push(await this.scanPolicy(policy, dryRun));
+      }
+    } finally {
+      this.scanInProgress = false;
     }
 
-    return settled;
+    const run: ScanRunResult = {
+      dryRun,
+      startedAt,
+      durationMs: Date.now() - startedAt,
+      scanned: results.length,
+      triggered: results.filter((r) => r.triggered).length,
+      settled: results.filter((r) => r.settled).length,
+      failed: results.filter((r) => r.error).length,
+      results,
+    };
+    this.recordScan(run);
+    return run;
+  }
+
+  /**
+   * Evaluates a single policy and, unless `dryRun`, attempts settlement.
+   * Returns a structured per-policy result so operators can see the oracle
+   * reading, the trigger decision, and any settlement failure.
+   */
+  async scanPolicy(policy: StoredPolicy, dryRun: boolean): Promise<ScanPolicyResult> {
+    const base: ScanPolicyResult = {
+      policyId: policy.id,
+      holder: policy.holder,
+      coverageType: policy.coverageType,
+      triggered: false,
+      reason: "",
+      oracleValue: 0,
+      oracleThreshold: 0,
+      oracleMessage: "",
+      settled: false,
+    };
+
+    try {
+      const fetchedAt = Math.floor(Date.now() / 1000);
+      const oracle = await this.fetchOracleData(policy);
+      const result = this.evaluatePolicy(policy, oracle, fetchedAt);
+      const evaluated: ScanPolicyResult = {
+        ...base,
+        triggered: result.triggered,
+        reason: result.reason,
+        oracleValue: oracle.value,
+        oracleThreshold: oracle.threshold,
+        oracleMessage: oracle.message,
+      };
+
+      if (!result.triggered || dryRun) return evaluated;
+
+      const settledResult = await this.processPayout(policy, result);
+      if (settledResult) {
+        return { ...evaluated, settled: true, settlementTxHash: settledResult.settlementTxHash };
+      }
+      return { ...evaluated, error: "Settlement did not confirm" };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Error scanning policy ${policy.id}`, err instanceof Error ? err.stack : message);
+      return { ...base, error: message };
+    }
+  }
+
+  private recordScan(run: ScanRunResult): void {
+    this.scanHistory.push({
+      dryRun: run.dryRun,
+      startedAt: run.startedAt,
+      durationMs: run.durationMs,
+      scanned: run.scanned,
+      triggered: run.triggered,
+      settled: run.settled,
+      failed: run.failed,
+      errors: run.results.filter((r) => r.error).map((r) => `${r.policyId}: ${r.error}`),
+    });
+    if (this.scanHistory.length > 50) this.scanHistory.shift();
+  }
+
+  /** Recent scan runs, most recent first. */
+  getScanHistory(limit = 20): ScanHistoryEntry[] {
+    return [...this.scanHistory].reverse().slice(0, limit);
+  }
+
+  /**
+   * Current oracle reading and trigger evaluation for one policy, exposing the
+   * raw value, threshold, comparison direction, and staleness so operators can
+   * diagnose evaluation bugs without reading live-host logs.
+   */
+  async getEvaluation(policyId: string): Promise<{
+    policyId: string;
+    coverageType: number;
+    oracleValue: number;
+    oracleThreshold: number;
+    oracleMessage: string;
+    comparison: "above" | "below";
+    triggered: boolean;
+    reason: string;
+    stalenessSeconds: number;
+    stale: boolean;
+  }> {
+    const policy = this.policyService.getById(policyId);
+    if (!policy) throw new Error("POLICY_NOT_FOUND");
+
+    const fetchedAt = Math.floor(Date.now() / 1000);
+    const oracle = await this.fetchOracleData(policy);
+    const result = this.evaluatePolicy(policy, oracle, fetchedAt);
+    const stalenessSeconds = Math.floor(Date.now() / 1000) - fetchedAt;
+
+    return {
+      policyId: policy.id,
+      coverageType: policy.coverageType,
+      oracleValue: oracle.value,
+      oracleThreshold: oracle.threshold,
+      oracleMessage: oracle.message,
+      comparison: policy.coverageType === 4 ? "above" : "below",
+      triggered: result.triggered,
+      reason: result.reason,
+      stalenessSeconds,
+      stale: stalenessSeconds > STALENESS_LIMIT_SECONDS,
+    };
   }
 
   private async fetchOracleData(policy: StoredPolicy): Promise<OracleReading> {
