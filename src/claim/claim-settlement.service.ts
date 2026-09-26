@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnApplicationShutdown } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
@@ -37,12 +37,21 @@ export interface SettlementResult {
  * before this can settle a real claim.
  */
 @Injectable()
-export class ClaimSettlementService {
+export class ClaimSettlementService implements OnApplicationShutdown {
   private readonly logger = new Logger(ClaimSettlementService.name);
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
   private readonly relayerKeypair: Keypair | null;
+
+  /**
+   * In-flight settlements keyed by the submitted transaction hash. A
+   * settlement is added immediately after sendTransaction() accepts the
+   * transaction and removed once it is confirmed (or has failed). Shutdown
+   * waits on these so a payout that already moved on-chain is never lost
+   * without a record.
+   */
+  private readonly inFlight = new Map<string, Promise<SettlementResult>>();
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
@@ -55,6 +64,44 @@ export class ClaimSettlementService {
   /** True once a pool contract ID and relayer secret are configured. */
   isConfigured(): boolean {
     return Boolean(this.poolContractId && this.relayerKeypair);
+  }
+
+  /**
+   * Graceful-shutdown hook. Waits for any submitted-but-unconfirmed
+   * settlement to finish within the configured grace period. If the period
+   * expires, the pending transaction hash is persisted with a loud warning
+   * so it can be reconciled on restart — a submitted Soroban transaction
+   * cannot be cancelled, so waiting or recording are the only safe options.
+   */
+  async onApplicationShutdown(): Promise<void> {
+    if (this.inFlight.size === 0) {
+      return;
+    }
+
+    const graceMs = this.configService.get("shutdown", { infer: true })?.gracePeriodMs ?? 30_000;
+    this.logger.warn(
+      `Shutdown requested with ${this.inFlight.size} in-flight settlement(s); waiting up to ${graceMs}ms for confirmation`
+    );
+
+    const pending = Array.from(this.inFlight.entries());
+    const drained = await Promise.race([
+      Promise.allSettled(pending.map(([, promise]) => promise)).then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), graceMs)),
+    ]);
+
+    if (drained) {
+      this.logger.log("All in-flight settlements confirmed before shutdown");
+      return;
+    }
+
+    for (const [txHash] of pending) {
+      if (this.inFlight.has(txHash)) {
+        this.logger.error(
+          `PENDING SETTLEMENT NOT CONFIRMED BEFORE SHUTDOWN — tx ${txHash} was submitted on-chain but not confirmed. ` +
+            `Persist this hash and reconcile it on restart; the payout may have moved.`
+        );
+      }
+    }
   }
 
   async settleClaim(policyId: string, holder: string, payout: bigint): Promise<SettlementResult> {
@@ -95,8 +142,22 @@ export class ClaimSettlementService {
         return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
       }
 
-      const confirmation = await pollForConfirmation(this.server, sendResult.hash);
-      return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
+      // The transaction is now submitted on-chain and cannot be cancelled.
+      // Track it so shutdown waits for confirmation (or records the hash).
+      const confirmationPromise = pollForConfirmation(this.server, sendResult.hash).then(
+        (confirmation) => ({
+          settled: confirmation.confirmed,
+          txHash: confirmation.txHash,
+          error: confirmation.error,
+        })
+      );
+      this.inFlight.set(sendResult.hash, confirmationPromise);
+
+      try {
+        return await confirmationPromise;
+      } finally {
+        this.inFlight.delete(sendResult.hash);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
