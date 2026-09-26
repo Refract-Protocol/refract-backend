@@ -29,7 +29,13 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     relayerSecret: "",
     ...overrides,
   };
-  return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+  return {
+    get: jest.fn((key: string) => {
+      if (key === "stellar") return stellar;
+      if (key === "policyPendingTtlMs") return 3_600_000;
+      return undefined;
+    }),
+  } as unknown as ConfigService<AppConfig, true>;
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -156,7 +162,7 @@ describe("PolicyService", () => {
       expect(diff).toBeLessThanOrEqual(1n);
     });
 
-    it("stores an active policy with the expected fields and an unsigned buy_policy invocation", async () => {
+    it("stores a pending policy with pendingTxHash and an unsigned buy_policy invocation", async () => {
       const dto = buildDto(holder, { coverageType: 2, durationDays: 10 });
       const beforeSeconds = Math.floor(Date.now() / 1000);
 
@@ -167,9 +173,15 @@ describe("PolicyService", () => {
       expect(policy.coverageTypeName).toBe("Liquidation Shield");
       expect(policy.coverageAmount).toBe(dto.coverageAmount);
       expect(policy.durationDays).toBe(10);
-      expect(policy.isActive).toBe(true);
+      expect(policy.status).toBe("pending");
+      expect(policy.isActive).toBe(false);
+      expect(policy.onChainPolicyId).toBeNull();
+      expect(policy.pendingTxHash).toEqual(expect.any(String));
+      expect(policy.pendingTxHash!.length).toBeGreaterThan(0);
       expect(policy.expiresAt).toBeGreaterThanOrEqual(beforeSeconds + 10 * 86_400);
-      expect(message).toBe("Sign and submit to activate coverage");
+      expect(message).toContain("pending");
+      // Pending policies must not appear in the claim scan set.
+      expect(service.listActive().map((p) => p.id)).not.toContain(policy.id);
 
       // The built tx must actually invoke RefractPool.buy_policy(holder,
       // PolicyParams{...}) with the PolicyParams struct field-encoded
@@ -186,6 +198,52 @@ describe("PolicyService", () => {
         duration_days: 10,
         trigger_threshold: 500n,
       });
+    });
+
+    it("activates a pending policy from a buy_policy u64 return value, including ids above 2^53", async () => {
+      const { policy, txXdr } = await service.buy(buildDto(holder));
+      const hash = policy.pendingTxHash!;
+      const hugeId = 9_007_199_254_740_993n;
+
+      const activated = service.activateFromBuyConfirmation(hash, nativeToScVal(hugeId, { type: "u64" }));
+
+      expect(activated?.onChainPolicyId).toBe(hugeId.toString(10));
+      expect(activated?.status).toBe("active");
+      expect(activated?.isActive).toBe(true);
+      expect(activated?.pendingTxHash).toBeNull();
+      expect(service.listActive().map((p) => p.id)).toContain(policy.id);
+      // Correlation is by hash — a different hash must not activate.
+      expect(service.activateFromBuyConfirmation("deadbeef", nativeToScVal(1n, { type: "u64" }))).toBeNull();
+      void txXdr;
+    });
+
+    it("sweeps a pending policy past its TTL so it is never claim-scanned", async () => {
+      const shortTtlConfig = buildConfig();
+      (shortTtlConfig.get as jest.Mock).mockImplementation((key: string) => {
+        if (key === "stellar") {
+          return {
+            network: "testnet",
+            sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+            networkPassphrase: NETWORK_PASSPHRASE,
+            poolContractId: POOL_CONTRACT_ID,
+            policyContractId: "",
+            oracleContractId: "",
+            relayerSecret: "",
+          };
+        }
+        if (key === "policyPendingTtlMs") return 1;
+        return undefined;
+      });
+      const shortService = new PolicyService(shortTtlConfig);
+      jest.spyOn(rpc.Server.prototype, "getAccount").mockImplementation(async (id: string) => new Account(id, "1"));
+      jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+      jest.spyOn(rpc.Server.prototype, "simulateTransaction").mockResolvedValue(simulateSuccess(PERMISSIVE_BOUNDS));
+
+      const { policy } = await shortService.buy(buildDto(holder));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(shortService.sweepExpiredPending()).toBeGreaterThanOrEqual(1);
+      expect(shortService.findById(policy.id)).toBeUndefined();
+      expect(shortService.listActive()).toEqual([]);
     });
 
     it("persists triggerParams so ClaimService can read them back for scanning (e.g. flight number)", async () => {
@@ -341,16 +399,20 @@ describe("PolicyService", () => {
   });
 
   describe("lookups and lifecycle", () => {
-    it("findById/findByHolder return a bought policy, and listActive drops it once deactivated", async () => {
+    it("findById/findByHolder return a bought policy, and listActive only after activation", async () => {
       const { policy } = await service.buy(buildDto(holder));
 
       expect(service.findById(policy.id)).toEqual(policy);
       expect(service.findByHolder(holder)).toEqual([policy]);
+      expect(service.listActive().map((p) => p.id)).not.toContain(policy.id);
+
+      service.activateFromBuyConfirmation(policy.pendingTxHash!, nativeToScVal(7n, { type: "u64" }));
       expect(service.listActive().map((p) => p.id)).toContain(policy.id);
 
       service.deactivate(policy.id);
 
       expect(service.findById(policy.id)?.isActive).toBe(false);
+      expect(service.findById(policy.id)?.status).toBe("inactive");
       expect(service.listActive().map((p) => p.id)).not.toContain(policy.id);
     });
 

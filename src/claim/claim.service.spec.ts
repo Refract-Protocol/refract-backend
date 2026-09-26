@@ -7,6 +7,7 @@ import { ClaimSettlementService, SettlementResult } from "./claim-settlement.ser
 function buildPolicy(overrides: Partial<StoredPolicy> = {}): StoredPolicy {
   return {
     id: "policy-1",
+    onChainPolicyId: "42",
     holder: "GABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ12",
     coverageType: 0,
     coverageTypeName: "Stablecoin Depeg",
@@ -14,8 +15,11 @@ function buildPolicy(overrides: Partial<StoredPolicy> = {}): StoredPolicy {
     premium: "3000000",
     durationDays: 30,
     expiresAt: Math.floor(Date.now() / 1000) + 86_400,
+    status: "active",
     isActive: true,
     createdAt: new Date().toISOString(),
+    pendingTxHash: null,
+    pendingExpiresAt: null,
     ...overrides,
   };
 }
@@ -127,8 +131,38 @@ describe("ClaimService", () => {
         payout: "5000000000",
         settlementTxHash: "mock-tx-hash",
       });
-      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(policy.id, policy.holder, 5_000_000_000n);
+      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(42n, {
+        holder: policy.holder,
+        payout: 5_000_000_000n,
+      });
       expect(policyService.deactivate).toHaveBeenCalledWith(policy.id);
+    });
+
+    it("refuses settlement without retry when onChainPolicyId is null", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const policy = buildPolicy({ coverageType: 0, coverageAmount: "5000000000", onChainPolicyId: null });
+      policyService.listActive.mockReturnValue([policy]);
+      oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      const results = await service.processTriggered();
+
+      expect(results).toEqual([]);
+      expect(claimSettlementService.settleClaim).not.toHaveBeenCalled();
+      expect(policyService.deactivate).not.toHaveBeenCalled();
+    });
+
+    it("passes BigInt on-chain ids above 2^53 through to settleClaim exactly", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const huge = "9007199254740993";
+      const policy = buildPolicy({ coverageType: 0, coverageAmount: "1000", onChainPolicyId: huge });
+      policyService.listActive.mockReturnValue([policy]);
+      oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      await service.processTriggered();
+
+      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(BigInt(huge), expect.any(Object));
     });
 
     it("triggers a FlightDelay policy when the delay exceeds threshold (inverted comparison)", async () => {

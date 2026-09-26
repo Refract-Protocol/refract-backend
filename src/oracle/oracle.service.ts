@@ -234,6 +234,7 @@ export class OracleService {
       threshold,
       severity: "low",
       message: `${source} unavailable — degraded to a non-triggering reading`,
+      degraded: true,
     };
   }
 }

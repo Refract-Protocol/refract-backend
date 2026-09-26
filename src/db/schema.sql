@@ -31,7 +31,7 @@ CREATE TABLE pool_snapshots (
 
 CREATE TABLE policies (
   id              UUID            PRIMARY KEY DEFAULT uuid_generate_v4(),
-  policy_id       VARCHAR(32)     UNIQUE,             -- on-chain policy ID
+  policy_id       VARCHAR(20)     UNIQUE,             -- on-chain u64 as decimal string
   holder          VARCHAR(56)     NOT NULL,            -- Stellar address
   coverage_type   coverage_type   NOT NULL,
   coverage_amount NUMERIC(30, 0)  NOT NULL,            -- 1e7 USDC
@@ -39,13 +39,17 @@ CREATE TABLE policies (
   duration_days   SMALLINT        NOT NULL,
   expires_at      TIMESTAMPTZ     NOT NULL,
   trigger_params  JSONB           NOT NULL DEFAULT '{}',
-  is_active       BOOLEAN         NOT NULL DEFAULT true,
+  status          VARCHAR(16)     NOT NULL DEFAULT 'pending', -- pending | active | inactive
+  is_active       BOOLEAN         NOT NULL DEFAULT false,     -- mirror of status = 'active'
+  pending_tx_hash VARCHAR(64)     UNIQUE,
+  pending_expires_at TIMESTAMPTZ,
   created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_policies_holder  ON policies(holder);
 CREATE INDEX idx_policies_type    ON policies(coverage_type);
-CREATE INDEX idx_policies_active  ON policies(is_active, expires_at);
+CREATE INDEX idx_policies_active  ON policies(status, expires_at) WHERE status = 'active';
+
 
 -- ─── Claims ──────────────────────────────────────────────────────────────────
 

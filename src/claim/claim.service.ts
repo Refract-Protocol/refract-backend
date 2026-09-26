@@ -116,12 +116,34 @@ export class ClaimService {
   /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */
   private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<ClaimResult | undefined> {
     this.logger.warn(
-      `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
+      `PAYOUT triggered: policy=${policy.id} onChain=${policy.onChainPolicyId} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
 
-    const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
+    if (policy.onChainPolicyId === null) {
+      // Permanent — retrying forever cannot invent an on-chain id. Do not
+      // leave this on the "will retry next scan" path.
+      this.logger.error(
+        `CLAIM_SETTLEMENT_MISSING_ON_CHAIN_ID policy=${policy.id}: refusing settlement (no buy_policy confirmation yet)`
+      );
+      return undefined;
+    }
+
+    const onChainId = BigInt(policy.onChainPolicyId);
+    const settlement = await this.claimSettlementService.settleClaim(onChainId, {
+      holder: policy.holder,
+      payout: BigInt(result.payout),
+    });
+
     if (!settlement.settled) {
-      this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
+      if (settlement.permanent) {
+        this.logger.error(
+          `Settlement permanently failed for policy ${policy.id}: ${settlement.error} (will not treat as transient retry)`
+        );
+      } else {
+        this.logger.error(
+          `Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`
+        );
+      }
       return undefined;
     }
 

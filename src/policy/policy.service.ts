@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   Account,
@@ -6,6 +6,7 @@ import {
   BASE_FEE,
   Contract,
   Keypair,
+  Transaction,
   TransactionBuilder,
   nativeToScVal,
   rpc,
@@ -15,6 +16,9 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+
+/** Off-chain lifecycle: pending until buy_policy confirms, then active, then inactive after claim/expiry. */
+export type PolicyStatus = "pending" | "active" | "inactive";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
 
@@ -53,7 +57,14 @@ export interface CoverageTypeCatalogEntry {
 }
 
 export interface StoredPolicy {
+  /** Internal off-chain UUID — never sent to process_claim. */
   id: string;
+  /**
+   * On-chain u64 from buy_policy()'s return value, as a decimal string so
+   * values above Number.MAX_SAFE_INTEGER round-trip exactly. Null until
+   * the buy transaction confirms.
+   */
+  onChainPolicyId: string | null;
   holder: string;
   coverageType: number;
   coverageTypeName: string;
@@ -61,8 +72,19 @@ export interface StoredPolicy {
   premium: string;
   durationDays: number;
   expiresAt: number;
+  /** Explicit state machine; listActive() only returns `active`. */
+  status: PolicyStatus;
+  /** Derived convenience: true iff status === "active". */
   isActive: boolean;
   createdAt: string;
+  /**
+   * Hash of the prepared buy_policy envelope (signature-base hash — identical
+   * before and after the holder signs). Used to correlate TxService.submit
+   * confirmations back to this pending record.
+   */
+  pendingTxHash: string | null;
+  /** Wall-clock ms when a pending policy should be swept if never submitted. */
+  pendingExpiresAt: number | null;
   triggerParams?: Record<string, unknown>;
 }
 
@@ -137,19 +159,24 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
 
 @Injectable()
 export class PolicyService {
+  private readonly logger = new Logger(PolicyService.name);
   // In-memory store — replaced by the Postgres-backed repository in a
   // follow-up PR that wires the app onto src/db/schema.sql.
   private readonly policies = new Map<string, StoredPolicy>();
+  /** pendingTxHash → internal policy UUID for confirmation correlation. */
+  private readonly pendingByTxHash = new Map<string, string>();
 
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
+  private readonly pendingTtlMs: number;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
+    this.pendingTtlMs = this.configService.get("policyPendingTtlMs", { infer: true });
   }
 
   /**
@@ -283,19 +310,79 @@ export class PolicyService {
     return this.policies.get(id);
   }
 
-  /** Active, unexpired policies — the pool ClaimService scans for triggers. */
+  /** Active, unexpired policies — the pool ClaimService scans for triggers. Pending never appears. */
   listActive(): StoredPolicy[] {
+    this.sweepExpiredPending();
     const now = Math.floor(Date.now() / 1000);
-    return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
+    return [...this.policies.values()].filter((p) => p.status === "active" && p.expiresAt > now);
   }
 
   /** Marks a policy inactive after a claim has been paid out. */
   deactivate(id: string): void {
     const policy = this.policies.get(id);
     if (policy) {
+      policy.status = "inactive";
       policy.isActive = false;
       this.policies.set(id, policy);
     }
+  }
+
+  /**
+   * Called from TxService once a submitted envelope confirms. Matches by
+   * transaction hash (not trust in the caller), decodes the buy_policy u64
+   * return value, and transitions pending → active.
+   */
+  activateFromBuyConfirmation(txHash: string, returnValue: xdr.ScVal | undefined): StoredPolicy | null {
+    this.sweepExpiredPending();
+    const policyId = this.pendingByTxHash.get(txHash);
+    if (!policyId) {
+      return null;
+    }
+    const policy = this.policies.get(policyId);
+    if (!policy || policy.status !== "pending") {
+      this.pendingByTxHash.delete(txHash);
+      return null;
+    }
+
+    if (returnValue === undefined) {
+      this.logger.error(`buy_policy confirmed (tx=${txHash}) but RPC returned no returnValue for policy ${policyId}`);
+      return null;
+    }
+
+    const native = scValToNative(returnValue);
+    // buy_policy returns u64 — scValToNative yields bigint. Reject anything else.
+    if (typeof native !== "bigint") {
+      this.logger.error(
+        `buy_policy return value for policy ${policyId} was not a u64/bigint (got ${typeof native})`
+      );
+      return null;
+    }
+
+    policy.onChainPolicyId = native.toString(10);
+    policy.status = "active";
+    policy.isActive = true;
+    policy.pendingTxHash = null;
+    policy.pendingExpiresAt = null;
+    this.policies.set(policyId, policy);
+    this.pendingByTxHash.delete(txHash);
+    this.logger.log(
+      `Policy ${policyId} activated with on-chain id ${policy.onChainPolicyId} (tx=${txHash})`
+    );
+    return policy;
+  }
+
+  /** Drop pending policies whose submit window has elapsed (user never submitted, or submitted too late). */
+  sweepExpiredPending(): number {
+    const now = Date.now();
+    let swept = 0;
+    for (const [id, policy] of this.policies) {
+      if (policy.status === "pending" && policy.pendingExpiresAt !== null && policy.pendingExpiresAt <= now) {
+        if (policy.pendingTxHash) this.pendingByTxHash.delete(policy.pendingTxHash);
+        this.policies.delete(id);
+        swept++;
+      }
+    }
+    return swept;
   }
 
   async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
@@ -349,22 +436,6 @@ export class PolicyService {
     const policyId = uuidv4();
     const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
 
-    const policy: StoredPolicy = {
-      id: policyId,
-      holder,
-      coverageType,
-      coverageTypeName: COVERAGE_NAMES[coverageType],
-      coverageAmount,
-      premium: premium.toString(),
-      durationDays,
-      expiresAt,
-      isActive: true,
-      createdAt: new Date().toISOString(),
-      triggerParams,
-    };
-
-    this.policies.set(policyId, policy);
-
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
       coverage,
@@ -373,10 +444,38 @@ export class PolicyService {
     );
     const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
 
+    // Stellar tx hash is over the signature base (excludes signatures), so
+    // the prepared unsigned envelope and the holder-signed submit share
+    // the same hash — safe correlation key for activateFromBuyConfirmation.
+    const pendingTxHash = Buffer.from(
+      (TransactionBuilder.fromXDR(txXdr, this.networkPassphrase) as Transaction).hash()
+    ).toString("hex");
+
+    const policy: StoredPolicy = {
+      id: policyId,
+      onChainPolicyId: null,
+      holder,
+      coverageType,
+      coverageTypeName: COVERAGE_NAMES[coverageType],
+      coverageAmount,
+      premium: premium.toString(),
+      durationDays,
+      expiresAt,
+      status: "pending",
+      isActive: false,
+      createdAt: new Date().toISOString(),
+      pendingTxHash,
+      pendingExpiresAt: Date.now() + this.pendingTtlMs,
+      triggerParams,
+    };
+
+    this.policies.set(policyId, policy);
+    this.pendingByTxHash.set(pendingTxHash, policyId);
+
     return {
       policy,
       txXdr,
-      message: "Sign and submit to activate coverage",
+      message: "Sign and submit to activate coverage — policy stays pending until the buy_policy tx confirms",
     };
   }
 }
