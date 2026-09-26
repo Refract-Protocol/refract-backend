@@ -1,26 +1,20 @@
-import { IsInt, IsObject, IsOptional, IsString, Length, Matches, Max, Min } from "class-validator";
+import { IsEnum, IsInt, IsNumberString, IsOptional, Min } from "class-validator";
+import { IsWithinCoverageLimits } from "../../common/validators/coverage-limits.validator";
+import { CoverageTypeName } from "../../quote/coverage-type";
 
+@IsWithinCoverageLimits()
 export class BuyPolicyDto {
-  @IsString()
-  @Length(56, 56)
-  holder!: string;
+  @IsEnum(CoverageTypeName)
+  coverageType!: CoverageTypeName;
 
-  @IsInt()
-  @Min(0)
-  @Max(4)
-  coverageType!: number;
-
-  /** USDC amount in 1e7 base units, passed as a decimal string to avoid precision loss. */
-  @IsString()
-  @Matches(/^\d+$/)
+  @IsNumberString()
   coverageAmount!: string;
 
   @IsInt()
   @Min(1)
-  @Max(365)
   durationDays!: number;
 
   @IsOptional()
-  @IsObject()
-  triggerParams?: Record<string, unknown>;
+  @IsNumberString()
+  triggerThreshold?: string;
 }
