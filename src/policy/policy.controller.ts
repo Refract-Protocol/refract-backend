@@ -2,7 +2,7 @@ import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/c
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 import { PolicyService } from "./policy.service";
 
-@Controller("api/v1/policies")
+@Controller({ path: "policies", version: "1" })
 export class PolicyController {
   constructor(private readonly policyService: PolicyService) {}
 

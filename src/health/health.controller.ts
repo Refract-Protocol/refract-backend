@@ -1,9 +1,9 @@
 import { Controller, Get } from "@nestjs/common";
 
-@Controller()
+@Controller({ path: "health", version: undefined })
 export class HealthController {
-  @Get("health")
-  check(): { status: string; protocol: string } {
-    return { status: "ok", protocol: "Refract" };
+  @Get()
+  check() {
+    return { status: "ok" };
   }
 }
