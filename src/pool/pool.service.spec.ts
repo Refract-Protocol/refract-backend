@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   Account,
+  BASE_FEE,
   Keypair,
   StrKey,
   Transaction,
@@ -12,6 +13,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { FeeStrategyService } from "../stellar/fee-strategy.service";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { PoolService } from "./pool.service";
 
 // Mirrors the module-private `mockPool` constants in pool.service.ts.
@@ -39,7 +42,31 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     relayerSecret: "",
     ...overrides,
   };
-  return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+  const fees: AppConfig["fees"] = {
+    ceilingStroops: "10000000",
+    statsTtlMs: 15_000,
+    profiles: {
+      moderate: { percentile: 90, multiplier: 1.0 },
+      aggressive: { percentile: 99, multiplier: 1.0 },
+    },
+  };
+  return {
+    get: jest.fn((key: string) => (key === "fees" ? fees : stellar)),
+  } as unknown as ConfigService<AppConfig, true>;
+}
+
+function buildService(overrides: Partial<AppConfig["stellar"]> = {}) {
+  const config = buildConfig(overrides);
+  const rpcService = new SorobanRpcService(config);
+  const feeStrategy = new FeeStrategyService(rpcService, config);
+  jest.spyOn(feeStrategy, "estimateInclusionFee").mockResolvedValue(BASE_FEE);
+  jest.spyOn(feeStrategy, "assertTotalUnderCeiling").mockImplementation(() => undefined);
+  jest.spyOn(rpcService.server, "getFeeStats").mockResolvedValue({
+    sorobanInclusionFee: { max: "100", p99: "100", p90: "100", p10: "100", min: "100", mode: "100" },
+    inclusionFee: { max: "100", p99: "100", p90: "100", p10: "100", min: "100", mode: "100" },
+    latestLedger: 1,
+  } as never);
+  return new PoolService(config, rpcService, feeStrategy);
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -63,7 +90,7 @@ describe("PoolService", () => {
   let provider: string;
 
   beforeEach(() => {
-    service = new PoolService(buildConfig());
+    service = buildService();
     provider = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
@@ -130,6 +157,8 @@ describe("PoolService", () => {
       const { functionName, args } = decodeInvocation(result.txXdr);
       expect(functionName).toBe("provide_capital");
       expect(args).toEqual([provider, BigInt(amount)]);
+      expect(result.estimatedFee).toBeDefined();
+      expect(BigInt(result.estimatedFee)).toBeGreaterThanOrEqual(100n);
     });
 
     it("rejects a zero-amount deposit without contacting the network", async () => {
@@ -248,7 +277,7 @@ describe("PoolService", () => {
     });
 
     it("returns null without contacting the network when the pool contract isn't configured", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = buildService({ poolContractId: "" });
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       expect(await unconfigured.lockupExpiresAt(provider)).toBeNull();
@@ -273,7 +302,7 @@ describe("PoolService", () => {
 
   describe("unconfigured pool contract", () => {
     it("rejects provide/withdraw with a clear error instead of calling a non-existent contract", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = buildService({ poolContractId: "" });
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);
 

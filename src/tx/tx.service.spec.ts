@@ -10,6 +10,7 @@ import {
   rpc,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { TxService } from "./tx.service";
 
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -26,6 +27,11 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+}
+
+function buildTxService(overrides: Partial<AppConfig["stellar"]> = {}) {
+  const config = buildConfig(overrides);
+  return new TxService(new SorobanRpcService(config));
 }
 
 /** A validly-formed, signed (but never network-submitted) tx envelope for TxService to parse. */
@@ -49,7 +55,7 @@ describe("TxService", () => {
 
   describe("submit", () => {
     it("rejects malformed XDR without contacting the network", async () => {
-      const service = new TxService(buildConfig());
+      const service = buildTxService();
       const sendSpy = jest.spyOn(rpc.Server.prototype, "sendTransaction");
       expect.assertions(2);
 
@@ -62,7 +68,7 @@ describe("TxService", () => {
     });
 
     it("submits, confirms, and reports the tx hash for a successful submission", async () => {
-      const service = new TxService(buildConfig());
+      const service = buildTxService();
       const signedXdr = buildSignedXdr();
 
       jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
@@ -86,24 +92,25 @@ describe("TxService", () => {
       expect(result).toEqual({ confirmed: true, txHash: "mock-tx-hash" });
     });
 
-    it("reports an unconfirmed result when the network rejects the submission outright", async () => {
-      const service = new TxService(buildConfig());
+    it("maps permanent ERROR rejections to HTTP 400 with a decoded reason", async () => {
+      const service = buildTxService();
       const signedXdr = buildSignedXdr();
 
-      jest
-        .spyOn(rpc.Server.prototype, "sendTransaction")
-        .mockResolvedValue({ status: "ERROR", hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 });
+      jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue({
+        status: "ERROR",
+        hash: "mock-tx-hash",
+        latestLedger: 1,
+        latestLedgerCloseTime: 1,
+        errorResult: { result: () => ({ switch: () => ({ name: "txINSUFFICIENT_FEE" }) }) },
+      } as never);
       const getTransactionSpy = jest.spyOn(rpc.Server.prototype, "getTransaction");
 
-      const result = await service.submit(signedXdr);
-
-      expect(result.confirmed).toBe(false);
-      expect(result.error).toContain("ERROR");
+      await expect(service.submit(signedXdr)).rejects.toBeInstanceOf(BadRequestException);
       expect(getTransactionSpy).not.toHaveBeenCalled();
     });
 
     it("reports an unconfirmed result when the submitted transaction fails on-chain", async () => {
-      const service = new TxService(buildConfig());
+      const service = buildTxService();
       const signedXdr = buildSignedXdr();
 
       jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
@@ -128,7 +135,7 @@ describe("TxService", () => {
     });
 
     it("catches an unexpected error (e.g. a network failure) and reports confirmed:false", async () => {
-      const service = new TxService(buildConfig());
+      const service = buildTxService();
       const signedXdr = buildSignedXdr();
 
       jest.spyOn(rpc.Server.prototype, "sendTransaction").mockRejectedValue(new Error("connection refused"));

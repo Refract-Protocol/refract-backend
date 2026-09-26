@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   Account,
+  BASE_FEE,
   Keypair,
   StrKey,
   Transaction,
@@ -12,6 +13,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { FeeStrategyService } from "../stellar/fee-strategy.service";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { PolicyService } from "./policy.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
@@ -29,7 +32,31 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     relayerSecret: "",
     ...overrides,
   };
-  return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+  const fees: AppConfig["fees"] = {
+    ceilingStroops: "10000000",
+    statsTtlMs: 15_000,
+    profiles: {
+      moderate: { percentile: 90, multiplier: 1.0 },
+      aggressive: { percentile: 99, multiplier: 1.0 },
+    },
+  };
+  return {
+    get: jest.fn((key: string) => (key === "fees" ? fees : stellar)),
+  } as unknown as ConfigService<AppConfig, true>;
+}
+
+function buildService(overrides: Partial<AppConfig["stellar"]> = {}) {
+  const config = buildConfig(overrides);
+  const rpcService = new SorobanRpcService(config);
+  const feeStrategy = new FeeStrategyService(rpcService, config);
+  jest.spyOn(feeStrategy, "estimateInclusionFee").mockResolvedValue(BASE_FEE);
+  jest.spyOn(feeStrategy, "assertTotalUnderCeiling").mockImplementation(() => undefined);
+  jest.spyOn(rpcService.server, "getFeeStats").mockResolvedValue({
+    sorobanInclusionFee: { max: "100", p99: "100", p90: "100", p10: "100", min: "100", mode: "100" },
+    inclusionFee: { max: "100", p99: "100", p90: "100", p10: "100", min: "100", mode: "100" },
+    latestLedger: 1,
+  } as never);
+  return new PolicyService(config, rpcService, feeStrategy);
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -92,7 +119,7 @@ describe("PolicyService", () => {
   let holder: string;
 
   beforeEach(() => {
-    service = new PolicyService(buildConfig());
+    service = buildService();
     holder = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
@@ -160,7 +187,7 @@ describe("PolicyService", () => {
       const dto = buildDto(holder, { coverageType: 2, durationDays: 10 });
       const beforeSeconds = Math.floor(Date.now() / 1000);
 
-      const { policy, txXdr, message } = await service.buy(dto);
+      const { policy, txXdr, message, estimatedFee } = await service.buy(dto);
 
       expect(policy.holder).toBe(holder);
       expect(policy.coverageType).toBe(2);
@@ -170,6 +197,8 @@ describe("PolicyService", () => {
       expect(policy.isActive).toBe(true);
       expect(policy.expiresAt).toBeGreaterThanOrEqual(beforeSeconds + 10 * 86_400);
       expect(message).toBe("Sign and submit to activate coverage");
+      expect(estimatedFee).toBeDefined();
+      expect(BigInt(estimatedFee)).toBeGreaterThanOrEqual(100n);
 
       // The built tx must actually invoke RefractPool.buy_policy(holder,
       // PolicyParams{...}) with the PolicyParams struct field-encoded

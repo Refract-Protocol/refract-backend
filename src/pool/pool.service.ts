@@ -5,12 +5,14 @@ import {
   BASE_FEE,
   Contract,
   TransactionBuilder,
-  nativeToScVal,
   rpc,
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { FeeCeilingExceededError, FeeStrategyService } from "../stellar/fee-strategy.service";
+import { encodeProvideCapitalArgs, encodeWithdrawCapitalArgs } from "../stellar/scval-encoders";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
@@ -47,15 +49,23 @@ export interface PremiumHistoryEntry {
 
 @Injectable()
 export class PoolService {
-  private readonly server: rpc.Server;
-  private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly rpcService: SorobanRpcService,
+    private readonly feeStrategy: FeeStrategyService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
-    this.server = new rpc.Server(stellar.sorobanRpcUrl);
-    this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
+  }
+
+  private get server(): rpc.Server {
+    return this.rpcService.server;
+  }
+
+  private get networkPassphrase(): string {
+    return this.rpcService.networkPassphrase;
   }
 
   /**
@@ -65,17 +75,22 @@ export class PoolService {
    * provider, so unlike ClaimSettlementService's relayer-signed flow, the
    * server can never sign this itself.
    */
-  private async buildUnsignedInvoke(sourcePublicKey: string, method: string, args: xdr.ScVal[]): Promise<string> {
+  private async buildUnsignedInvoke(
+    sourcePublicKey: string,
+    method: string,
+    args: xdr.ScVal[]
+  ): Promise<{ txXdr: string; estimatedFee: string }> {
     if (!this.poolContractId) {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
     }
     try {
+      const inclusionFee = await this.feeStrategy.estimateInclusionFee("moderate");
       const sourceAccount = await this.server.getAccount(sourcePublicKey);
       const contract = new Contract(this.poolContractId);
       const operation = contract.call(method, ...args);
 
       const builtTx = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
+        fee: inclusionFee,
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(operation)
@@ -87,8 +102,25 @@ export class PoolService {
       // InsufficientCapacity, CapitalLocked) as part of building the tx,
       // rather than only after the caller signs and submits it.
       const preparedTx = await this.server.prepareTransaction(builtTx);
-      return preparedTx.toXDR();
+      const preparedFee = (preparedTx as { fee?: string }).fee;
+      this.feeStrategy.assertTotalUnderCeiling(
+        inclusionFee,
+        preparedFee ? BigInt(preparedFee) - BigInt(inclusionFee) : 0n
+      );
+
+      return {
+        txXdr: preparedTx.toXDR(),
+        estimatedFee: preparedFee ?? inclusionFee,
+      };
     } catch (err) {
+      if (err instanceof FeeCeilingExceededError) {
+        throw new BadRequestException({
+          error: err.message,
+          inclusionFee: err.inclusionFee,
+          resourceFee: err.resourceFee,
+          ceiling: err.ceiling,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       throw new BadRequestException({ error: `Failed to build Soroban transaction: ${message}` });
     }
@@ -99,6 +131,8 @@ export class PoolService {
    * signature or submission needed, this never changes state. Returns
    * null if `provider` has never deposited (never locked) or the pool
    * contract isn't configured yet, matching the contract's own Option<u64>.
+   *
+   * Fee is intentionally BASE_FEE: read-only simulations are never submitted.
    */
   async lockupExpiresAt(provider: string): Promise<bigint | null> {
     if (!this.poolContractId) {
@@ -108,7 +142,7 @@ export class PoolService {
       const sourceAccount = await this.server.getAccount(provider);
       const contract = new Contract(this.poolContractId);
       const tx = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
+        fee: BASE_FEE, // intentional: never submitted
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(contract.call("lockup_expires_at", new Address(provider).toScVal()))
@@ -161,10 +195,11 @@ export class PoolService {
     }
     const sharesOut = (amountBn * mockPool.totalShares) / mockPool.totalUsdc;
 
-    const txXdr = await this.buildUnsignedInvoke(provider, "provide_capital", [
-      new Address(provider).toScVal(),
-      nativeToScVal(amountBn, { type: "i128" }),
-    ]);
+    const { txXdr, estimatedFee } = await this.buildUnsignedInvoke(
+      provider,
+      "provide_capital",
+      encodeProvideCapitalArgs(provider, amountBn)
+    );
 
     return {
       provider,
@@ -172,6 +207,7 @@ export class PoolService {
       sharesOut: sharesOut.toString(),
       sharePrice: mockPool.sharePrice,
       txXdr,
+      estimatedFee,
       message: "Sign and submit to provide capital to Refract risk pool",
     };
   }
@@ -204,10 +240,11 @@ export class PoolService {
       });
     }
 
-    const txXdr = await this.buildUnsignedInvoke(provider, "withdraw_capital", [
-      new Address(provider).toScVal(),
-      nativeToScVal(sharesBn, { type: "i128" }),
-    ]);
+    const { txXdr, estimatedFee } = await this.buildUnsignedInvoke(
+      provider,
+      "withdraw_capital",
+      encodeWithdrawCapitalArgs(provider, sharesBn)
+    );
 
     return {
       provider,
@@ -215,6 +252,7 @@ export class PoolService {
       usdcOut: usdcOut.toString(),
       sharePrice: mockPool.sharePrice,
       txXdr,
+      estimatedFee,
     };
   }
 

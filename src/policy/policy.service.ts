@@ -7,38 +7,22 @@ import {
   Contract,
   Keypair,
   TransactionBuilder,
-  nativeToScVal,
   rpc,
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { FeeCeilingExceededError, FeeStrategyService } from "../stellar/fee-strategy.service";
+import {
+  COVERAGE_TYPE_VARIANTS,
+  TRIGGER_THRESHOLDS,
+  buildPolicyParamsScVal,
+} from "../stellar/scval-encoders";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
-
-/**
- * Mirrors refract-contracts/pool/src/lib.rs's `CoverageType` enum, in
- * declaration order — buy-policy.dto.ts's `coverageType` is validated as
- * 0-4 against exactly this ordering.
- */
-const COVERAGE_TYPE_VARIANTS = [
-  "StablecoinDepeg",
-  "MarketCrash",
-  "LiquidationShield",
-  "SmartContractRisk",
-  "FlightDelay",
-] as const;
-
-/**
- * trigger_threshold per coverage type, in the units process_claim() compares
- * against (see lib.rs): bps for StablecoinDepeg/MarketCrash, minutes for
- * FlightDelay. LiquidationShield/SmartContractRisk trigger on
- * `oracle_value > 0` and never read trigger_threshold, so its value there is
- * inert — kept non-zero only for consistency with the other entries.
- */
-const TRIGGER_THRESHOLDS = [500, 3000, 500, 500, 120];
 
 export interface CoverageTypeCatalogEntry {
   id: number;
@@ -64,6 +48,8 @@ export interface StoredPolicy {
   isActive: boolean;
   createdAt: string;
   triggerParams?: Record<string, unknown>;
+  /** On-chain u64 policy id from buy_policy(), when known. */
+  onChainPolicyId?: string;
 }
 
 const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
@@ -141,54 +127,23 @@ export class PolicyService {
   // follow-up PR that wires the app onto src/db/schema.sql.
   private readonly policies = new Map<string, StoredPolicy>();
 
-  private readonly server: rpc.Server;
-  private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly rpcService: SorobanRpcService,
+    private readonly feeStrategy: FeeStrategyService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
-    this.server = new rpc.Server(stellar.sorobanRpcUrl);
-    this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
   }
 
-  /**
-   * buy_policy(holder, params: PolicyParams) is called against
-   * RefractPool, not a separate policy contract — the pool takes the
-   * premium and mirrors the new policy into RefractPolicyRegistry itself
-   * (see pool/src/lib.rs). PolicyParams is a `#[contracttype]` struct,
-   * which soroban-sdk's derive serializes as a Map<Symbol, Val> with
-   * entries sorted by field name (confirmed against
-   * soroban-sdk-macros::derive_struct's `sorted_by_key` on the field
-   * ident) — hence the alphabetical key order below. CoverageType is a
-   * unit-variant enum, which serializes as a one-element vec holding the
-   * variant name as a Symbol (confirmed against
-   * soroban-sdk-macros::derive_enum's map_empty_variant).
-   */
-  private buildPolicyParamsScVal(
-    coverageType: number,
-    coverageAmount: bigint,
-    durationDays: number,
-    triggerThreshold: number
-  ): xdr.ScVal {
-    return xdr.ScVal.scvMap([
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("coverage_amount"),
-        val: nativeToScVal(coverageAmount, { type: "i128" }),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("coverage_type"),
-        val: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(COVERAGE_TYPE_VARIANTS[coverageType])]),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("duration_days"),
-        val: nativeToScVal(durationDays, { type: "u32" }),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("trigger_threshold"),
-        val: nativeToScVal(triggerThreshold, { type: "i128" }),
-      }),
-    ]);
+  private get server(): rpc.Server {
+    return this.rpcService.server;
+  }
+
+  private get networkPassphrase(): string {
+    return this.rpcService.networkPassphrase;
   }
 
   /**
@@ -197,17 +152,18 @@ export class PolicyService {
    * `require_auth()` on the holder, so the server can never sign this
    * itself.
    */
-  private async buildUnsignedBuyInvoke(holder: string, paramsScVal: xdr.ScVal): Promise<string> {
+  private async buildUnsignedBuyInvoke(holder: string, paramsScVal: xdr.ScVal): Promise<{ txXdr: string; estimatedFee: string }> {
     if (!this.poolContractId) {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
     }
     try {
+      const inclusionFee = await this.feeStrategy.estimateInclusionFee("moderate");
       const sourceAccount = await this.server.getAccount(holder);
       const contract = new Contract(this.poolContractId);
       const operation = contract.call("buy_policy", new Address(holder).toScVal(), paramsScVal);
 
       const builtTx = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
+        fee: inclusionFee,
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(operation)
@@ -215,8 +171,23 @@ export class PolicyService {
         .build();
 
       const preparedTx = await this.server.prepareTransaction(builtTx);
-      return preparedTx.toXDR();
+      const resourceFee = (preparedTx as { fee?: string }).fee;
+      // prepareTransaction replaces fee with inclusion+resource; assert ceiling.
+      this.feeStrategy.assertTotalUnderCeiling(inclusionFee, resourceFee ? BigInt(resourceFee) - BigInt(inclusionFee) : 0n);
+
+      return {
+        txXdr: preparedTx.toXDR(),
+        estimatedFee: (preparedTx as { fee?: string }).fee ?? inclusionFee,
+      };
     } catch (err) {
+      if (err instanceof FeeCeilingExceededError) {
+        throw new BadRequestException({
+          error: err.message,
+          inclusionFee: err.inclusionFee,
+          resourceFee: err.resourceFee,
+          ceiling: err.ceiling,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       throw new BadRequestException({ error: `Failed to build Soroban transaction: ${message}` });
     }
@@ -228,14 +199,7 @@ export class PolicyService {
    * Returns null if the pool contract isn't configured or hasn't been
    * initialized on-chain yet (pool_config() itself returns None then).
    *
-   * The pool enforces ONE global min/max coverage across every coverage
-   * type (see _check_coverage_capacity in pool/src/lib.rs) — there's no
-   * per-type bound on-chain, unlike COVERAGE_TYPES' maxCoverage below,
-   * which is this catalog's own (stricter, per-type) product policy. Both
-   * checks apply: the catalog caps what buy() will offer per type, this
-   * catches the case where that per-type cap is still above whatever the
-   * pool is actually configured to allow right now — e.g. after an admin
-   * calls set_pool_config() — which the catalog alone can't see.
+   * Fee is intentionally BASE_FEE: read-only simulations are never submitted.
    */
   async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
     if (!this.poolContractId) {
@@ -248,7 +212,7 @@ export class PolicyService {
       const dummySource = new Account(Keypair.random().publicKey(), "0");
       const contract = new Contract(this.poolContractId);
       const tx = new TransactionBuilder(dummySource, {
-        fee: BASE_FEE,
+        fee: BASE_FEE, // intentional: never submitted
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(contract.call("pool_config"))
@@ -298,7 +262,12 @@ export class PolicyService {
     }
   }
 
-  async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
+  async buy(dto: BuyPolicyDto): Promise<{
+    policy: StoredPolicy;
+    txXdr: string;
+    estimatedFee: string;
+    message: string;
+  }> {
     const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
 
     if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
@@ -365,18 +334,22 @@ export class PolicyService {
 
     this.policies.set(policyId, policy);
 
-    const paramsScVal = this.buildPolicyParamsScVal(
+    const paramsScVal = buildPolicyParamsScVal({
       coverageType,
-      coverage,
+      coverageAmount: coverage,
       durationDays,
-      TRIGGER_THRESHOLDS[coverageType]
-    );
-    const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
+      triggerThreshold: TRIGGER_THRESHOLDS[coverageType],
+    });
+    const { txXdr, estimatedFee } = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
 
     return {
       policy,
       txXdr,
+      estimatedFee,
       message: "Sign and submit to activate coverage",
     };
   }
 }
+
+// Re-export for tests/callers that previously imported these from the service file.
+export { COVERAGE_TYPE_VARIANTS, TRIGGER_THRESHOLDS };
