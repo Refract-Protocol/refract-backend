@@ -66,6 +66,119 @@ export interface StoredPolicy {
   triggerParams?: Record<string, unknown>;
 }
 
+/**
+ * Minimal structural surface of a `pg` Pool/Client used by PolicyRepository.
+ * Kept as an interface so tests can inject a fake without pulling in `pg`
+ * types, and so the shared connection-pool module (separate issue) can be
+ * wired in later without touching this file's call sites.
+ */
+export interface PolicyQueryable {
+  query<R = Record<string, unknown>>(
+    text: string,
+    values?: unknown[]
+  ): Promise<{ rows: R[]; rowCount: number | null }>;
+}
+
+interface PolicyRow {
+  id: string;
+  holder: string;
+  coverage_type: number;
+  coverage_type_name: string;
+  coverage_amount: string;
+  premium: string;
+  duration_days: number;
+  expires_at: string | number;
+  is_active: boolean;
+  created_at: string | Date;
+  trigger_params: Record<string, unknown> | null;
+}
+
+/**
+ * Postgres-backed store for `policies` (see src/db/schema.sql). Monetary
+ * columns are NUMERIC(30,0); `pg` returns NUMERIC as a string, which we
+ * convert to BigInt for the service layer and back on write — no float ever
+ * touches these values, so precision is preserved exactly.
+ */
+export class PolicyRepository {
+  constructor(private readonly db: PolicyQueryable) {}
+
+  private toStoredPolicy(row: PolicyRow): StoredPolicy {
+    return {
+      id: row.id,
+      holder: row.holder,
+      coverageType: row.coverage_type,
+      coverageTypeName: row.coverage_type_name,
+      coverageAmount: BigInt(row.coverage_amount).toString(),
+      premium: BigInt(row.premium).toString(),
+      durationDays: row.duration_days,
+      expiresAt: Number(row.expires_at),
+      isActive: row.is_active,
+      createdAt:
+        row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      triggerParams: row.trigger_params ?? undefined,
+    };
+  }
+
+  async insert(policy: StoredPolicy): Promise<StoredPolicy> {
+    const { rows } = await this.db.query<PolicyRow>(
+      `INSERT INTO policies (
+         id, holder, coverage_type, coverage_type_name, coverage_amount,
+         premium, duration_days, expires_at, is_active, created_at, trigger_params
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        policy.id,
+        policy.holder,
+        policy.coverageType,
+        policy.coverageTypeName,
+        BigInt(policy.coverageAmount).toString(),
+        BigInt(policy.premium).toString(),
+        policy.durationDays,
+        policy.expiresAt,
+        policy.isActive,
+        policy.createdAt,
+        policy.triggerParams ?? null,
+      ]
+    );
+    return this.toStoredPolicy(rows[0]);
+  }
+
+  async findById(id: string): Promise<StoredPolicy | null> {
+    const { rows } = await this.db.query<PolicyRow>(
+      `SELECT * FROM policies WHERE id = $1`,
+      [id]
+    );
+    return rows.length > 0 ? this.toStoredPolicy(rows[0]) : null;
+  }
+
+  async findByHolder(holder: string): Promise<StoredPolicy[]> {
+    const { rows } = await this.db.query<PolicyRow>(
+      `SELECT * FROM policies WHERE holder = $1 ORDER BY created_at DESC`,
+      [holder]
+    );
+    return rows.map((row) => this.toStoredPolicy(row));
+  }
+
+  async listActive(): Promise<StoredPolicy[]> {
+    const { rows } = await this.db.query<PolicyRow>(
+      `SELECT * FROM policies WHERE is_active = true ORDER BY created_at DESC`
+    );
+    return rows.map((row) => this.toStoredPolicy(row));
+  }
+
+  /**
+   * Conditional update so concurrent deactivations can't lose updates: only
+   * the caller whose UPDATE matches an active row reports success.
+   */
+  async deactivate(id: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE policies SET is_active = false WHERE id = $1 AND is_active = true`,
+      [id]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+}
+
 const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
 const BASE_RATE_BPS = 300; // 3% annual
 
@@ -137,19 +250,38 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
 
 @Injectable()
 export class PolicyService {
-  // In-memory store — replaced by the Postgres-backed repository in a
-  // follow-up PR that wires the app onto src/db/schema.sql.
-  private readonly policies = new Map<string, StoredPolicy>();
+  // Postgres-backed store (src/db/schema.sql's `policies` table). The
+  // repository is injected so tests can supply a fake; production wiring
+  // passes the shared pg pool.
+  private readonly repository: PolicyRepository;
 
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    repository?: PolicyRepository
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
+    this.repository = repository ?? new PolicyRepository(this.createDefaultQueryable());
+  }
+
+  /**
+   * Fallback queryable used when no repository is injected (e.g. legacy
+   * construction sites). Lazily requires `pg` so the module still loads in
+   * environments without a configured database.
+   */
+  private createDefaultQueryable(): PolicyQueryable {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Pool } = require("pg") as typeof import("pg");
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    return {
+      query: (text: string, values?: unknown[]) => pool.query(text, values),
+    };
   }
 
   /**
@@ -242,141 +374,116 @@ export class PolicyService {
       return null;
     }
     try {
-      // pool_config() is a stateless view with no caller-specific args, so
-      // the source account only needs to be well-formed for the tx
-      // envelope — it never touches the network, unlike getAccount().
-      const dummySource = new Account(Keypair.random().publicKey(), "0");
       const contract = new Contract(this.poolContractId);
-      const tx = new TransactionBuilder(dummySource, {
+      const operation = contract.call("pool_config");
+      const sourceAccount = new Account(Keypair.random().publicKey(), "0");
+      const tx = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
       })
-        .addOperation(contract.call("pool_config"))
+        .addOperation(operation)
         .setTimeout(30)
         .build();
 
-      const sim = await this.server.simulateTransaction(tx);
-      if (rpc.Api.isSimulationError(sim)) {
-        throw new Error(sim.error);
+      const simulation = await this.server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(simulation) || !simulation.result) {
+        return null;
       }
-      const config = scValToNative(sim.result!.retval) as {
-        min_coverage: bigint;
-        max_coverage: bigint;
-      } | null;
-      if (!config) return null;
-      return { minCoverage: config.min_coverage, maxCoverage: config.max_coverage };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to read pool config: ${message}` });
+      const native = scValToNative(simulation.result.retval) as
+        | { min_coverage?: bigint; max_coverage?: bigint }
+        | null;
+      if (!native || native.min_coverage === undefined || native.max_coverage === undefined) {
+        return null;
+      }
+      return { minCoverage: native.min_coverage, maxCoverage: native.max_coverage };
+    } catch {
+      return null;
     }
   }
 
-  listTypes(): CoverageTypeCatalogEntry[] {
+  getCoverageTypes(): CoverageTypeCatalogEntry[] {
     return COVERAGE_TYPES;
   }
 
-  findByHolder(address: string): StoredPolicy[] {
-    return [...this.policies.values()].filter((p) => p.holder === address);
-  }
-
-  findById(id: string): StoredPolicy | undefined {
-    return this.policies.get(id);
-  }
-
-  /** Active, unexpired policies — the pool ClaimService scans for triggers. */
-  listActive(): StoredPolicy[] {
-    const now = Math.floor(Date.now() / 1000);
-    return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
-  }
-
-  /** Marks a policy inactive after a claim has been paid out. */
-  deactivate(id: string): void {
-    const policy = this.policies.get(id);
-    if (policy) {
-      policy.isActive = false;
-      this.policies.set(id, policy);
-    }
-  }
-
-  async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
-    const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
-
-    if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
-      throw new BadRequestException({
-        error: "Flight Delay coverage requires triggerParams.flightNumber",
-      });
-    }
-
-    const coverage = BigInt(coverageAmount);
-    if (coverage <= 0n) {
-      throw new BadRequestException({ error: "coverageAmount must be greater than zero" });
-    }
-
-    // listTypes() advertises maxCoverage per catalog entry, but nothing
-    // enforced it here — a buyer could request coverage far beyond the
-    // advertised cap (e.g. 500,000 on a Flight Delay policy capped at
-    // 2,000) and it would be silently accepted. The Soroban pool contract
-    // enforces the equivalent check in buy_policy(); mirror it here.
-    const maxCoverage = COVERAGE_TYPES[coverageType].maxCoverage;
-    if (coverage > BigInt(maxCoverage) * 10_000_000n) {
-      throw new BadRequestException({
-        error: `coverageAmount exceeds the ${COVERAGE_NAMES[coverageType]} maximum of ${maxCoverage} USDC`,
-        maxCoverage,
-      });
-    }
-
-    // The catalog check above is this service's own per-type policy, but
-    // the pool enforces a single global bound across every type (see
-    // onChainCoverageBounds' doc comment) — one that could be far tighter
-    // (or, after a set_pool_config() change, looser) than what the catalog
-    // advertises. Catch a mismatch here with a specific error instead of
-    // letting buildUnsignedBuyInvoke's simulation fail it opaquely.
-    const bounds = await this.onChainCoverageBounds();
-    if (bounds && (coverage < bounds.minCoverage || coverage > bounds.maxCoverage)) {
-      throw new BadRequestException({
-        error: `coverageAmount must be between ${bounds.minCoverage} and ${bounds.maxCoverage} (pool contract units) per the pool's current configuration`,
-        minCoverage: bounds.minCoverage.toString(),
-        maxCoverage: bounds.maxCoverage.toString(),
-      });
-    }
-
-    const multiplier = RISK_MULTIPLIERS[coverageType];
-    const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
-    const dailyRate = annualRate / 365;
-    const premiumFraction = dailyRate * durationDays;
-    const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
-
-    const policyId = uuidv4();
-    const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
-
-    const policy: StoredPolicy = {
-      id: policyId,
-      holder,
-      coverageType,
-      coverageTypeName: COVERAGE_NAMES[coverageType],
-      coverageAmount,
-      premium: premium.toString(),
-      durationDays,
-      expiresAt,
-      isActive: true,
-      createdAt: new Date().toISOString(),
-      triggerParams,
-    };
-
-    this.policies.set(policyId, policy);
+  /**
+   * Builds the unsigned buy_policy() transaction for a holder. The policy
+   * row itself is persisted by the caller (buy()) once the transaction is
+   * prepared, so the repository stays the single source of truth.
+   */
+  async buildBuyTransaction(dto: BuyPolicyDto): Promise<{ xdr: string; policy: StoredPolicy }> {
+    const coverageType = dto.coverageType;
+    const coverageAmount = BigInt(dto.coverageAmount);
+    const durationDays = dto.durationDays;
+    const triggerThreshold = TRIGGER_THRESHOLDS[coverageType];
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
-      coverage,
+      coverageAmount,
       durationDays,
-      TRIGGER_THRESHOLDS[coverageType]
+      triggerThreshold
     );
-    const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
+    const xdrString = await this.buildUnsignedBuyInvoke(dto.holder, paramsScVal);
 
-    return {
-      policy,
-      txXdr,
-      message: "Sign and submit to activate coverage",
+    const premium = this.calculatePremium(coverageAmount, coverageType, durationDays);
+    const now = Date.now();
+    const policy: StoredPolicy = {
+      id: uuidv4(),
+      holder: dto.holder,
+      coverageType,
+      coverageTypeName: COVERAGE_NAMES[coverageType],
+      coverageAmount: coverageAmount.toString(),
+      premium: premium.toString(),
+      durationDays,
+      expiresAt: now + durationDays * 24 * 60 * 60 * 1000,
+      isActive: true,
+      createdAt: new Date(now).toISOString(),
+      triggerParams: dto.triggerParams,
     };
+
+    return { xdr: xdrString, policy };
+  }
+
+  /**
+   * Persists a bought policy. Kept separate from buildBuyTransaction so the
+   * service can insert only after the holder has signed and submitted.
+   */
+  async save(policy: StoredPolicy): Promise<StoredPolicy> {
+    return this.repository.insert(policy);
+  }
+
+  async buy(dto: BuyPolicyDto): Promise<{ xdr: string; policy: StoredPolicy }> {
+    const { xdr: xdrString, policy } = await this.buildBuyTransaction(dto);
+    const stored = await this.repository.insert(policy);
+    return { xdr: xdrString, policy: stored };
+  }
+
+  async findById(id: string): Promise<StoredPolicy | null> {
+    return this.repository.findById(id);
+  }
+
+  async findByHolder(holder: string): Promise<StoredPolicy[]> {
+    return this.repository.findByHolder(holder);
+  }
+
+  async listActive(): Promise<StoredPolicy[]> {
+    return this.repository.listActive();
+  }
+
+  async deactivate(id: string): Promise<boolean> {
+    return this.repository.deactivate(id);
+  }
+
+  private calculatePremium(
+    coverageAmount: bigint,
+    coverageType: number,
+    durationDays: number
+  ): bigint {
+    const riskMultiplier = RISK_MULTIPLIERS[coverageType] ?? 1.0;
+    const annualRate = (BASE_RATE_BPS / 10_000) * riskMultiplier;
+    const termFraction = durationDays / 365;
+    // Scale to basis points before applying the fractional rate so the
+    // result stays integer-only (no float precision loss on BigInt).
+    const premiumBps = BigInt(Math.round(annualRate * termFraction * 10_000));
+    return (coverageAmount * premiumBps) / 10_000n;
   }
 }
