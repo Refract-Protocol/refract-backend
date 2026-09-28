@@ -6,6 +6,7 @@ import {
   StrKey,
   Transaction,
   TransactionBuilder,
+  Horizon,
   nativeToScVal,
   rpc,
   scValToNative,
@@ -22,6 +23,7 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
   const stellar: AppConfig["stellar"] = {
     network: "testnet",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    horizonUrl: "https://horizon-testnet.stellar.org",
     networkPassphrase: NETWORK_PASSPHRASE,
     poolContractId: POOL_CONTRACT_ID,
     policyContractId: "",
@@ -99,6 +101,9 @@ describe("PolicyService", () => {
     // service's logic, so it's short-circuited to identity here (same
     // approach as ClaimSettlementService's tests).
     jest.spyOn(rpc.Server.prototype, "getAccount").mockImplementation(async (id: string) => new Account(id, "1"));
+    jest
+      .spyOn(Horizon.Server.prototype, "loadAccount")
+      .mockResolvedValue({ balances: [{ asset_type: "native", balance: "10" }] } as never);
     jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
     // Default: permissive on-chain bounds, so tests below aren't about
     // onChainCoverageBounds() unless they explicitly override this.
@@ -251,6 +256,20 @@ describe("PolicyService", () => {
         expect(response.error).toBe("coverageAmount must be greater than zero");
         expect(getAccountSpy).not.toHaveBeenCalled();
       }
+    });
+
+    it("returns a funding instruction before asking Soroban for the caller account", async () => {
+      jest
+        .spyOn(Horizon.Server.prototype, "loadAccount")
+        .mockRejectedValue(Object.assign(new Error("not found"), { response: { status: 404 } }));
+      const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
+
+      await expect(service.buy(buildDto(holder))).rejects.toMatchObject({
+        response: {
+          error: expect.stringContaining("does not exist on testnet. Fund/activate it with XLM and retry"),
+        },
+      });
+      expect(getAccountSpy).not.toHaveBeenCalled();
     });
 
     it("allows coverageAmount exactly at a type's advertised maxCoverage", async () => {

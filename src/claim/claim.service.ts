@@ -6,6 +6,18 @@ import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
 
 const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
+const MAX_SETTLEMENT_ATTEMPTS = 3;
+
+export interface DeadLetterClaim {
+  policyId: string;
+  holder: string;
+  coverageType: number;
+  payout: string;
+  failureCount: number;
+  reason: string;
+  lastError: string;
+  failedAt: number;
+}
 
 /**
  * ClaimService scans active policies for triggered conditions and settles
@@ -30,6 +42,8 @@ export class ClaimService {
   // PolicyService's in-memory store; replaced together once the
   // Postgres-backed repository lands.
   private readonly history: ClaimResult[] = [];
+  private readonly settlementFailures = new Map<string, { failureCount: number; lastError: string }>();
+  private readonly deadLetterClaims = new Map<string, DeadLetterClaim>();
 
   constructor(
     private readonly policyService: PolicyService,
@@ -38,7 +52,7 @@ export class ClaimService {
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
-    const activePolicies = this.policyService.listActive();
+    const activePolicies = this.policyService.listActive().filter((policy) => !this.deadLetterClaims.has(policy.id));
     const settled: ClaimResult[] = [];
     if (activePolicies.length === 0) return settled;
 
@@ -121,10 +135,35 @@ export class ClaimService {
 
     const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
     if (!settlement.settled) {
-      this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
+      const previous = this.settlementFailures.get(policy.id);
+      const failureCount = (previous?.failureCount ?? 0) + 1;
+      const lastError = settlement.error || "Settlement did not confirm";
+      this.settlementFailures.set(policy.id, { failureCount, lastError });
+      if (failureCount >= MAX_SETTLEMENT_ATTEMPTS) {
+        const deadLetter: DeadLetterClaim = {
+          policyId: policy.id,
+          holder: policy.holder,
+          coverageType: policy.coverageType,
+          payout: result.payout,
+          failureCount,
+          reason: result.reason,
+          lastError,
+          failedAt: Date.now(),
+        };
+        this.deadLetterClaims.set(policy.id, deadLetter);
+        this.settlementFailures.delete(policy.id);
+        this.logger.error(
+          `Claim ${policy.id} moved to dead letter after ${failureCount} failed settlement attempts: ${lastError}`
+        );
+      } else {
+        this.logger.error(
+          `Settlement did not confirm for policy ${policy.id} (attempt ${failureCount}/${MAX_SETTLEMENT_ATTEMPTS}); will retry next scan: ${lastError}`
+        );
+      }
       return undefined;
     }
 
+    this.settlementFailures.delete(policy.id);
     this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
     this.policyService.deactivate(policy.id);
     this.processedCount++;
@@ -139,6 +178,8 @@ export class ClaimService {
       activePolicies: this.policyService.listActive().length,
       processedClaims: this.processedCount,
       totalPayout: this.payoutTotal.toString(),
+      deadLetterClaims: this.deadLetterClaims.size,
+      settlementRetries: this.settlementFailures.size,
       // Surfaces whether ClaimSettlementService actually has a pool
       // contract ID + relayer secret configured, so ops can tell from the
       // API whether triggered claims will settle on-chain or just log a
@@ -155,5 +196,10 @@ export class ClaimService {
   /** Most recent settled claims across all holders, for public "recent activity" displays. */
   getRecentSettlements(limit = 10): ClaimResult[] {
     return [...this.history].sort((a, b) => b.processedAt - a.processedAt).slice(0, limit);
+  }
+
+  /** Failed claims withheld from automatic retries for operator investigation. */
+  getDeadLetterClaims(): DeadLetterClaim[] {
+    return [...this.deadLetterClaims.values()].sort((a, b) => b.failedAt - a.failedAt);
   }
 }

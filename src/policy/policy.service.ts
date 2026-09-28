@@ -5,6 +5,7 @@ import {
   Address,
   BASE_FEE,
   Contract,
+  Horizon,
   Keypair,
   TransactionBuilder,
   nativeToScVal,
@@ -14,6 +15,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { assertFundedAccount } from "../stellar/account-validation.util";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
@@ -144,12 +146,16 @@ export class PolicyService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
+  private readonly horizonServer: Horizon.Server;
+  private readonly network: string;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
+    this.horizonServer = new Horizon.Server(stellar.horizonUrl);
+    this.network = stellar.network;
   }
 
   /**
@@ -199,8 +205,11 @@ export class PolicyService {
    */
   private async buildUnsignedBuyInvoke(holder: string, paramsScVal: xdr.ScVal): Promise<string> {
     if (!this.poolContractId) {
-      throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
+      throw new BadRequestException({
+        error: `Pool contract not configured (set REFRACT_POOL_CONTRACT_ID_${this.network.toUpperCase()})`,
+      });
     }
+    await assertFundedAccount(this.horizonServer, holder, this.network);
     try {
       const sourceAccount = await this.server.getAccount(holder);
       const contract = new Contract(this.poolContractId);
@@ -363,8 +372,6 @@ export class PolicyService {
       triggerParams,
     };
 
-    this.policies.set(policyId, policy);
-
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
       coverage,
@@ -372,6 +379,7 @@ export class PolicyService {
       TRIGGER_THRESHOLDS[coverageType]
     );
     const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
+    this.policies.set(policyId, policy);
 
     return {
       policy,

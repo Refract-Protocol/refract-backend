@@ -39,6 +39,15 @@ psql "$DATABASE_URL" -f src/db/schema.sql   # one-time schema apply
 npm run dev                  # http://localhost:4001
 ```
 
+`STELLAR_NETWORK` selects `testnet`, `futurenet`, or `mainnet`; the matching
+Soroban RPC URL, Horizon URL, and network passphrase are selected together.
+Set the network-suffixed contract IDs for the selected network (for example,
+`REFRACT_POOL_CONTRACT_ID_TESTNET`) rather than overriding endpoint or
+passphrase values independently. The backend checks the RPC passphrase and,
+when a pool contract ID is configured, validates the live pool WASM contract
+spec at startup. Startup fails with the specific interface mismatch if the
+deployed contract differs from the backend's assumed interface.
+
 ## Scripts
 
 | Command | Purpose |
@@ -60,6 +69,7 @@ npm run dev                  # http://localhost:4001
 | `POST` | `/api/v1/policies/buy` | Build a buy-policy transaction |
 | `GET` | `/api/v1/pool/stats` | Pool capital / utilization / APY |
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
+| `GET` | `/api/v1/claims/dead-letter` | Triggered claims withheld after repeated failed settlement |
 | `WS` | `/` | Live oracle alert stream |
 
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
@@ -69,16 +79,19 @@ npm run dev                  # http://localhost:4001
 > and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
 > liquidation events, and AviationStack (flight data) requires a paid key
 > this project doesn't have. See `src/oracle/oracle.service.ts` for details.
-> Claim settlement now builds, signs, and submits a real
-> `pool.process_claim()` Soroban transaction via `ClaimSettlementService`
-> (falls back to a safe no-op when `REFRACT_POOL_CONTRACT_ID` /
-> `ORACLE_RELAYER_SECRET` aren't set). **The contract's exact function
-> signature is an unverified best-effort guess** — this repo doesn't
-> include the `refract-contracts` source, so it needs confirmation
-> against the real deployed contract; see
-> `src/claim/claim-settlement.service.ts` for details. A policy only
-> deactivates once settlement actually confirms on-chain — a failed or
-> unconfirmed payout leaves it active for the next scheduled retry.
+> Claim settlement retries failed submissions for up to three scheduled
+> scans, then exposes the claim and last error through
+> `/api/v1/claims/dead-letter` and stops retrying it automatically. This
+> dead-letter list is currently in memory and is cleared on process restart.
+> A policy only deactivates once settlement confirms on-chain. The known
+> `process_claim` argument mismatch is checked against the deployed contract
+> spec at startup; this check intentionally prevents startup until the backend
+> call matches the deployed interface. See
+> `src/claim/claim-settlement.service.ts` and
+> `src/stellar/pool-contract-interface.service.ts`.
+> Before building a caller-signed policy purchase or pool-capital XDR, the
+> backend checks via Horizon that the caller's account exists and has a
+> positive native XLM balance, and returns a funding instruction if not.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).

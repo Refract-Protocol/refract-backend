@@ -4,6 +4,7 @@ import {
   Address,
   BASE_FEE,
   Contract,
+  Horizon,
   TransactionBuilder,
   nativeToScVal,
   rpc,
@@ -11,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { assertFundedAccount } from "../stellar/account-validation.util";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
@@ -50,12 +52,24 @@ export class PoolService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
+  private readonly horizonServer: Horizon.Server;
+  private readonly network: string;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
+    this.horizonServer = new Horizon.Server(stellar.horizonUrl);
+    this.network = stellar.network;
+  }
+
+  private assertPoolConfigured(): void {
+    if (!this.poolContractId) {
+      throw new BadRequestException({
+        error: `Pool contract not configured (set REFRACT_POOL_CONTRACT_ID_${this.network.toUpperCase()})`,
+      });
+    }
   }
 
   /**
@@ -65,9 +79,15 @@ export class PoolService {
    * provider, so unlike ClaimSettlementService's relayer-signed flow, the
    * server can never sign this itself.
    */
-  private async buildUnsignedInvoke(sourcePublicKey: string, method: string, args: xdr.ScVal[]): Promise<string> {
-    if (!this.poolContractId) {
-      throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
+  private async buildUnsignedInvoke(
+    sourcePublicKey: string,
+    method: string,
+    args: xdr.ScVal[],
+    accountValidated = false
+  ): Promise<string> {
+    this.assertPoolConfigured();
+    if (!accountValidated) {
+      await assertFundedAccount(this.horizonServer, sourcePublicKey, this.network);
     }
     try {
       const sourceAccount = await this.server.getAccount(sourcePublicKey);
@@ -183,6 +203,9 @@ export class PoolService {
       throw new BadRequestException({ error: "Withdrawal shares must be greater than zero" });
     }
 
+    this.assertPoolConfigured();
+    await assertFundedAccount(this.horizonServer, provider, this.network);
+
     // Fails fast with a clear message instead of letting the caller
     // discover the lockup only once buildUnsignedInvoke's simulation
     // rejects it with a raw contract error string.
@@ -207,7 +230,7 @@ export class PoolService {
     const txXdr = await this.buildUnsignedInvoke(provider, "withdraw_capital", [
       new Address(provider).toScVal(),
       nativeToScVal(sharesBn, { type: "i128" }),
-    ]);
+    ], true);
 
     return {
       provider,

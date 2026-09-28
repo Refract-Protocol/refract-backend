@@ -9,6 +9,7 @@ import { PoolModule } from "./pool/pool.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { ClaimModule } from "./claim/claim.module";
 import { TxModule } from "./tx/tx.module";
+import { PoolContractInterfaceService } from "./stellar/pool-contract-interface.service";
 
 @Module({
   imports: [
@@ -25,5 +26,6 @@ import { TxModule } from "./tx/tx.module";
     ClaimModule,
     TxModule,
   ],
+  providers: [PoolContractInterfaceService],
 })
 export class AppModule {}

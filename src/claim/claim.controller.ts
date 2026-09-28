@@ -25,4 +25,9 @@ export class ClaimController {
   getRecent() {
     return { claims: this.claimService.getRecentSettlements() };
   }
+
+  @Get("dead-letter")
+  getDeadLetterClaims() {
+    return { claims: this.claimService.getDeadLetterClaims() };
+  }
 }

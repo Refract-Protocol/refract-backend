@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   Account,
   Keypair,
+  Horizon,
   StrKey,
   Transaction,
   TransactionBuilder,
@@ -32,6 +33,7 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
   const stellar: AppConfig["stellar"] = {
     network: "testnet",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    horizonUrl: "https://horizon-testnet.stellar.org",
     networkPassphrase: NETWORK_PASSPHRASE,
     poolContractId: POOL_CONTRACT_ID,
     policyContractId: "",
@@ -70,6 +72,9 @@ describe("PoolService", () => {
     // service's logic, so it's short-circuited to identity here (same
     // approach as ClaimSettlementService's tests).
     jest.spyOn(rpc.Server.prototype, "getAccount").mockImplementation(async (id: string) => new Account(id, "1"));
+    jest
+      .spyOn(Horizon.Server.prototype, "loadAccount")
+      .mockResolvedValue({ balances: [{ asset_type: "native", balance: "10" }] } as never);
     jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
     // Default: no lockup on file (Option<u64>::None -> ScVal::Void) — the
     // withdraw-lockup tests below override this per case.
@@ -143,6 +148,34 @@ describe("PoolService", () => {
         expect(response.error).toBe("Deposit amount must be greater than zero");
         expect(getAccountSpy).not.toHaveBeenCalled();
       }
+    });
+
+    it("returns a funding instruction when Horizon cannot find the caller account", async () => {
+      jest
+        .spyOn(Horizon.Server.prototype, "loadAccount")
+        .mockRejectedValue(Object.assign(new Error("not found"), { response: { status: 404 } }));
+      const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
+
+      await expect(service.provide({ provider, amount: "100" })).rejects.toMatchObject({
+        response: {
+          error: expect.stringContaining("does not exist on testnet. Fund/activate it with XLM and retry"),
+        },
+      });
+      expect(getAccountSpy).not.toHaveBeenCalled();
+    });
+
+    it("rejects an existing Horizon account without a positive native balance", async () => {
+      jest
+        .spyOn(Horizon.Server.prototype, "loadAccount")
+        .mockResolvedValue({ balances: [{ asset_type: "native", balance: "0.0000000" }] } as never);
+      const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
+
+      await expect(service.provide({ provider, amount: "100" })).rejects.toMatchObject({
+        response: {
+          error: expect.stringContaining("has no positive native XLM balance on testnet"),
+        },
+      });
+      expect(getAccountSpy).not.toHaveBeenCalled();
     });
 
     it("wraps a Soroban build failure (e.g. simulation rejection) in a BadRequestException", async () => {
