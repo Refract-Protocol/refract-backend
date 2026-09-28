@@ -119,7 +119,7 @@ export class ClaimService {
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
 
-    const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
+    const settlement = await this.claimSettlementService.settleClaim(policy.id);
     if (!settlement.settled) {
       this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
       return undefined;
