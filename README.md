@@ -32,13 +32,26 @@ src/
 
 ## Quick start
 
+Start the backend and its PostgreSQL and Redis dependencies with Docker
+Compose; Docker Compose initializes the database schema on first startup:
+
 ```bash
-cp .env.example .env         # then fill in DATABASE_URL, contract IDs, etc.
-npm install
-psql "$DATABASE_URL" -f src/db/schema.sql   # one-time schema apply
-npm run dev                  # http://localhost:4001
+docker compose up --build
 ```
 
+The API listens on http://localhost:4001. PostgreSQL and Redis are also
+available on localhost ports 5432 and 6379. Compose uses the development-only
+Postgres password `refract_dev` unless `POSTGRES_PASSWORD` is set in the
+environment or `.env`; configure secrets and production service settings
+separately before deployment. Contract IDs and the relayer key can be added to
+`.env` when exercising configured on-chain operations.
+
+To run the API directly on the host, start PostgreSQL and Redis yourself,
+copy `.env.example` to `.env`, install Node.js 22 dependencies, apply
+`src/db/schema.sql` once, and run `npm run dev`.
+
+Stop the stack with `docker compose down`. Persistent database and Redis data
+remain in Docker volumes; `docker compose down -v` removes them.
 ## Scripts
 
 | Command | Purpose |
