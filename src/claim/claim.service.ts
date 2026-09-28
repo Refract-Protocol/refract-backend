@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
@@ -34,7 +35,8 @@ export class ClaimService {
   constructor(
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
-    private readonly claimSettlementService: ClaimSettlementService
+    private readonly claimSettlementService: ClaimSettlementService,
+    private readonly oracleEventRepository: OracleEventRepository
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -65,22 +67,36 @@ export class ClaimService {
   }
 
   private async fetchOracleData(policy: StoredPolicy): Promise<OracleReading> {
+    let reading: OracleReading;
     switch (policy.coverageType) {
       case 0:
-        return this.oracleService.checkStablecoinDepeg();
+        reading = await this.oracleService.checkStablecoinDepeg();
+        break;
       case 1:
-        return this.oracleService.checkMarketCrash();
+        reading = await this.oracleService.checkMarketCrash();
+        break;
       case 2:
-        return this.oracleService.checkLiquidationShield();
+        reading = await this.oracleService.checkLiquidationShield();
+        break;
       case 3:
-        return this.oracleService.checkSmartContractRisk();
+        reading = await this.oracleService.checkSmartContractRisk();
+        break;
       case 4: {
         const flightNumber = policy.triggerParams?.flightNumber;
-        return this.oracleService.checkFlightDelay(typeof flightNumber === "string" ? flightNumber : "UNKNOWN");
+        reading = await this.oracleService.checkFlightDelay(
+          typeof flightNumber === "string" ? flightNumber : "UNKNOWN"
+        );
+        break;
       }
       default:
         throw new Error(`Unknown coverageType ${policy.coverageType}`);
     }
+
+    // Persist every claim-evaluation reading — fire-and-forget so a DB
+    // hiccup never disrupts the evaluation path.
+    void this.oracleEventRepository.record(reading);
+
+    return reading;
   }
 
   private evaluatePolicy(policy: StoredPolicy, oracle: OracleReading, fetchedAt: number): ClaimResult {

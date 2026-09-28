@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   Address,
@@ -12,18 +12,25 @@ import {
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { DepositDto } from "./dto/deposit.dto";
+import { LpPositionRepository } from "./lp-position.repository";
+import { PoolSnapshotRepository } from "./pool-snapshot.repository";
+import { PremiumRevenueRepository } from "./premium-revenue.repository";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
-// Mock pool state — replaced by a Postgres-backed (pool_snapshots table)
-// read in a later PR that wires the app onto src/db/schema.sql.
-const mockPool = {
-  totalUsdc: BigInt(18_400_000 * 1e7),
-  totalShares: BigInt(17_800_000 * 1e7),
-  lockedUsdc: BigInt(2_900_000 * 1e7), // locked covering active policies
-  premiumAccrued: BigInt(284_000 * 1e7),
-  utilizationBps: 1576, // 15.76%
-  apyBps: 890, // 8.9% from premiums
-  sharePrice: 1.0319,
+/**
+ * Fallback values used only when the pool_snapshots table is empty
+ * (e.g. fresh environment before the snapshot scheduler has run). These
+ * are clearly labelled and never silently returned as real data — callers
+ * receive a `stale: true` flag so they know the numbers are bootstrapped.
+ */
+const BOOTSTRAP_POOL = {
+  totalUsdc: BigInt(0),
+  totalShares: BigInt(0),
+  lockedUsdc: BigInt(0),
+  premiumAccrued: BigInt(0),
+  utilizationBps: 0,
+  apyBps: 0,
+  sharePrice: 1.0,
 };
 
 export interface PoolStats {
@@ -36,6 +43,8 @@ export interface PoolStats {
   apyBps: number;
   sharePrice: number;
   maxUtilizationBps: number;
+  /** True when no pool_snapshots row exists yet and bootstrap values are returned. */
+  stale?: boolean;
 }
 
 export interface PremiumHistoryEntry {
@@ -47,11 +56,17 @@ export interface PremiumHistoryEntry {
 
 @Injectable()
 export class PoolService {
+  private readonly logger = new Logger(PoolService.name);
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly poolSnapshotRepository: PoolSnapshotRepository,
+    private readonly lpPositionRepository: LpPositionRepository,
+    private readonly premiumRevenueRepository: PremiumRevenueRepository
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -127,29 +142,71 @@ export class PoolService {
     }
   }
 
-  getStats(): PoolStats {
-    return {
-      totalUsdc: mockPool.totalUsdc.toString(),
-      totalShares: mockPool.totalShares.toString(),
-      lockedUsdc: mockPool.lockedUsdc.toString(),
-      premiumAccrued: mockPool.premiumAccrued.toString(),
-      availableUsdc: (mockPool.totalUsdc - mockPool.lockedUsdc).toString(),
-      utilizationBps: mockPool.utilizationBps,
-      apyBps: mockPool.apyBps,
-      sharePrice: mockPool.sharePrice,
-      maxUtilizationBps: 8000,
-    };
+  /**
+   * Returns pool stats from the latest pool_snapshots row.
+   * Falls back to zero-value bootstrap stats (with stale: true) when the
+   * table is empty — the snapshot scheduler populates it on its first run.
+   */
+  async getStats(): Promise<PoolStats> {
+    const snapshot = await this.poolSnapshotRepository.getLatest();
+    if (!snapshot) {
+      this.logger.warn("pool_snapshots table is empty — returning bootstrap stats");
+      const pool = BOOTSTRAP_POOL;
+      return {
+        totalUsdc: pool.totalUsdc.toString(),
+        totalShares: pool.totalShares.toString(),
+        lockedUsdc: pool.lockedUsdc.toString(),
+        premiumAccrued: pool.premiumAccrued.toString(),
+        availableUsdc: "0",
+        utilizationBps: pool.utilizationBps,
+        apyBps: pool.apyBps,
+        sharePrice: pool.sharePrice,
+        maxUtilizationBps: 8000,
+        stale: true,
+      };
+    }
+    return this.poolSnapshotRepository.toStats(snapshot);
   }
 
-  getUserPosition(address: string) {
-    const mockShares = BigInt(Math.floor(30_000 * 1e7));
-    const usdcValue = Number(mockShares) * mockPool.sharePrice;
+  /**
+   * Returns the real LP position for `address` from the lp_positions table.
+   * Returns null shares/values when the address has never deposited, rather
+   * than fabricating a fake position.
+   */
+  async getUserPosition(address: string) {
+    const position = await this.lpPositionRepository.findByProvider(address);
+
+    if (!position) {
+      return {
+        address,
+        shares: "0",
+        usdcValue: "0",
+        premiumEarned: "0",
+        pct: "0.0000",
+        deposited: false,
+      };
+    }
+
+    // Share price from the latest snapshot; fall back to 1.0 if not yet available.
+    const snapshot = await this.poolSnapshotRepository.getLatest();
+    const sharePrice = snapshot?.sharePrice ?? 1.0;
+    const totalShares = snapshot?.totalShares ?? 0n;
+
+    const usdcValue = Number(position.shares) * sharePrice;
+    const pct =
+      totalShares > 0n
+        ? ((Number(position.shares) / Number(totalShares)) * 100).toFixed(4)
+        : "0.0000";
+
     return {
       address,
-      shares: mockShares.toString(),
+      shares: position.shares.toString(),
       usdcValue: usdcValue.toFixed(0),
-      premiumEarned: (usdcValue * 0.089 * 0.5).toFixed(0),
-      pct: ((Number(mockShares) / Number(mockPool.totalShares)) * 100).toFixed(4),
+      premiumEarned: position.premiumEarned.toString(),
+      pct,
+      deposited: true,
+      firstDeposit: position.firstDeposit.toISOString(),
+      lastUpdated: position.lastUpdated.toISOString(),
     };
   }
 
@@ -159,7 +216,17 @@ export class PoolService {
     if (amountBn <= 0n) {
       throw new BadRequestException({ error: "Deposit amount must be greater than zero" });
     }
-    const sharesOut = (amountBn * mockPool.totalShares) / mockPool.totalUsdc;
+
+    const snapshot = await this.poolSnapshotRepository.getLatest();
+    const totalUsdc = snapshot?.totalUsdc ?? BOOTSTRAP_POOL.totalUsdc;
+    const totalShares = snapshot?.totalShares ?? BOOTSTRAP_POOL.totalShares;
+    const sharePrice = snapshot?.sharePrice ?? BOOTSTRAP_POOL.sharePrice;
+
+    // Avoid division by zero on a freshly-initialised pool.
+    const sharesOut =
+      totalUsdc > 0n && totalShares > 0n
+        ? (amountBn * totalShares) / totalUsdc
+        : amountBn; // 1:1 for the first deposit
 
     const txXdr = await this.buildUnsignedInvoke(provider, "provide_capital", [
       new Address(provider).toScVal(),
@@ -170,7 +237,7 @@ export class PoolService {
       provider,
       amountUsdc: amount,
       sharesOut: sharesOut.toString(),
-      sharePrice: mockPool.sharePrice,
+      sharePrice,
       txXdr,
       message: "Sign and submit to provide capital to Refract risk pool",
     };
@@ -194,8 +261,15 @@ export class PoolService {
       });
     }
 
-    const usdcOut = (sharesBn * mockPool.totalUsdc) / mockPool.totalShares;
-    const available = mockPool.totalUsdc - mockPool.lockedUsdc;
+    const snapshot = await this.poolSnapshotRepository.getLatest();
+    const totalUsdc = snapshot?.totalUsdc ?? BOOTSTRAP_POOL.totalUsdc;
+    const totalShares = snapshot?.totalShares ?? BOOTSTRAP_POOL.totalShares;
+    const lockedUsdc = snapshot?.lockedUsdc ?? BOOTSTRAP_POOL.lockedUsdc;
+    const sharePrice = snapshot?.sharePrice ?? BOOTSTRAP_POOL.sharePrice;
+
+    const usdcOut =
+      totalShares > 0n ? (sharesBn * totalUsdc) / totalShares : 0n;
+    const available = totalUsdc - lockedUsdc;
 
     if (usdcOut > available) {
       throw new BadRequestException({
@@ -213,17 +287,17 @@ export class PoolService {
       provider,
       sharesIn: shares,
       usdcOut: usdcOut.toString(),
-      sharePrice: mockPool.sharePrice,
+      sharePrice,
       txXdr,
     };
   }
 
-  getPremiumHistory(): PremiumHistoryEntry[] {
-    return Array.from({ length: 30 }, (_, i) => ({
-      date: new Date(Date.now() - i * 86400000).toISOString().split("T")[0],
-      premiums: (4_000 + Math.random() * 12_000).toFixed(0),
-      payouts: Math.random() > 0.9 ? (5_000 + Math.random() * 30_000).toFixed(0) : "0",
-      apyBps: Math.floor(700 + Math.random() * 400),
-    }));
+  /**
+   * Returns real daily premium + payout aggregates for the last 30 days
+   * from the premium_revenue and claims tables, derived via SQL. Returns
+   * an empty array when no data has been recorded yet — no fabrication.
+   */
+  async getPremiumHistory(): Promise<PremiumHistoryEntry[]> {
+    return this.premiumRevenueRepository.getDailyHistory(30);
   }
 }

@@ -12,21 +12,25 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
-import { PoolService } from "./pool.service";
+import { LpPositionRepository } from "./lp-position.repository";
+import { PoolSnapshotRepository } from "./pool-snapshot.repository";
+import { PoolService, PoolStats } from "./pool.service";
+import { PremiumRevenueRepository } from "./premium-revenue.repository";
 
-// Mirrors the module-private `mockPool` constants in pool.service.ts.
-const MOCK_POOL = {
+const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
+const POOL_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 1));
+
+// A realistic pool snapshot — same numbers the old mockPool used, so
+// tests that relied on those literals stay comparable.
+const SNAPSHOT = {
   totalUsdc: BigInt(18_400_000 * 1e7),
   totalShares: BigInt(17_800_000 * 1e7),
   lockedUsdc: BigInt(2_900_000 * 1e7),
   premiumAccrued: BigInt(284_000 * 1e7),
+  sharePrice: 1.0319,
   utilizationBps: 1576,
   apyBps: 890,
-  sharePrice: 1.0319,
 };
-
-const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
-const POOL_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 1));
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
   const stellar: AppConfig["stellar"] = {
@@ -40,6 +44,36 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+}
+
+function buildRepos(snapshotOverride?: typeof SNAPSHOT | null) {
+  const poolSnapshotRepository = {
+    getLatest: jest.fn().mockResolvedValue(snapshotOverride === undefined ? SNAPSHOT : snapshotOverride),
+    toStats: jest.fn().mockImplementation((snap: typeof SNAPSHOT): PoolStats => ({
+      totalUsdc: snap.totalUsdc.toString(),
+      totalShares: snap.totalShares.toString(),
+      lockedUsdc: snap.lockedUsdc.toString(),
+      premiumAccrued: snap.premiumAccrued.toString(),
+      availableUsdc: (snap.totalUsdc - snap.lockedUsdc).toString(),
+      utilizationBps: snap.utilizationBps,
+      apyBps: snap.apyBps,
+      sharePrice: snap.sharePrice,
+      maxUtilizationBps: 8000,
+    })),
+    insert: jest.fn().mockResolvedValue(undefined),
+  } as unknown as jest.Mocked<PoolSnapshotRepository>;
+
+  const lpPositionRepository = {
+    findByProvider: jest.fn().mockResolvedValue(null),
+    upsert: jest.fn().mockResolvedValue(undefined),
+  } as unknown as jest.Mocked<LpPositionRepository>;
+
+  const premiumRevenueRepository = {
+    record: jest.fn().mockResolvedValue(undefined),
+    getDailyHistory: jest.fn().mockResolvedValue([]),
+  } as unknown as jest.Mocked<PremiumRevenueRepository>;
+
+  return { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository };
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -59,20 +93,13 @@ function simulateSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionResponse
 }
 
 describe("PoolService", () => {
-  let service: PoolService;
   let provider: string;
 
   beforeEach(() => {
-    service = new PoolService(buildConfig());
     provider = Keypair.random().publicKey();
-    // prepareTransaction normally simulates against a live network and
-    // fills in Soroban resource fees — that's SDK behavior, not this
-    // service's logic, so it's short-circuited to identity here (same
-    // approach as ClaimSettlementService's tests).
     jest.spyOn(rpc.Server.prototype, "getAccount").mockImplementation(async (id: string) => new Account(id, "1"));
     jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
-    // Default: no lockup on file (Option<u64>::None -> ScVal::Void) — the
-    // withdraw-lockup tests below override this per case.
+    // Default: no lockup (Option<u64>::None -> ScVal::Void)
     jest.spyOn(rpc.Server.prototype, "simulateTransaction").mockResolvedValue(simulateSuccess(xdr.ScVal.scvVoid()));
   });
 
@@ -81,60 +108,99 @@ describe("PoolService", () => {
   });
 
   describe("getStats", () => {
-    it("derives availableUsdc from totalUsdc minus lockedUsdc and echoes the rest of the mock pool state", () => {
-      const stats = service.getStats();
+    it("derives availableUsdc from totalUsdc minus lockedUsdc and echoes the snapshot state", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
 
-      expect(stats.totalUsdc).toBe(MOCK_POOL.totalUsdc.toString());
-      expect(stats.totalShares).toBe(MOCK_POOL.totalShares.toString());
-      expect(stats.lockedUsdc).toBe(MOCK_POOL.lockedUsdc.toString());
-      expect(stats.premiumAccrued).toBe(MOCK_POOL.premiumAccrued.toString());
-      expect(stats.availableUsdc).toBe((MOCK_POOL.totalUsdc - MOCK_POOL.lockedUsdc).toString());
-      expect(stats.utilizationBps).toBe(MOCK_POOL.utilizationBps);
-      expect(stats.apyBps).toBe(MOCK_POOL.apyBps);
-      expect(stats.sharePrice).toBe(MOCK_POOL.sharePrice);
+      const stats = await service.getStats();
+
+      expect(stats.totalUsdc).toBe(SNAPSHOT.totalUsdc.toString());
+      expect(stats.totalShares).toBe(SNAPSHOT.totalShares.toString());
+      expect(stats.lockedUsdc).toBe(SNAPSHOT.lockedUsdc.toString());
+      expect(stats.premiumAccrued).toBe(SNAPSHOT.premiumAccrued.toString());
+      expect(stats.availableUsdc).toBe((SNAPSHOT.totalUsdc - SNAPSHOT.lockedUsdc).toString());
+      expect(stats.utilizationBps).toBe(SNAPSHOT.utilizationBps);
+      expect(stats.apyBps).toBe(SNAPSHOT.apyBps);
+      expect(stats.sharePrice).toBe(SNAPSHOT.sharePrice);
       expect(stats.maxUtilizationBps).toBe(8000);
+      expect(stats.stale).toBeUndefined();
+    });
+
+    it("returns stale bootstrap stats (stale: true) when no snapshot exists yet", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos(null);
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
+
+      const stats = await service.getStats();
+
+      expect(stats.totalUsdc).toBe("0");
+      expect(stats.stale).toBe(true);
     });
   });
 
   describe("getUserPosition", () => {
-    it("computes usdcValue, premiumEarned, and pct from the fixed mock share balance", () => {
-      const address = "GPROVIDER0000000000000000000000000000000000000000000";
+    it("returns zero position for an address not in lp_positions", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      lpPositionRepository.findByProvider.mockResolvedValue(null);
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
 
-      const position = service.getUserPosition(address);
+      const position = await service.getUserPosition("GPROVIDER_NOT_FOUND");
 
-      const mockShares = BigInt(Math.floor(30_000 * 1e7));
-      const expectedUsdcValue = Number(mockShares) * MOCK_POOL.sharePrice;
+      expect(position.shares).toBe("0");
+      expect(position.usdcValue).toBe("0");
+      expect(position.premiumEarned).toBe("0");
+      expect(position.pct).toBe("0.0000");
+      expect(position.deposited).toBe(false);
+    });
 
-      expect(position.address).toBe(address);
-      expect(position.shares).toBe(mockShares.toString());
+    it("returns real position data when the provider has an lp_positions row", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const shares = BigInt(Math.floor(30_000 * 1e7));
+      lpPositionRepository.findByProvider.mockResolvedValue({
+        provider,
+        shares,
+        usdcDeposited: BigInt(30_000 * 1e7),
+        premiumEarned: BigInt(500 * 1e7),
+        firstDeposit: new Date("2025-01-01"),
+        lastUpdated: new Date("2025-06-01"),
+      });
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
+
+      const position = await service.getUserPosition(provider);
+
+      expect(position.address).toBe(provider);
+      expect(position.shares).toBe(shares.toString());
+      expect(position.deposited).toBe(true);
+      expect(position.premiumEarned).toBe((BigInt(500 * 1e7)).toString());
+      // usdcValue = shares * sharePrice
+      const expectedUsdcValue = Number(shares) * SNAPSHOT.sharePrice;
       expect(position.usdcValue).toBe(expectedUsdcValue.toFixed(0));
-      expect(position.premiumEarned).toBe((expectedUsdcValue * 0.089 * 0.5).toFixed(0));
-      expect(position.pct).toBe(((Number(mockShares) / Number(MOCK_POOL.totalShares)) * 100).toFixed(4));
     });
   });
 
   describe("provide", () => {
-    it("computes sharesOut proportionally to the current share price and returns an unsigned provide_capital invocation", async () => {
-      const amount = (184_000n * 10_000_000n).toString(); // 184,000 USDC in 1e7 base units
+    it("computes sharesOut proportionally to the snapshot share price and returns an unsigned provide_capital invocation", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
+      const amount = (184_000n * 10_000_000n).toString();
 
       const result = await service.provide({ provider, amount });
 
-      const expectedShares = (BigInt(amount) * MOCK_POOL.totalShares) / MOCK_POOL.totalUsdc;
+      const expectedShares = (BigInt(amount) * SNAPSHOT.totalShares) / SNAPSHOT.totalUsdc;
       expect(result.sharesOut).toBe(expectedShares.toString());
       expect(result.amountUsdc).toBe(amount);
-      expect(result.sharePrice).toBe(MOCK_POOL.sharePrice);
+      expect(result.sharePrice).toBe(SNAPSHOT.sharePrice);
 
-      // The built tx must actually invoke RefractPool.provide_capital(provider, amount) —
-      // wrong function name or argument shape/order would fail Soroban's
-      // simulation on every real invocation despite type-checking here.
       const { functionName, args } = decodeInvocation(result.txXdr);
       expect(functionName).toBe("provide_capital");
       expect(args).toEqual([provider, BigInt(amount)]);
     });
 
     it("rejects a zero-amount deposit without contacting the network", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);
+
       try {
         await service.provide({ provider, amount: "0" });
       } catch (err) {
@@ -145,7 +211,9 @@ describe("PoolService", () => {
       }
     });
 
-    it("wraps a Soroban build failure (e.g. simulation rejection) in a BadRequestException", async () => {
+    it("wraps a Soroban build failure in a BadRequestException", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockRejectedValue(new Error("InsufficientCapacity"));
       expect.assertions(2);
 
@@ -161,11 +229,13 @@ describe("PoolService", () => {
 
   describe("withdraw", () => {
     it("computes usdcOut proportionally and returns an unsigned withdraw_capital invocation when within available capacity", async () => {
-      const shares = (1_000_000n * 10_000_000n).toString(); // 1,000,000 shares
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
+      const shares = (1_000_000n * 10_000_000n).toString();
 
       const result = await service.withdraw({ provider, shares });
 
-      const expectedUsdcOut = (BigInt(shares) * MOCK_POOL.totalUsdc) / MOCK_POOL.totalShares;
+      const expectedUsdcOut = (BigInt(shares) * SNAPSHOT.totalUsdc) / SNAPSHOT.totalShares;
       expect(result.usdcOut).toBe(expectedUsdcOut.toString());
       expect(result.sharesIn).toBe(shares);
 
@@ -175,9 +245,9 @@ describe("PoolService", () => {
     });
 
     it("rejects a withdrawal that exceeds available (unlocked) pool capacity", async () => {
-      // Requesting all shares would out-pace the unlocked USDC, since
-      // lockedUsdc covers active policies and isn't withdrawable.
-      const shares = MOCK_POOL.totalShares.toString();
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
+      const shares = SNAPSHOT.totalShares.toString();
       expect.assertions(3);
 
       try {
@@ -186,12 +256,15 @@ describe("PoolService", () => {
         expect(err).toBeInstanceOf(BadRequestException);
         const response = (err as BadRequestException).getResponse() as { error: string; available: string };
         expect(response.error).toBe("Pool capacity locked — too many active policies");
-        expect(response.available).toBe((MOCK_POOL.totalUsdc - MOCK_POOL.lockedUsdc).toString());
+        expect(response.available).toBe((SNAPSHOT.totalUsdc - SNAPSHOT.lockedUsdc).toString());
       }
     });
 
     it("rejects a zero-share withdrawal", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       expect.assertions(2);
+
       try {
         await service.withdraw({ provider, shares: "0" });
       } catch (err) {
@@ -202,6 +275,8 @@ describe("PoolService", () => {
     });
 
     it("rejects a withdrawal while the on-chain lockup hasn't expired yet, without building a tx", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       const futureUnlock = BigInt(Math.floor(Date.now() / 1000) + 3_600);
       jest
         .spyOn(rpc.Server.prototype, "simulateTransaction")
@@ -221,6 +296,8 @@ describe("PoolService", () => {
     });
 
     it("allows a withdrawal once the on-chain lockup has expired", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       const pastUnlock = BigInt(Math.floor(Date.now() / 1000) - 1);
       jest
         .spyOn(rpc.Server.prototype, "simulateTransaction")
@@ -233,12 +310,16 @@ describe("PoolService", () => {
 
   describe("lockupExpiresAt", () => {
     it("returns null when the contract reports no lockup (Option::None)", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       jest.spyOn(rpc.Server.prototype, "simulateTransaction").mockResolvedValue(simulateSuccess(xdr.ScVal.scvVoid()));
 
       expect(await service.lockupExpiresAt(provider)).toBeNull();
     });
 
     it("returns the unlock timestamp when the contract reports one", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       const unlocksAt = 1_800_000_000n;
       jest
         .spyOn(rpc.Server.prototype, "simulateTransaction")
@@ -248,7 +329,8 @@ describe("PoolService", () => {
     });
 
     it("returns null without contacting the network when the pool contract isn't configured", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       expect(await unconfigured.lockupExpiresAt(provider)).toBeNull();
@@ -256,6 +338,8 @@ describe("PoolService", () => {
     });
 
     it("wraps a simulation error in a BadRequestException", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       jest
         .spyOn(rpc.Server.prototype, "simulateTransaction")
         .mockResolvedValue({ error: "boom" } as unknown as rpc.Api.SimulateTransactionResponse);
@@ -273,7 +357,8 @@ describe("PoolService", () => {
 
   describe("unconfigured pool contract", () => {
     it("rejects provide/withdraw with a clear error instead of calling a non-existent contract", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);
 
@@ -289,32 +374,29 @@ describe("PoolService", () => {
   });
 
   describe("getPremiumHistory", () => {
-    afterEach(() => {
-      jest.spyOn(Math, "random").mockRestore();
+    it("delegates to PremiumRevenueRepository.getDailyHistory and returns its result", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      const fakeHistory = [
+        { date: "2026-09-28", premiums: "12000", payouts: "0", apyBps: 820 },
+        { date: "2026-09-27", premiums: "9000", payouts: "5000", apyBps: 800 },
+      ];
+      premiumRevenueRepository.getDailyHistory.mockResolvedValue(fakeHistory);
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
+
+      const history = await service.getPremiumHistory();
+
+      expect(history).toEqual(fakeHistory);
+      expect(premiumRevenueRepository.getDailyHistory).toHaveBeenCalledWith(30);
     });
 
-    it("returns 30 days of history in descending date order starting today", () => {
-      jest.spyOn(Math, "random").mockReturnValue(0.5); // 0.5 < 0.9, so payouts stay "0" every day
+    it("returns an empty array when no premium data exists yet (no random fabrication)", async () => {
+      const { poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository } = buildRepos();
+      premiumRevenueRepository.getDailyHistory.mockResolvedValue([]);
+      const service = new PoolService(buildConfig(), poolSnapshotRepository, lpPositionRepository, premiumRevenueRepository);
 
-      const history = service.getPremiumHistory();
+      const history = await service.getPremiumHistory();
 
-      expect(history).toHaveLength(30);
-      expect(history[0].date).toBe(new Date().toISOString().split("T")[0]);
-      expect(history[0].payouts).toBe("0");
-      expect(history[0].premiums).toBe((4_000 + 0.5 * 12_000).toFixed(0));
-      expect(history[0].apyBps).toBe(Math.floor(700 + 0.5 * 400));
-
-      const day0 = new Date(history[0].date);
-      const day1 = new Date(history[1].date);
-      expect((day0.getTime() - day1.getTime()) / 86_400_000).toBe(1);
-    });
-
-    it("includes a non-zero payout for a day when the random draw clears the 0.9 threshold", () => {
-      jest.spyOn(Math, "random").mockReturnValue(0.95);
-
-      const history = service.getPremiumHistory();
-
-      expect(history[0].payouts).toBe((5_000 + 0.95 * 30_000).toFixed(0));
+      expect(history).toEqual([]);
     });
   });
 });

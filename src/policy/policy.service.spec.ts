@@ -12,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { PremiumRevenueRepository } from "../pool/premium-revenue.repository";
 import { PolicyService } from "./policy.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
@@ -30,6 +31,13 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+}
+
+function buildPremiumRevenueRepository(): jest.Mocked<PremiumRevenueRepository> {
+  return {
+    record: jest.fn().mockResolvedValue(undefined),
+    getDailyHistory: jest.fn().mockResolvedValue([]),
+  } as unknown as jest.Mocked<PremiumRevenueRepository>;
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -92,7 +100,7 @@ describe("PolicyService", () => {
   let holder: string;
 
   beforeEach(() => {
-    service = new PolicyService(buildConfig());
+    service = new PolicyService(buildConfig(), buildPremiumRevenueRepository());
     holder = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this

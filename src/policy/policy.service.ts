@@ -14,6 +14,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { PremiumRevenueRepository } from "../pool/premium-revenue.repository";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
@@ -145,7 +146,10 @@ export class PolicyService {
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly premiumRevenueRepository: PremiumRevenueRepository
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -364,6 +368,10 @@ export class PolicyService {
     };
 
     this.policies.set(policyId, policy);
+
+    // Fire-and-forget: record the collected premium in premium_revenue.
+    // Errors are logged inside the repository and never disrupt the buy flow.
+    void this.premiumRevenueRepository.record(policyId, premium, coverageType);
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
