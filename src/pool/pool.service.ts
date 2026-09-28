@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Pool as PostgresPool } from "pg";
 import {
   Address,
   BASE_FEE,
@@ -11,7 +12,9 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { DATABASE_POOL } from "../database/database.module";
 import { DepositDto } from "./dto/deposit.dto";
+import { ListLpPositionsDto } from "./dto/list-lp-positions.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
 // Mock pool state — replaced by a Postgres-backed (pool_snapshots table)
@@ -45,13 +48,34 @@ export interface PremiumHistoryEntry {
   apyBps: number;
 }
 
+export interface LpPositionRow {
+  provider: string;
+  shares: string;
+  capitalCommitted: string;
+  premiumEarned: string;
+  firstDeposit: Date;
+  lastUpdated: Date;
+}
+
+export interface LpPositionsPage {
+  positions: LpPositionRow[];
+  total: number;
+  page: number;
+  limit: number;
+  sortBy: "capitalCommitted";
+  sortOrder: "asc" | "desc";
+}
+
 @Injectable()
 export class PoolService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    @Inject(DATABASE_POOL) private readonly database: PostgresPool
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -150,6 +174,37 @@ export class PoolService {
       usdcValue: usdcValue.toFixed(0),
       premiumEarned: (usdcValue * 0.089 * 0.5).toFixed(0),
       pct: ((Number(mockShares) / Number(mockPool.totalShares)) * 100).toFixed(4),
+    };
+  }
+
+  async listPositions(query: ListLpPositionsDto): Promise<LpPositionsPage> {
+    const page = query.page;
+    const limit = query.limit;
+    const offset = (page - 1) * limit;
+    const sortOrder = query.sortOrder === "asc" ? "ASC" : "DESC";
+    const [positions, count] = await Promise.all([
+      this.database.query<LpPositionRow>(
+        `SELECT provider,
+                shares::text AS shares,
+                usdc_deposited::text AS "capitalCommitted",
+                premium_earned::text AS "premiumEarned",
+                first_deposit AS "firstDeposit",
+                last_updated AS "lastUpdated"
+         FROM lp_positions
+         ORDER BY usdc_deposited ${sortOrder}, provider ASC
+         LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      ),
+      this.database.query<{ total: string }>("SELECT COUNT(*)::text AS total FROM lp_positions"),
+    ]);
+
+    return {
+      positions: positions.rows,
+      total: Number(count.rows[0].total),
+      page,
+      limit,
+      sortBy: "capitalCommitted",
+      sortOrder: query.sortOrder,
     };
   }
 

@@ -110,6 +110,8 @@ CREATE TABLE lp_positions (
   last_updated    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX idx_lp_positions_capital ON lp_positions(usdc_deposited);
+
 -- ─── Premium Revenue ─────────────────────────────────────────────────────────
 
 CREATE TABLE premium_revenue (

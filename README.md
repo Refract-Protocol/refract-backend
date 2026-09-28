@@ -63,6 +63,7 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `GET` | `/api/v1/policies/holder/:address` | Policies for a holder |
 | `POST` | `/api/v1/policies/buy` | Build a buy-policy transaction |
 | `GET` | `/api/v1/pool/stats` | Pool capital / utilization / APY |
+| `GET` | `/api/v1/pool/positions` | Paginated LP positions sorted by committed capital |
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
 | `WS` | `/` | Live oracle alert stream |
 

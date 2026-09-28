@@ -1,5 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Pool as PostgresPool } from "pg";
 import {
   Account,
   Keypair,
@@ -12,6 +13,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { ListLpPositionsDto } from "./dto/list-lp-positions.dto";
 import { PoolService } from "./pool.service";
 
 // Mirrors the module-private `mockPool` constants in pool.service.ts.
@@ -27,6 +29,8 @@ const MOCK_POOL = {
 
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 const POOL_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 1));
+const databaseQuery = jest.fn();
+const database = { query: databaseQuery } as unknown as PostgresPool;
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
   const stellar: AppConfig["stellar"] = {
@@ -63,7 +67,8 @@ describe("PoolService", () => {
   let provider: string;
 
   beforeEach(() => {
-    service = new PoolService(buildConfig());
+    databaseQuery.mockReset();
+    service = new PoolService(buildConfig(), database);
     provider = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
@@ -110,6 +115,57 @@ describe("PoolService", () => {
       expect(position.usdcValue).toBe(expectedUsdcValue.toFixed(0));
       expect(position.premiumEarned).toBe((expectedUsdcValue * 0.089 * 0.5).toFixed(0));
       expect(position.pct).toBe(((Number(mockShares) / Number(MOCK_POOL.totalShares)) * 100).toFixed(4));
+    });
+  });
+
+  describe("listPositions", () => {
+    it.each(["asc", "desc"] as const)("returns a page sorted by committed capital (%s)", async (sortOrder) => {
+      const firstDeposit = new Date("2025-01-01T00:00:00.000Z");
+      const lastUpdated = new Date("2025-02-01T00:00:00.000Z");
+      databaseQuery
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              provider,
+              shares: "25000000",
+              capitalCommitted: "30000000",
+              premiumEarned: "125000",
+              firstDeposit,
+              lastUpdated,
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ rows: [{ total: "41" }] });
+
+      const query: ListLpPositionsDto = { page: 2, limit: 20, sortOrder };
+      const result = await service.listPositions(query);
+
+      expect(databaseQuery).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining(`ORDER BY usdc_deposited ${sortOrder.toUpperCase()}, provider ASC`),
+        [20, 20]
+      );
+      expect(databaseQuery).toHaveBeenNthCalledWith(
+        2,
+        "SELECT COUNT(*)::text AS total FROM lp_positions"
+      );
+      expect(result).toEqual({
+        positions: [
+          {
+            provider,
+            shares: "25000000",
+            capitalCommitted: "30000000",
+            premiumEarned: "125000",
+            firstDeposit,
+            lastUpdated,
+          },
+        ],
+        total: 41,
+        page: 2,
+        limit: 20,
+        sortBy: "capitalCommitted",
+        sortOrder,
+      });
     });
   });
 
@@ -248,7 +304,7 @@ describe("PoolService", () => {
     });
 
     it("returns null without contacting the network when the pool contract isn't configured", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }), database);
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       expect(await unconfigured.lockupExpiresAt(provider)).toBeNull();
@@ -273,7 +329,7 @@ describe("PoolService", () => {
 
   describe("unconfigured pool contract", () => {
     it("rejects provide/withdraw with a clear error instead of calling a non-existent contract", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }), database);
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);
 

@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
 import { ApiOperation, ApiParam, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { DepositDto } from "./dto/deposit.dto";
+import { ListLpPositionsDto } from "./dto/list-lp-positions.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 import { PoolService } from "./pool.service";
 
@@ -22,6 +23,13 @@ export class PoolController {
   @ApiResponse({ status: 200, description: "Liquidity provider position" })
   getUserPosition(@Param("address") address: string) {
     return this.poolService.getUserPosition(address);
+  }
+
+  @Get("positions")
+  @ApiOperation({ summary: "List all liquidity-provider positions" })
+  @ApiResponse({ status: 200, description: "Paginated LP positions sorted by committed capital" })
+  listPositions(@Query() query: ListLpPositionsDto) {
+    return this.poolService.listPositions(query);
   }
 
   /**
