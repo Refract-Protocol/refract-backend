@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
@@ -42,31 +43,58 @@ export class ClaimSettlementService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
-  private readonly relayerKeypair: Keypair | null;
+  private readonly relayerSecretId: string;
+  private readonly secretsManager: SecretsManagerClient;
+  private relayerKeypairPromise?: Promise<Keypair>;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
-    this.relayerKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
+    this.relayerSecretId = stellar.relayerSecretId;
+    this.secretsManager = new SecretsManagerClient(
+      stellar.relayerSecretRegion ? { region: stellar.relayerSecretRegion } : {}
+    );
   }
 
-  /** True once a pool contract ID and relayer secret are configured. */
+  private getRelayerKeypair(): Promise<Keypair> {
+    if (!this.relayerSecretId) {
+      return Promise.reject(new Error("Relayer signing key is not configured"));
+    }
+    if (!this.relayerKeypairPromise) {
+      this.relayerKeypairPromise = this.secretsManager
+        .send(new GetSecretValueCommand({ SecretId: this.relayerSecretId }))
+        .then((result) => {
+          if (!result.SecretString) {
+            throw new Error("Relayer signing secret has no SecretString");
+          }
+          return Keypair.fromSecret(result.SecretString);
+        })
+        .catch(() => {
+          this.relayerKeypairPromise = undefined;
+          throw new Error("Unable to load relayer signing key from AWS Secrets Manager");
+        });
+    }
+    return this.relayerKeypairPromise;
+  }
+
+  /** True once a pool contract ID and Secrets Manager secret ID are configured. */
   isConfigured(): boolean {
-    return Boolean(this.poolContractId && this.relayerKeypair);
+    return Boolean(this.poolContractId && this.relayerSecretId);
   }
 
   async settleClaim(policyId: string, holder: string, payout: bigint): Promise<SettlementResult> {
-    if (!this.relayerKeypair || !this.poolContractId) {
+    if (!this.isConfigured()) {
       return {
         settled: false,
-        error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET)",
+        error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET_ID)",
       };
     }
 
     try {
-      const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
+      const relayerKeypair = await this.getRelayerKeypair();
+      const sourceAccount = await this.server.getAccount(relayerKeypair.publicKey());
       const contract = new Contract(this.poolContractId);
 
       const operation = contract.call(
@@ -88,7 +116,7 @@ export class ClaimSettlementService {
       // fees/footprint — this is where a wrong function name or argument
       // shape for the ASSUMED interface above would surface.
       const preparedTx = await this.server.prepareTransaction(builtTx);
-      preparedTx.sign(this.relayerKeypair);
+      preparedTx.sign(relayerKeypair);
 
       const sendResult = await this.server.sendTransaction(preparedTx);
       if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {

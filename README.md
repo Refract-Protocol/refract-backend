@@ -72,7 +72,10 @@ npm run dev                  # http://localhost:4001
 > Claim settlement now builds, signs, and submits a real
 > `pool.process_claim()` Soroban transaction via `ClaimSettlementService`
 > (falls back to a safe no-op when `REFRACT_POOL_CONTRACT_ID` /
-> `ORACLE_RELAYER_SECRET` aren't set). **The contract's exact function
+> `ORACLE_RELAYER_SECRET_ID` aren't set). The signing key is fetched at
+> runtime from AWS Secrets Manager using the workload's AWS credentials;
+> configure `ORACLE_RELAYER_SECRET_ID` and grant the runtime IAM role
+> `secretsmanager:GetSecretValue` on that secret. **The contract's exact function
 > signature is an unverified best-effort guess** — this repo doesn't
 > include the `refract-contracts` source, so it needs confirmation
 > against the real deployed contract; see
