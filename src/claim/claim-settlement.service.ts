@@ -1,8 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
+import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
+import { RelayerAuditService, RelayerTransactionStatus } from "./relayer-audit.service";
 
 export interface SettlementResult {
   settled: boolean;
@@ -12,29 +13,8 @@ export interface SettlementResult {
 
 /**
  * Builds, signs, and submits the pool.process_claim() Soroban transaction
- * that actually pays out a triggered claim — replaces the logged stub that
- * used to live in ClaimService.processPayout().
- *
- * CONFIRMED MISMATCH AGAINST refract-contracts — DO NOT DEPLOY AS-IS:
- * refract-contracts/pool/src/lib.rs's real signature is
- *
- *   pub fn process_claim(env: Env, policy_id: u64) -> Result<i128, PoolError>
- *
- * i.e. it takes a single u64 policy id — no holder, no payout — and looks
- * up the holder/payout/trigger condition itself from on-chain Policy
- * storage, returning the payout amount. The call built below still passes
- * the old guessed 3-argument shape (String policy_id, Address holder, i128
- * payout), which fails Soroban's argument-count/type check during
- * simulation on every invocation.
- *
- * That argument mismatch is also downstream of a bigger gap: StoredPolicy.id
- * (see policy.service.ts) is a uuidv4() string minted entirely off-chain,
- * never the u64 the real buy_policy() call returns on-chain (buy_policy
- * itself is also still a txXdr stub — see PolicyService.buy()). There is
- * currently no code path that produces a real on-chain policy id to submit
- * here, so fixing the argument shape alone isn't sufficient; the buy flow
- * needs to actually invoke buy_policy() and thread its returned id through
- * before this can settle a real claim.
+ * that pays out a triggered claim. The deployed contract accepts one u64
+ * policy id and reads the holder and payout from on-chain policy storage.
  */
 @Injectable()
 export class ClaimSettlementService {
@@ -44,7 +24,10 @@ export class ClaimSettlementService {
   private readonly poolContractId: string;
   private readonly relayerKeypair: Keypair | null;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly relayerAuditService: RelayerAuditService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -57,7 +40,7 @@ export class ClaimSettlementService {
     return Boolean(this.poolContractId && this.relayerKeypair);
   }
 
-  async settleClaim(policyId: string, holder: string, payout: bigint): Promise<SettlementResult> {
+  async settleClaim(policyId: string): Promise<SettlementResult> {
     if (!this.relayerKeypair || !this.poolContractId) {
       return {
         settled: false,
@@ -65,16 +48,22 @@ export class ClaimSettlementService {
       };
     }
 
+    let transactionHash: string | undefined;
+    let auditStatus: RelayerTransactionStatus = "signed";
+    let auditRecorded = false;
     try {
+      if (!/^\d+$/.test(policyId)) {
+        throw new Error("On-chain policy ID must be an unsigned integer");
+      }
+      const onChainPolicyId = BigInt(policyId);
+      if (onChainPolicyId > 18_446_744_073_709_551_615n) {
+        throw new Error("On-chain policy ID exceeds the u64 range");
+      }
+
       const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
       const contract = new Contract(this.poolContractId);
 
-      const operation = contract.call(
-        "process_claim",
-        nativeToScVal(policyId, { type: "string" }),
-        new Address(holder).toScVal(),
-        nativeToScVal(payout, { type: "i128" })
-      );
+      const operation = contract.call("process_claim", nativeToScVal(onChainPolicyId, { type: "u64" }));
 
       const builtTx = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -86,19 +75,48 @@ export class ClaimSettlementService {
 
       // Simulates against the live contract and fills in Soroban resource
       // fees/footprint — this is where a wrong function name or argument
-      // shape for the ASSUMED interface above would surface.
+      // argument type/shape for the deployed contract would surface.
       const preparedTx = await this.server.prepareTransaction(builtTx);
       preparedTx.sign(this.relayerKeypair);
 
+      transactionHash = preparedTx.hash().toString("hex");
+      await this.relayerAuditService.recordSignedTransaction(
+        policyId,
+        this.relayerKeypair.publicKey(),
+        transactionHash
+      );
+      auditRecorded = true;
+
       const sendResult = await this.server.sendTransaction(preparedTx);
       if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
+        await this.relayerAuditService.recordOutcome(
+          transactionHash,
+          "rejected",
+          sendResult.status,
+          `Submission not accepted: ${sendResult.status}`
+        );
+        auditStatus = "rejected";
         return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
       }
 
+      await this.relayerAuditService.recordOutcome(transactionHash, "submitted", sendResult.status);
+      auditStatus = "submitted";
       const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+      const outcome = confirmation.confirmed ? "confirmed" : "failed";
+      await this.relayerAuditService.recordOutcome(transactionHash, outcome, sendResult.status, confirmation.error);
+      auditStatus = outcome;
       return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (auditRecorded && transactionHash && auditStatus !== "rejected" && auditStatus !== "confirmed") {
+        try {
+          await this.relayerAuditService.recordOutcome(transactionHash, "failed", undefined, message);
+        } catch (auditErr) {
+          const auditMessage = auditErr instanceof Error ? auditErr.message : String(auditErr);
+          this.logger.error(`Failed to update relayer audit record for transaction ${transactionHash}`, auditMessage);
+          return { settled: false, error: `${message}; audit update failed: ${auditMessage}` };
+        }
+      }
       this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
       return { settled: false, error: message };
     }

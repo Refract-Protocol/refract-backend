@@ -51,6 +51,10 @@ npm run dev                  # http://localhost:4001
 
 ## API surface
 
+Interactive OpenAPI documentation and the generated JSON document are served
+at [`/api/docs`](http://localhost:4001/api/docs) and `/api/docs-json`.
+Schemas are generated from the Nest controllers and request DTOs.
+
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
@@ -59,6 +63,7 @@ npm run dev                  # http://localhost:4001
 | `GET` | `/api/v1/policies/holder/:address` | Policies for a holder |
 | `POST` | `/api/v1/policies/buy` | Build a buy-policy transaction |
 | `GET` | `/api/v1/pool/stats` | Pool capital / utilization / APY |
+| `GET` | `/api/v1/pool/positions` | Paginated LP positions sorted by committed capital |
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
 | `WS` | `/` | Live oracle alert stream |
 
@@ -69,16 +74,19 @@ npm run dev                  # http://localhost:4001
 > and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
 > liquidation events, and AviationStack (flight data) requires a paid key
 > this project doesn't have. See `src/oracle/oracle.service.ts` for details.
-> Claim settlement now builds, signs, and submits a real
-> `pool.process_claim()` Soroban transaction via `ClaimSettlementService`
-> (falls back to a safe no-op when `REFRACT_POOL_CONTRACT_ID` /
-> `ORACLE_RELAYER_SECRET` aren't set). **The contract's exact function
-> signature is an unverified best-effort guess** — this repo doesn't
-> include the `refract-contracts` source, so it needs confirmation
-> against the real deployed contract; see
-> `src/claim/claim-settlement.service.ts` for details. A policy only
+> Claim settlement builds, signs, and submits the deployed
+> `pool.process_claim(u64 policy_id)` invocation via
+> `ClaimSettlementService`; it uses the on-chain policy ID because the
+> contract loads the holder and payout itself. Settlement requires a
+> numeric on-chain policy ID, while the current policy purchase flow still
+> creates an off-chain UUID; wiring the returned on-chain ID through that
+> flow remains necessary for end-to-end automatic settlement. A policy only
 > deactivates once settlement actually confirms on-chain — a failed or
 > unconfirmed payout leaves it active for the next scheduled retry.
+> Every transaction signed by the relayer is also recorded in the dedicated
+> PostgreSQL `relayer_transaction_audit` table with its lifecycle status,
+> transaction hash, signing key's public address, and policy ID. Apply the
+> current `src/db/schema.sql` before enabling relayer settlement.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
