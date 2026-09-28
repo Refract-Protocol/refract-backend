@@ -14,22 +14,10 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { COVERAGE_TYPES } from "../common/coverage-types";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
-
-/**
- * Mirrors refract-contracts/pool/src/lib.rs's `CoverageType` enum, in
- * declaration order — buy-policy.dto.ts's `coverageType` is validated as
- * 0-4 against exactly this ordering.
- */
-const COVERAGE_TYPE_VARIANTS = [
-  "StablecoinDepeg",
-  "MarketCrash",
-  "LiquidationShield",
-  "SmartContractRisk",
-  "FlightDelay",
-] as const;
 
 /**
  * trigger_threshold per coverage type, in the units process_claim() compares
@@ -66,74 +54,7 @@ export interface StoredPolicy {
   triggerParams?: Record<string, unknown>;
 }
 
-const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
 const BASE_RATE_BPS = 300; // 3% annual
-
-const COVERAGE_NAMES = [
-  "Stablecoin Depeg",
-  "Market Crash",
-  "Liquidation Shield",
-  "Smart Contract Risk",
-  "Flight Delay",
-];
-
-const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
-  {
-    id: 0,
-    name: "Stablecoin Depeg",
-    description: "Pays out if a major stablecoin depegs below $0.95",
-    riskLevel: "medium",
-    riskMultiplier: 1.0,
-    baseRatePct: 3.0,
-    maxCoverage: 100_000,
-    trigger: "USDC price < $0.95 for 15+ minutes",
-    icon: "🪙",
-  },
-  {
-    id: 1,
-    name: "Market Crash",
-    description: "Covers catastrophic market downturns exceeding 30% in 24h",
-    riskLevel: "high",
-    riskMultiplier: 1.5,
-    baseRatePct: 4.5,
-    maxCoverage: 50_000,
-    trigger: "Market index 24h return < -30%",
-    icon: "📉",
-  },
-  {
-    id: 2,
-    name: "Liquidation Shield",
-    description: "Pays out if your DeFi position gets liquidated",
-    riskLevel: "high",
-    riskMultiplier: 2.0,
-    baseRatePct: 6.0,
-    maxCoverage: 200_000,
-    trigger: "Collateral ratio drops below maintenance threshold",
-    icon: "🛡️",
-  },
-  {
-    id: 3,
-    name: "Smart Contract Risk",
-    description: "Protection against smart contract exploits and hacks",
-    riskLevel: "critical",
-    riskMultiplier: 3.0,
-    baseRatePct: 9.0,
-    maxCoverage: 500_000,
-    trigger: "Covered protocol TVL drops >50% in <1 hour",
-    icon: "🔐",
-  },
-  {
-    id: 4,
-    name: "Flight Delay",
-    description: "Automatic payout for flight delays over 2 hours",
-    riskLevel: "low",
-    riskMultiplier: 0.8,
-    baseRatePct: 2.4,
-    maxCoverage: 2_000,
-    trigger: "Flight delayed > 120 minutes per AviationStack data",
-    icon: "✈️",
-  },
-];
 
 @Injectable()
 export class PolicyService {
@@ -178,7 +99,7 @@ export class PolicyService {
       }),
       new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol("coverage_type"),
-        val: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(COVERAGE_TYPE_VARIANTS[coverageType])]),
+        val: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(COVERAGE_TYPES[coverageType].key)]),
       }),
       new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol("duration_days"),
@@ -272,7 +193,19 @@ export class PolicyService {
   }
 
   listTypes(): CoverageTypeCatalogEntry[] {
-    return COVERAGE_TYPES;
+    return COVERAGE_TYPES.map(
+      ({ id, name, description, riskLevel, riskMultiplier, baseRatePct, maxCoverage, trigger, icon }) => ({
+        id,
+        name,
+        description,
+        riskLevel,
+        riskMultiplier,
+        baseRatePct,
+        maxCoverage,
+        trigger,
+        icon,
+      })
+    );
   }
 
   findByHolder(address: string): StoredPolicy[] {
@@ -317,10 +250,11 @@ export class PolicyService {
     // advertised cap (e.g. 500,000 on a Flight Delay policy capped at
     // 2,000) and it would be silently accepted. The Soroban pool contract
     // enforces the equivalent check in buy_policy(); mirror it here.
-    const maxCoverage = COVERAGE_TYPES[coverageType].maxCoverage;
+    const catalogEntry = COVERAGE_TYPES[coverageType];
+    const maxCoverage = catalogEntry.maxCoverage;
     if (coverage > BigInt(maxCoverage) * 10_000_000n) {
       throw new BadRequestException({
-        error: `coverageAmount exceeds the ${COVERAGE_NAMES[coverageType]} maximum of ${maxCoverage} USDC`,
+        error: `coverageAmount exceeds the ${catalogEntry.name} maximum of ${maxCoverage} USDC`,
         maxCoverage,
       });
     }
@@ -340,7 +274,7 @@ export class PolicyService {
       });
     }
 
-    const multiplier = RISK_MULTIPLIERS[coverageType];
+    const multiplier = catalogEntry.riskMultiplier;
     const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
     const dailyRate = annualRate / 365;
     const premiumFraction = dailyRate * durationDays;
@@ -353,7 +287,7 @@ export class PolicyService {
       id: policyId,
       holder,
       coverageType,
-      coverageTypeName: COVERAGE_NAMES[coverageType],
+      coverageTypeName: catalogEntry.name,
       coverageAmount,
       premium: premium.toString(),
       durationDays,
