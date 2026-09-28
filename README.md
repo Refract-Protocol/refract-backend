@@ -62,6 +62,10 @@ npm run dev                  # http://localhost:4001
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
 | `WS` | `/` | Live oracle alert stream |
 
+State-changing API attempts emit structured `security_audit` JSON lines to
+stdout; route those events to the deployment's log aggregation or SIEM system.
+See [`SECURITY.md`](./SECURITY.md) for the event fields and identity limitations.
+
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
 > `SmartContractRisk` now call real, keyless public APIs — CoinGecko
 > (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama

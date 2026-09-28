@@ -15,7 +15,11 @@ async function bootstrap() {
 
   const config = app.get(ConfigService<AppConfig, true>);
 
-  app.use(helmet());
+  const helmetDirectives = {
+    ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+    "upgrade-insecure-requests": process.env.NODE_ENV === "production" ? [] : null,
+  };
+  app.use(helmet({ contentSecurityPolicy: { directives: helmetDirectives } }));
   app.enableCors({
     origin: config.get("frontendOrigins", { infer: true }),
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],

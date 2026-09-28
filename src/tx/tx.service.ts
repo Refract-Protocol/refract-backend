@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { FeeBumpTransaction, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import Redis from "ioredis";
@@ -15,7 +15,7 @@ import { ConfirmationResult, pollForConfirmation } from "../stellar/soroban-conf
  * invoked.
  */
 @Injectable()
-export class TxService {
+export class TxService implements OnModuleDestroy {
   private readonly logger = new Logger(TxService.name);
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
@@ -44,7 +44,7 @@ export class TxService {
     const timeBounds = tx instanceof FeeBumpTransaction ? tx.innerTransaction.timeBounds : tx.timeBounds;
     const maxTime = timeBounds?.maxTime ? Number(timeBounds.maxTime) : 0;
     const now = Math.floor(Date.now() / 1000);
-    if (!maxTime || maxTime <= now) {
+    if (!Number.isSafeInteger(maxTime) || maxTime <= now) {
       return { confirmed: false, txHash, error: "Transaction is expired or has no expiration time" };
     }
 
@@ -77,5 +77,9 @@ export class TxService {
       this.logger.error("Soroban submission failed", message);
       return { confirmed: false, txHash: "", error: message };
     }
+  }
+
+  onModuleDestroy(): void {
+    this.redis.disconnect();
   }
 }

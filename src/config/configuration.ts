@@ -71,7 +71,9 @@ export function parseFrontendOrigins(value: string): string[] {
 export default (): AppConfig => ({
   port: parseInt(process.env.PORT || "4001", 10),
   frontendOrigins: parseFrontendOrigins(
-    process.env.FRONTEND_URLS || process.env.FRONTEND_URL || "http://localhost:3000"
+    process.env.FRONTEND_URLS !== undefined
+      ? process.env.FRONTEND_URLS
+      : process.env.FRONTEND_URL || "http://localhost:3000"
   ),
   database: {
     url: process.env.DATABASE_URL || "postgres://refract:refract@localhost:5432/refract",
