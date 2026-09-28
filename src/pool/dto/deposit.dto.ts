@@ -1,4 +1,4 @@
-import { IsString, Length, Matches } from "class-validator";
+import { IsString, Length, Matches, MaxLength } from "class-validator";
 
 export class DepositDto {
   @IsString()
@@ -7,5 +7,6 @@ export class DepositDto {
 
   @IsString()
   @Matches(/^\d+$/)
+  @MaxLength(39)
   amount!: string;
 }

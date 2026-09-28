@@ -22,7 +22,8 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
     policyContractId: "",
     oracleContractId: "",
-    relayerSecret: "",
+    relayerSecretId: "",
+    relayerSecretRegion: "",
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
@@ -79,6 +80,8 @@ describe("TxService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.submit(signedXdr);
@@ -120,6 +123,8 @@ describe("TxService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.submit(signedXdr);

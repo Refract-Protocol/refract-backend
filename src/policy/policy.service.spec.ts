@@ -1,5 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import fc from "fast-check";
 import {
   Account,
   Keypair,
@@ -26,7 +27,8 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     poolContractId: POOL_CONTRACT_ID,
     policyContractId: "",
     oracleContractId: "",
-    relayerSecret: "",
+    relayerSecretId: "",
+    relayerSecretRegion: "",
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
@@ -110,6 +112,36 @@ describe("PolicyService", () => {
   });
 
   describe("buy", () => {
+    it("calculates premium exactly for generated coverage amounts, types, and durations", async () => {
+      const riskMultipliersBps = [10_000n, 15_000n, 20_000n, 30_000n, 8_000n];
+      const maxCoverageUnits = [100_000n, 50_000n, 200_000n, 500_000n, 2_000n].map((amount) => amount * 10_000_000n);
+
+      await fc.assert(
+        fc.asyncProperty(
+          fc.integer({ min: 0, max: 4 }),
+          fc.bigInt({ min: 1n, max: 5_000_000_000_000n }),
+          fc.integer({ min: 1, max: 365 }),
+          async (coverageType, generatedCoverage, durationDays) => {
+            const coverage = 1n + (generatedCoverage - 1n) % maxCoverageUnits[coverageType];
+            const { policy } = await service.buy(
+              buildDto(holder, {
+                coverageType,
+                coverageAmount: coverage.toString(),
+                durationDays,
+                triggerParams: coverageType === 4 ? { flightNumber: "BA249" } : undefined,
+              })
+            );
+            const expected =
+              (coverage * 300n * riskMultipliersBps[coverageType] * BigInt(durationDays)) /
+              (10_000n * 10_000n * 365n);
+
+            expect(BigInt(policy.premium)).toBe(expected);
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+
     // Regression coverage for a pricing bug: the premium formula skipped
     // converting BASE_RATE_BPS from basis points to a fraction (missing
     // /10_000), so a policy was charged ~100x its listed annual rate. These

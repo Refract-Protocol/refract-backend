@@ -13,13 +13,21 @@ import {
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { PoolService } from "./pool.service";
+import fc from "fast-check";
+import {
+  calculatePoolShareValue,
+  calculateSharesOut,
+  calculateUsdcOut,
+  formatFixedPercent,
+  SHARE_PRICE_SCALE,
+} from "./share-price.math";
 
 // Mirrors the module-private `mockPool` constants in pool.service.ts.
 const MOCK_POOL = {
-  totalUsdc: BigInt(18_400_000 * 1e7),
-  totalShares: BigInt(17_800_000 * 1e7),
-  lockedUsdc: BigInt(2_900_000 * 1e7),
-  premiumAccrued: BigInt(284_000 * 1e7),
+  totalUsdc: 18_400_000n * 10_000_000n,
+  totalShares: 17_800_000n * 10_000_000n,
+  lockedUsdc: 2_900_000n * 10_000_000n,
+  premiumAccrued: 284_000n * 10_000_000n,
   utilizationBps: 1576,
   apyBps: 890,
   sharePrice: 1.0319,
@@ -36,7 +44,8 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     poolContractId: POOL_CONTRACT_ID,
     policyContractId: "",
     oracleContractId: "",
-    relayerSecret: "",
+    relayerSecretId: "",
+    relayerSecretRegion: "",
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
@@ -102,14 +111,48 @@ describe("PoolService", () => {
 
       const position = service.getUserPosition(address);
 
-      const mockShares = BigInt(Math.floor(30_000 * 1e7));
-      const expectedUsdcValue = Number(mockShares) * MOCK_POOL.sharePrice;
+      const mockShares = 30_000n * 10_000_000n;
+      const expectedUsdcValue = ((mockShares * 10_319n + 5_000n) / 10_000n).toString();
 
       expect(position.address).toBe(address);
       expect(position.shares).toBe(mockShares.toString());
-      expect(position.usdcValue).toBe(expectedUsdcValue.toFixed(0));
-      expect(position.premiumEarned).toBe((expectedUsdcValue * 0.089 * 0.5).toFixed(0));
-      expect(position.pct).toBe(((Number(mockShares) / Number(MOCK_POOL.totalShares)) * 100).toFixed(4));
+      expect(position.usdcValue).toBe(expectedUsdcValue);
+      expect(position.premiumEarned).toBe(((BigInt(expectedUsdcValue) * 890n + 10_000n) / 20_000n).toString());
+      const expectedPct = ((mockShares * 1_000_000n + MOCK_POOL.totalShares / 2n) / MOCK_POOL.totalShares).toString();
+      expect(position.pct).toBe(`${(BigInt(expectedPct) / 10_000n).toString()}.${(BigInt(expectedPct) % 10_000n).toString().padStart(4, "0")}`);
+    });
+
+    describe("fixed-point share-price math", () => {
+      it("fuzzes rounded share values and deposit/withdrawal conversions against exact integer arithmetic", () => {
+        fc.assert(
+          fc.property(
+            fc.bigInt({ min: 0n, max: 10n ** 30n }),
+            fc.bigInt({ min: 1n, max: 10n ** 12n }),
+            fc.bigInt({ min: 1n, max: 10n ** 12n }),
+            fc.bigInt({ min: 1n, max: 10n ** 12n }),
+            fc.bigInt({ min: 1n, max: 10n ** 30n }),
+            fc.bigInt({ min: 1n, max: 10n ** 30n }),
+            (shares, priceScaled, totalShares, totalUsdc, depositAmount, withdrawalShares) => {
+              const shareValue = calculatePoolShareValue(shares, priceScaled);
+              const scaledPercent = (shares * 1_000_000n + totalShares / 2n) / totalShares;
+              const expectedPercent = `${(scaledPercent / 10_000n).toString()}.${(scaledPercent % 10_000n)
+                .toString()
+                .padStart(4, "0")}`;
+              expect(shareValue).toBe((shares * priceScaled + SHARE_PRICE_SCALE / 2n) / SHARE_PRICE_SCALE);
+              expect(calculateSharesOut(depositAmount, totalShares, totalUsdc)).toBe(
+                (depositAmount * totalShares) / totalUsdc
+              );
+              expect(calculateUsdcOut(withdrawalShares, totalUsdc, totalShares)).toBe(
+                (withdrawalShares * totalUsdc) / totalShares
+              );
+              expect(calculateSharesOut(totalUsdc, totalShares, totalUsdc)).toBe(totalShares);
+              expect(calculateUsdcOut(totalShares, totalUsdc, totalShares)).toBe(totalUsdc);
+              expect(formatFixedPercent(shares, totalShares)).toBe(expectedPercent);
+            }
+          ),
+          { numRuns: 500 }
+        );
+      });
     });
   });
 

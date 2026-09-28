@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { randomUUID } from "node:crypto";
 import {
   Account,
   Address,
@@ -12,7 +13,6 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
@@ -66,7 +66,7 @@ export interface StoredPolicy {
   triggerParams?: Record<string, unknown>;
 }
 
-const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
+const RISK_MULTIPLIERS_BPS = [10_000n, 15_000n, 20_000n, 30_000n, 8_000n];
 const BASE_RATE_BPS = 300; // 3% annual
 
 const COVERAGE_NAMES = [
@@ -340,13 +340,11 @@ export class PolicyService {
       });
     }
 
-    const multiplier = RISK_MULTIPLIERS[coverageType];
-    const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
-    const dailyRate = annualRate / 365;
-    const premiumFraction = dailyRate * durationDays;
-    const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
+    const premium =
+      (coverage * BigInt(BASE_RATE_BPS) * RISK_MULTIPLIERS_BPS[coverageType] * BigInt(durationDays)) /
+      (10_000n * 10_000n * 365n);
 
-    const policyId = uuidv4();
+    const policyId = randomUUID();
     const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
 
     const policy: StoredPolicy = {

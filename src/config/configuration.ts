@@ -22,7 +22,8 @@ export interface AppConfig {
     poolContractId: string;
     policyContractId: string;
     oracleContractId: string;
-    relayerSecret: string;
+    relayerSecretId: string;
+    relayerSecretRegion: string;
   };
   oracles: {
     coingeckoBaseUrl: string;
@@ -49,7 +50,8 @@ export default (): AppConfig => ({
     poolContractId: process.env.REFRACT_POOL_CONTRACT_ID || "",
     policyContractId: process.env.REFRACT_POLICY_CONTRACT_ID || "",
     oracleContractId: process.env.REFRACT_ORACLE_CONTRACT_ID || "",
-    relayerSecret: process.env.ORACLE_RELAYER_SECRET || "",
+    relayerSecretId: process.env.ORACLE_RELAYER_SECRET_ID || "",
+    relayerSecretRegion: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "",
   },
   oracles: {
     coingeckoBaseUrl: process.env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",

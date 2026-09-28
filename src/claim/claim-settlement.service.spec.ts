@@ -1,4 +1,5 @@
 import { ConfigService } from "@nestjs/config";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { Account, Keypair, StrKey, rpc } from "@stellar/stellar-sdk";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { AppConfig } from "../config/configuration";
@@ -11,7 +12,8 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
     policyContractId: "",
     oracleContractId: "",
-    relayerSecret: Keypair.random().secret(),
+    relayerSecretId: "test/relayer",
+    relayerSecretRegion: "us-east-1",
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
@@ -20,9 +22,15 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
 const PENDING_SEND_RESULT = { status: "PENDING" as const, hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 };
 
 describe("ClaimSettlementService", () => {
+  const relayerSecret = Keypair.random().secret();
+
   afterEach(() => {
     jest.restoreAllMocks();
     jest.useRealTimers();
+  });
+
+  beforeEach(() => {
+    jest.spyOn(SecretsManagerClient.prototype, "send").mockResolvedValue({ SecretString: relayerSecret } as never);
   });
 
   describe("isConfigured", () => {
@@ -31,12 +39,12 @@ describe("ClaimSettlementService", () => {
       expect(service.isConfigured()).toBe(false);
     });
 
-    it("is false when the relayer secret is missing", () => {
-      const service = new ClaimSettlementService(buildConfig({ relayerSecret: "" }));
+    it("is false when the relayer secret ID is missing", () => {
+      const service = new ClaimSettlementService(buildConfig({ relayerSecretId: "" }));
       expect(service.isConfigured()).toBe(false);
     });
 
-    it("is true once both the pool contract ID and relayer secret are set", () => {
+    it("is true once both the pool contract ID and relayer secret ID are set", () => {
       const service = new ClaimSettlementService(buildConfig());
       expect(service.isConfigured()).toBe(true);
     });
@@ -77,11 +85,14 @@ describe("ClaimSettlementService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.settleClaim("policy-1", holder, 5_000_000_000n);
 
       expect(result).toEqual({ settled: true, txHash: "mock-tx-hash" });
+      expect(SecretsManagerClient.prototype.send).toHaveBeenCalledWith(expect.any(GetSecretValueCommand));
     });
 
     it("does not settle when the submission is rejected outright", async () => {
@@ -122,6 +133,8 @@ describe("ClaimSettlementService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.settleClaim("policy-1", holder, 100n);
@@ -143,6 +156,7 @@ describe("ClaimSettlementService", () => {
         latestLedgerCloseTime: 1,
         oldestLedger: 1,
         oldestLedgerCloseTime: 1,
+        txHash: "mock-tx-hash",
       });
 
       const resultPromise = service.settleClaim("policy-1", holder, 100n);

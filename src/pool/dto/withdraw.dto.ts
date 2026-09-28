@@ -1,4 +1,4 @@
-import { IsString, Length, Matches } from "class-validator";
+import { IsString, Length, Matches, MaxLength } from "class-validator";
 
 export class WithdrawDto {
   @IsString()
@@ -7,5 +7,6 @@ export class WithdrawDto {
 
   @IsString()
   @Matches(/^\d+$/)
+  @MaxLength(39)
   shares!: string;
 }
