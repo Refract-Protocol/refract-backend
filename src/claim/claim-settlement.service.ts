@@ -29,7 +29,7 @@ export interface SettlementResult {
  * simulation on every invocation.
  *
  * That argument mismatch is also downstream of a bigger gap: StoredPolicy.id
- * (see policy.service.ts) is a uuidv4() string minted entirely off-chain,
+ * (see policy.service.ts) is a UUID string minted entirely off-chain,
  * never the u64 the real buy_policy() call returns on-chain (buy_policy
  * itself is also still a txXdr stub — see PolicyService.buy()). There is
  * currently no code path that produces a real on-chain policy id to submit

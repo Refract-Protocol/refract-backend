@@ -130,12 +130,24 @@ describe("PoolService", () => {
             fc.bigInt({ min: 1n, max: 10n ** 12n }),
             fc.bigInt({ min: 1n, max: 10n ** 12n }),
             fc.bigInt({ min: 1n, max: 10n ** 12n }),
-            (shares, priceScaled, totalShares, totalUsdc) => {
+            fc.bigInt({ min: 1n, max: 10n ** 30n }),
+            fc.bigInt({ min: 1n, max: 10n ** 30n }),
+            (shares, priceScaled, totalShares, totalUsdc, depositAmount, withdrawalShares) => {
               const shareValue = calculatePoolShareValue(shares, priceScaled);
+              const scaledPercent = (shares * 1_000_000n + totalShares / 2n) / totalShares;
+              const expectedPercent = `${(scaledPercent / 10_000n).toString()}.${(scaledPercent % 10_000n)
+                .toString()
+                .padStart(4, "0")}`;
               expect(shareValue).toBe((shares * priceScaled + SHARE_PRICE_SCALE / 2n) / SHARE_PRICE_SCALE);
+              expect(calculateSharesOut(depositAmount, totalShares, totalUsdc)).toBe(
+                (depositAmount * totalShares) / totalUsdc
+              );
+              expect(calculateUsdcOut(withdrawalShares, totalUsdc, totalShares)).toBe(
+                (withdrawalShares * totalUsdc) / totalShares
+              );
               expect(calculateSharesOut(totalUsdc, totalShares, totalUsdc)).toBe(totalShares);
               expect(calculateUsdcOut(totalShares, totalUsdc, totalShares)).toBe(totalUsdc);
-              expect(formatFixedPercent(shares, totalShares)).toMatch(/^\d+\.\d{4}$/);
+              expect(formatFixedPercent(shares, totalShares)).toBe(expectedPercent);
             }
           ),
           { numRuns: 500 }

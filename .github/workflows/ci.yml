@@ -20,11 +20,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies
+        run: npm audit
+
       - name: Lint
         run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Test
+        run: npm test -- --runInBand
 
       - name: Build
         run: npm run build

@@ -80,6 +80,8 @@ describe("TxService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.submit(signedXdr);
@@ -121,6 +123,8 @@ describe("TxService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.submit(signedXdr);

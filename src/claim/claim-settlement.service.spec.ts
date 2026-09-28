@@ -85,6 +85,8 @@ describe("ClaimSettlementService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.settleClaim("policy-1", holder, 5_000_000_000n);
@@ -131,6 +133,8 @@ describe("ClaimSettlementService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.settleClaim("policy-1", holder, 100n);
@@ -152,6 +156,7 @@ describe("ClaimSettlementService", () => {
         latestLedgerCloseTime: 1,
         oldestLedger: 1,
         oldestLedgerCloseTime: 1,
+        txHash: "mock-tx-hash",
       });
 
       const resultPromise = service.settleClaim("policy-1", holder, 100n);
