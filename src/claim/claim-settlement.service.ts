@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
+import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
@@ -11,30 +11,10 @@ export interface SettlementResult {
 }
 
 /**
- * Builds, signs, and submits the pool.process_claim() Soroban transaction
- * that actually pays out a triggered claim — replaces the logged stub that
- * used to live in ClaimService.processPayout().
- *
- * CONFIRMED MISMATCH AGAINST refract-contracts — DO NOT DEPLOY AS-IS:
- * refract-contracts/pool/src/lib.rs's real signature is
- *
- *   pub fn process_claim(env: Env, policy_id: u64) -> Result<i128, PoolError>
- *
- * i.e. it takes a single u64 policy id — no holder, no payout — and looks
- * up the holder/payout/trigger condition itself from on-chain Policy
- * storage, returning the payout amount. The call built below still passes
- * the old guessed 3-argument shape (String policy_id, Address holder, i128
- * payout), which fails Soroban's argument-count/type check during
- * simulation on every invocation.
- *
- * That argument mismatch is also downstream of a bigger gap: StoredPolicy.id
- * (see policy.service.ts) is a uuidv4() string minted entirely off-chain,
- * never the u64 the real buy_policy() call returns on-chain (buy_policy
- * itself is also still a txXdr stub — see PolicyService.buy()). There is
- * currently no code path that produces a real on-chain policy id to submit
- * here, so fixing the argument shape alone isn't sufficient; the buy flow
- * needs to actually invoke buy_policy() and thread its returned id through
- * before this can settle a real claim.
+ * Builds, signs, and submits the pool.process_claim() Soroban transaction.
+ * Its deployed interface accepts only a u64 on-chain policy ID. Policy
+ * records currently use off-chain UUIDs until buy_policy is wired to persist
+ * its on-chain return value, so those records are rejected before submission.
  */
 @Injectable()
 export class ClaimSettlementService {
@@ -57,7 +37,7 @@ export class ClaimSettlementService {
     return Boolean(this.poolContractId && this.relayerKeypair);
   }
 
-  async settleClaim(policyId: string, holder: string, payout: bigint): Promise<SettlementResult> {
+  async settleClaim(policyId: string): Promise<SettlementResult> {
     if (!this.relayerKeypair || !this.poolContractId) {
       return {
         settled: false,
@@ -65,16 +45,15 @@ export class ClaimSettlementService {
       };
     }
 
+    if (!/^\d+$/.test(policyId) || BigInt(policyId) > 18_446_744_073_709_551_615n) {
+      return { settled: false, error: "Policy ID must be an on-chain u64" };
+    }
+
     try {
       const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
       const contract = new Contract(this.poolContractId);
 
-      const operation = contract.call(
-        "process_claim",
-        nativeToScVal(policyId, { type: "string" }),
-        new Address(holder).toScVal(),
-        nativeToScVal(payout, { type: "i128" })
-      );
+      const operation = contract.call("process_claim", nativeToScVal(BigInt(policyId), { type: "u64" }));
 
       const builtTx = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -84,9 +63,6 @@ export class ClaimSettlementService {
         .setTimeout(30)
         .build();
 
-      // Simulates against the live contract and fills in Soroban resource
-      // fees/footprint — this is where a wrong function name or argument
-      // shape for the ASSUMED interface above would surface.
       const preparedTx = await this.server.prepareTransaction(builtTx);
       preparedTx.sign(this.relayerKeypair);
 

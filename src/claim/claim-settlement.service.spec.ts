@@ -47,7 +47,7 @@ describe("ClaimSettlementService", () => {
       const service = new ClaimSettlementService(buildConfig({ poolContractId: "" }));
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
-      const result = await service.settleClaim("policy-1", Keypair.random().publicKey(), 100n);
+      const result = await service.settleClaim("policy-1");
 
       expect(result.settled).toBe(false);
       expect(result.error).toContain("not configured");
@@ -79,7 +79,7 @@ describe("ClaimSettlementService", () => {
         resultMetaXdr: {} as never,
       });
 
-      const result = await service.settleClaim("policy-1", holder, 5_000_000_000n);
+      const result = await service.settleClaim("1");
 
       expect(result).toEqual({ settled: true, txHash: "mock-tx-hash" });
     });
@@ -95,7 +95,7 @@ describe("ClaimSettlementService", () => {
         .mockResolvedValue({ status: "ERROR", hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 });
       const getTransactionSpy = jest.spyOn(rpc.Server.prototype, "getTransaction");
 
-      const result = await service.settleClaim("policy-1", holder, 100n);
+      const result = await service.settleClaim("1");
 
       expect(result.settled).toBe(false);
       expect(result.error).toContain("ERROR");
@@ -124,7 +124,7 @@ describe("ClaimSettlementService", () => {
         resultMetaXdr: {} as never,
       });
 
-      const result = await service.settleClaim("policy-1", holder, 100n);
+      const result = await service.settleClaim("1");
 
       expect(result).toEqual({ settled: false, txHash: "mock-tx-hash", error: "Transaction failed on-chain" });
     });
@@ -145,7 +145,7 @@ describe("ClaimSettlementService", () => {
         oldestLedgerCloseTime: 1,
       });
 
-      const resultPromise = service.settleClaim("policy-1", holder, 100n);
+      const resultPromise = service.settleClaim("1");
       await jest.runAllTimersAsync();
       const result = await resultPromise;
 
@@ -154,11 +154,10 @@ describe("ClaimSettlementService", () => {
 
     it("catches an unexpected error (e.g. a network failure) and reports settled:false", async () => {
       const service = new ClaimSettlementService(buildConfig());
-      const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockRejectedValue(new Error("connection refused"));
 
-      const result = await service.settleClaim("policy-1", holder, 100n);
+      const result = await service.settleClaim("1");
 
       expect(result.settled).toBe(false);
       expect(result.error).toBe("connection refused");
