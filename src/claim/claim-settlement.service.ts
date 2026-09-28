@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
+import { RelayerAuditService, RelayerTransactionStatus } from "./relayer-audit.service";
 
 export interface SettlementResult {
   settled: boolean;
@@ -23,7 +24,10 @@ export class ClaimSettlementService {
   private readonly poolContractId: string;
   private readonly relayerKeypair: Keypair | null;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly relayerAuditService: RelayerAuditService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -44,6 +48,9 @@ export class ClaimSettlementService {
       };
     }
 
+    let transactionHash: string | undefined;
+    let auditStatus: RelayerTransactionStatus = "signed";
+    let auditRecorded = false;
     try {
       if (!/^\d+$/.test(policyId)) {
         throw new Error("On-chain policy ID must be an unsigned integer");
@@ -72,15 +79,44 @@ export class ClaimSettlementService {
       const preparedTx = await this.server.prepareTransaction(builtTx);
       preparedTx.sign(this.relayerKeypair);
 
+      transactionHash = preparedTx.hash().toString("hex");
+      await this.relayerAuditService.recordSignedTransaction(
+        policyId,
+        this.relayerKeypair.publicKey(),
+        transactionHash
+      );
+      auditRecorded = true;
+
       const sendResult = await this.server.sendTransaction(preparedTx);
       if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
+        await this.relayerAuditService.recordOutcome(
+          transactionHash,
+          "rejected",
+          sendResult.status,
+          `Submission not accepted: ${sendResult.status}`
+        );
+        auditStatus = "rejected";
         return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
       }
 
+      await this.relayerAuditService.recordOutcome(transactionHash, "submitted", sendResult.status);
+      auditStatus = "submitted";
       const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+      const outcome = confirmation.confirmed ? "confirmed" : "failed";
+      await this.relayerAuditService.recordOutcome(transactionHash, outcome, sendResult.status, confirmation.error);
+      auditStatus = outcome;
       return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (auditRecorded && transactionHash && auditStatus !== "rejected" && auditStatus !== "confirmed") {
+        try {
+          await this.relayerAuditService.recordOutcome(transactionHash, "failed", undefined, message);
+        } catch (auditErr) {
+          const auditMessage = auditErr instanceof Error ? auditErr.message : String(auditErr);
+          this.logger.error(`Failed to update relayer audit record for transaction ${transactionHash}`, auditMessage);
+          return { settled: false, error: `${message}; audit update failed: ${auditMessage}` };
+        }
+      }
       this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
       return { settled: false, error: message };
     }

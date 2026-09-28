@@ -78,6 +78,10 @@ npm run dev                  # http://localhost:4001
 > flow remains necessary for end-to-end automatic settlement. A policy only
 > deactivates once settlement actually confirms on-chain — a failed or
 > unconfirmed payout leaves it active for the next scheduled retry.
+> Every transaction signed by the relayer is also recorded in the dedicated
+> PostgreSQL `relayer_transaction_audit` table with its lifecycle status,
+> transaction hash, signing key's public address, and policy ID. Apply the
+> current `src/db/schema.sql` before enabling relayer settlement.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).

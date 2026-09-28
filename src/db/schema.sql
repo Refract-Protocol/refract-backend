@@ -64,6 +64,27 @@ CREATE TABLE claims (
 CREATE INDEX idx_claims_holder ON claims(holder);
 CREATE INDEX idx_claims_policy ON claims(policy_id);
 
+-- ─── Relayer-signed Transaction Audit ────────────────────────────────────────
+
+CREATE TABLE relayer_transaction_audit (
+  id                BIGSERIAL       PRIMARY KEY,
+  transaction_hash  VARCHAR(64)     NOT NULL UNIQUE,
+  policy_id         NUMERIC(20, 0)  NOT NULL,
+  signer_public_key VARCHAR(56)     NOT NULL,
+  status            VARCHAR(10)     NOT NULL CHECK (
+                      status IN ('signed', 'submitted', 'rejected', 'confirmed', 'failed')
+                    ),
+  submission_status VARCHAR(24),
+  error_message     TEXT,
+  signed_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+  submitted_at      TIMESTAMPTZ,
+  completed_at      TIMESTAMPTZ,
+  updated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_relayer_audit_policy ON relayer_transaction_audit(policy_id, signed_at DESC);
+CREATE INDEX idx_relayer_audit_status ON relayer_transaction_audit(status, signed_at DESC);
+
 -- ─── Oracle Events ───────────────────────────────────────────────────────────
 
 CREATE TABLE oracle_events (

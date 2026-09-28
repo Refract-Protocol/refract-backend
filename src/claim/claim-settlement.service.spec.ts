@@ -1,6 +1,7 @@
 import { ConfigService } from "@nestjs/config";
 import { Account, Keypair, StrKey, Transaction, rpc, scValToNative } from "@stellar/stellar-sdk";
 import { ClaimSettlementService } from "./claim-settlement.service";
+import { RelayerAuditService } from "./relayer-audit.service";
 import { AppConfig } from "../config/configuration";
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
@@ -18,8 +19,16 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
 }
 
 const PENDING_SEND_RESULT = { status: "PENDING" as const, hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 };
+const relayerAuditService = {
+  recordSignedTransaction: jest.fn().mockResolvedValue(undefined),
+  recordOutcome: jest.fn().mockResolvedValue(undefined),
+} as unknown as RelayerAuditService;
 
 describe("ClaimSettlementService", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
     jest.useRealTimers();
@@ -27,24 +36,24 @@ describe("ClaimSettlementService", () => {
 
   describe("isConfigured", () => {
     it("is false when the pool contract ID is missing", () => {
-      const service = new ClaimSettlementService(buildConfig({ poolContractId: "" }));
+      const service = new ClaimSettlementService(buildConfig({ poolContractId: "" }), relayerAuditService);
       expect(service.isConfigured()).toBe(false);
     });
 
     it("is false when the relayer secret is missing", () => {
-      const service = new ClaimSettlementService(buildConfig({ relayerSecret: "" }));
+      const service = new ClaimSettlementService(buildConfig({ relayerSecret: "" }), relayerAuditService);
       expect(service.isConfigured()).toBe(false);
     });
 
     it("is true once both the pool contract ID and relayer secret are set", () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = new ClaimSettlementService(buildConfig(), relayerAuditService);
       expect(service.isConfigured()).toBe(true);
     });
   });
 
   describe("settleClaim", () => {
     it("returns settled:false without touching the network when unconfigured", async () => {
-      const service = new ClaimSettlementService(buildConfig({ poolContractId: "" }));
+      const service = new ClaimSettlementService(buildConfig({ poolContractId: "" }), relayerAuditService);
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       const result = await service.settleClaim("1");
@@ -55,7 +64,7 @@ describe("ClaimSettlementService", () => {
     });
 
     it("builds, signs, submits, and confirms a successful settlement", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = new ClaimSettlementService(buildConfig(), relayerAuditService);
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
@@ -87,10 +96,28 @@ describe("ClaimSettlementService", () => {
       const invocation = operation.func.invokeContract();
       expect(invocation.functionName().toString()).toBe("process_claim");
       expect(invocation.args().map((arg) => scValToNative(arg))).toEqual([42n]);
+      expect(relayerAuditService.recordSignedTransaction).toHaveBeenCalledWith(
+        "42",
+        expect.any(String),
+        expect.any(String)
+      );
+      expect(relayerAuditService.recordOutcome).toHaveBeenNthCalledWith(
+        1,
+        expect.any(String),
+        "submitted",
+        "PENDING"
+      );
+      expect(relayerAuditService.recordOutcome).toHaveBeenNthCalledWith(
+        2,
+        expect.any(String),
+        "confirmed",
+        "PENDING",
+        undefined
+      );
     });
 
     it("does not settle when the submission is rejected outright", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = new ClaimSettlementService(buildConfig(), relayerAuditService);
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
@@ -104,11 +131,17 @@ describe("ClaimSettlementService", () => {
 
       expect(result.settled).toBe(false);
       expect(result.error).toContain("ERROR");
+      expect(relayerAuditService.recordOutcome).toHaveBeenCalledWith(
+        expect.any(String),
+        "rejected",
+        "ERROR",
+        "Submission not accepted: ERROR"
+      );
       expect(getTransactionSpy).not.toHaveBeenCalled();
     });
 
     it("does not settle when the submitted transaction fails on-chain", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = new ClaimSettlementService(buildConfig(), relayerAuditService);
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
@@ -136,7 +169,7 @@ describe("ClaimSettlementService", () => {
 
     it("gives up and reports a timeout once confirmation polling is exhausted", async () => {
       jest.useFakeTimers();
-      const service = new ClaimSettlementService(buildConfig());
+      const service = new ClaimSettlementService(buildConfig(), relayerAuditService);
       const holder = Keypair.random().publicKey();
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(new Account(holder, "1"));
@@ -158,7 +191,7 @@ describe("ClaimSettlementService", () => {
     });
 
     it("catches an unexpected error (e.g. a network failure) and reports settled:false", async () => {
-      const service = new ClaimSettlementService(buildConfig());
+      const service = new ClaimSettlementService(buildConfig(), relayerAuditService);
 
       jest.spyOn(rpc.Server.prototype, "getAccount").mockRejectedValue(new Error("connection refused"));
 
