@@ -298,7 +298,10 @@ export class PolicyService {
     }
   }
 
-  async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
+  async buy(
+    dto: BuyPolicyDto,
+    persist = true
+  ): Promise<{ policy: StoredPolicy; txXdr: string; message: string; simulated?: boolean }> {
     const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
 
     if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
@@ -363,7 +366,9 @@ export class PolicyService {
       triggerParams,
     };
 
-    this.policies.set(policyId, policy);
+    if (persist) {
+      this.policies.set(policyId, policy);
+    }
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
@@ -376,7 +381,12 @@ export class PolicyService {
     return {
       policy,
       txXdr,
-      message: "Sign and submit to activate coverage",
+      message: persist ? "Sign and submit to activate coverage" : "Simulation succeeded; no transaction was submitted",
+      ...(persist ? {} : { simulated: true }),
     };
+  }
+
+  async simulateBuy(dto: BuyPolicyDto) {
+    return this.buy(dto, false);
   }
 }
