@@ -20,9 +20,16 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
 const PENDING_SEND_RESULT = { status: "PENDING" as const, hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 };
 
 describe("ClaimSettlementService", () => {
+  const originalRelayerSecret = process.env.ORACLE_RELAYER_SECRET;
+
   afterEach(() => {
     jest.restoreAllMocks();
     jest.useRealTimers();
+    if (originalRelayerSecret === undefined) {
+      delete process.env.ORACLE_RELAYER_SECRET;
+    } else {
+      process.env.ORACLE_RELAYER_SECRET = originalRelayerSecret;
+    }
   });
 
   describe("isConfigured", () => {
@@ -38,6 +45,13 @@ describe("ClaimSettlementService", () => {
 
     it("is true once both the pool contract ID and relayer secret are set", () => {
       const service = new ClaimSettlementService(buildConfig());
+      expect(service.isConfigured()).toBe(true);
+    });
+
+    it("becomes configured when the relayer secret is rotated at runtime", () => {
+      const service = new ClaimSettlementService(buildConfig({ relayerSecret: "" }));
+      process.env.ORACLE_RELAYER_SECRET = Keypair.random().secret();
+
       expect(service.isConfigured()).toBe(true);
     });
   });
@@ -82,6 +96,90 @@ describe("ClaimSettlementService", () => {
       const result = await service.settleClaim("policy-1", holder, 5_000_000_000n);
 
       expect(result).toEqual({ settled: true, txHash: "mock-tx-hash" });
+    });
+
+    it("uses the rotated relayer key for the next settlement", async () => {
+      const rotatedKeypair = Keypair.random();
+      process.env.ORACLE_RELAYER_SECRET = rotatedKeypair.secret();
+      const service = new ClaimSettlementService(buildConfig());
+      const holder = Keypair.random().publicKey();
+      const getAccountSpy = jest
+        .spyOn(rpc.Server.prototype, "getAccount")
+        .mockResolvedValue(new Account(rotatedKeypair.publicKey(), "1"));
+
+      jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+      jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
+      jest.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        latestLedger: 2,
+        latestLedgerCloseTime: 2,
+        oldestLedger: 1,
+        oldestLedgerCloseTime: 1,
+        ledger: 2,
+        createdAt: 2,
+        applicationOrder: 1,
+        feeBump: false,
+        envelopeXdr: {} as never,
+        resultXdr: {} as never,
+        resultMetaXdr: {} as never,
+      });
+
+      await service.settleClaim("policy-1", holder, 100n);
+
+      expect(getAccountSpy).toHaveBeenCalledWith(rotatedKeypair.publicKey());
+    });
+
+    it("serializes concurrent settlements so they don't read the same account sequence", async () => {
+      const service = new ClaimSettlementService(buildConfig());
+      const holder = Keypair.random().publicKey();
+      const getAccountSpy = jest
+        .spyOn(rpc.Server.prototype, "getAccount")
+        .mockImplementation(async (publicKey: string) => new Account(publicKey, "1"));
+      jest.spyOn(rpc.Server.prototype, "prepareTransaction").mockImplementation(async (tx) => tx as never);
+      jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
+
+      let releaseFirstPoll: () => void = () => undefined;
+      let signalFirstPoll: () => void = () => undefined;
+      const firstPollBlocked = new Promise<void>((resolve) => {
+        releaseFirstPoll = resolve;
+      });
+      const firstPollStarted = new Promise<void>((resolve) => {
+        signalFirstPoll = resolve;
+      });
+      const success = {
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        latestLedger: 2,
+        latestLedgerCloseTime: 2,
+        oldestLedger: 1,
+        oldestLedgerCloseTime: 1,
+        ledger: 2,
+        createdAt: 2,
+        applicationOrder: 1,
+        feeBump: false,
+        envelopeXdr: {} as never,
+        resultXdr: {} as never,
+        resultMetaXdr: {} as never,
+      };
+      let pollCount = 0;
+      jest.spyOn(rpc.Server.prototype, "getTransaction").mockImplementation(async () => {
+        pollCount++;
+        if (pollCount === 1) {
+          signalFirstPoll();
+          await firstPollBlocked;
+        }
+        return success;
+      });
+
+      const first = service.settleClaim("policy-1", holder, 100n);
+      await firstPollStarted;
+      const second = service.settleClaim("policy-2", holder, 100n);
+      await Promise.resolve();
+      expect(getAccountSpy).toHaveBeenCalledTimes(1);
+
+      releaseFirstPoll();
+      await Promise.all([first, second]);
+
+      expect(getAccountSpy).toHaveBeenCalledTimes(2);
     });
 
     it("does not settle when the submission is rejected outright", async () => {

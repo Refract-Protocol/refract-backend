@@ -42,65 +42,101 @@ export class ClaimSettlementService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
-  private readonly relayerKeypair: Keypair | null;
+  private readonly configuredRelayerSecret: string;
+  private settlementQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
-    this.relayerKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
+    this.configuredRelayerSecret = stellar.relayerSecret;
   }
 
   /** True once a pool contract ID and relayer secret are configured. */
   isConfigured(): boolean {
-    return Boolean(this.poolContractId && this.relayerKeypair);
+    return Boolean(this.poolContractId && this.getRelayerKeypair());
+  }
+
+  private getRelayerKeypair(): Keypair | null {
+    // Read the environment on each operation so a secret rotation can take
+    // effect without rebuilding this service or restarting the application.
+    const secret = process.env.ORACLE_RELAYER_SECRET ?? this.configuredRelayerSecret;
+    if (!secret) return null;
+    try {
+      return Keypair.fromSecret(secret);
+    } catch {
+      return null;
+    }
+  }
+
+  private async withSettlementLock<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.settlementQueue.then(operation, operation);
+    this.settlementQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   async settleClaim(policyId: string, holder: string, payout: bigint): Promise<SettlementResult> {
-    if (!this.relayerKeypair || !this.poolContractId) {
+    if (!this.poolContractId) {
       return {
         settled: false,
         error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET)",
       };
     }
 
-    try {
-      const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
-      const contract = new Contract(this.poolContractId);
-
-      const operation = contract.call(
-        "process_claim",
-        nativeToScVal(policyId, { type: "string" }),
-        new Address(holder).toScVal(),
-        nativeToScVal(payout, { type: "i128" })
-      );
-
-      const builtTx = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: this.networkPassphrase,
-      })
-        .addOperation(operation)
-        .setTimeout(30)
-        .build();
-
-      // Simulates against the live contract and fills in Soroban resource
-      // fees/footprint — this is where a wrong function name or argument
-      // shape for the ASSUMED interface above would surface.
-      const preparedTx = await this.server.prepareTransaction(builtTx);
-      preparedTx.sign(this.relayerKeypair);
-
-      const sendResult = await this.server.sendTransaction(preparedTx);
-      if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
-        return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
+    return this.withSettlementLock(async () => {
+      const relayerKeypair = this.getRelayerKeypair();
+      if (!relayerKeypair) {
+        return {
+          settled: false,
+          error: "Soroban relayer not configured (missing or invalid ORACLE_RELAYER_SECRET)",
+        };
       }
 
-      const confirmation = await pollForConfirmation(this.server, sendResult.hash);
-      return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
-      return { settled: false, error: message };
-    }
+      try {
+        // Keep sequence lookup, submission, and confirmation serialized.
+        // This ensures concurrent claim scans don't build two transactions
+        // from the same account sequence; refetching after confirmation also
+        // reconciles the local sequence with the network after key rotation.
+        const sourceAccount = await this.server.getAccount(relayerKeypair.publicKey());
+        const contract = new Contract(this.poolContractId);
+
+        const operation = contract.call(
+          "process_claim",
+          nativeToScVal(policyId, { type: "string" }),
+          new Address(holder).toScVal(),
+          nativeToScVal(payout, { type: "i128" })
+        );
+
+        const builtTx = new TransactionBuilder(sourceAccount, {
+          fee: BASE_FEE,
+          networkPassphrase: this.networkPassphrase,
+        })
+          .addOperation(operation)
+          .setTimeout(30)
+          .build();
+
+        // Simulates against the live contract and fills in Soroban resource
+        // fees/footprint — this is where a wrong function name or argument
+        // shape for the ASSUMED interface above would surface.
+        const preparedTx = await this.server.prepareTransaction(builtTx);
+        preparedTx.sign(relayerKeypair);
+
+        const sendResult = await this.server.sendTransaction(preparedTx);
+        if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
+          return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
+        }
+
+        const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+        return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
+        return { settled: false, error: message };
+      }
+    });
   }
 }
