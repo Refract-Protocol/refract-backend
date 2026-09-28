@@ -10,6 +10,7 @@ import {
   rpc,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 import { TxService } from "./tx.service";
 
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -49,7 +50,7 @@ describe("TxService", () => {
 
   describe("submit", () => {
     it("rejects malformed XDR without contacting the network", async () => {
-      const service = new TxService(buildConfig());
+      const service = new TxService(buildConfig(), new MetricsService());
       const sendSpy = jest.spyOn(rpc.Server.prototype, "sendTransaction");
       expect.assertions(2);
 
@@ -62,7 +63,7 @@ describe("TxService", () => {
     });
 
     it("submits, confirms, and reports the tx hash for a successful submission", async () => {
-      const service = new TxService(buildConfig());
+      const service = new TxService(buildConfig(), new MetricsService());
       const signedXdr = buildSignedXdr();
 
       jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
@@ -87,7 +88,7 @@ describe("TxService", () => {
     });
 
     it("reports an unconfirmed result when the network rejects the submission outright", async () => {
-      const service = new TxService(buildConfig());
+      const service = new TxService(buildConfig(), new MetricsService());
       const signedXdr = buildSignedXdr();
 
       jest
@@ -103,7 +104,7 @@ describe("TxService", () => {
     });
 
     it("reports an unconfirmed result when the submitted transaction fails on-chain", async () => {
-      const service = new TxService(buildConfig());
+      const service = new TxService(buildConfig(), new MetricsService());
       const signedXdr = buildSignedXdr();
 
       jest.spyOn(rpc.Server.prototype, "sendTransaction").mockResolvedValue(PENDING_SEND_RESULT);
@@ -128,7 +129,7 @@ describe("TxService", () => {
     });
 
     it("catches an unexpected error (e.g. a network failure) and reports confirmed:false", async () => {
-      const service = new TxService(buildConfig());
+      const service = new TxService(buildConfig(), new MetricsService());
       const signedXdr = buildSignedXdr();
 
       jest.spyOn(rpc.Server.prototype, "sendTransaction").mockRejectedValue(new Error("connection refused"));

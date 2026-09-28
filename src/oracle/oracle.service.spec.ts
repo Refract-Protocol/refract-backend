@@ -2,6 +2,7 @@ import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import { OracleService } from "./oracle.service";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 
 jest.mock("axios");
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -14,11 +15,11 @@ const oraclesConfig: AppConfig["oracles"] = {
   httpTimeoutMs: 5000,
 };
 
-function buildService(): OracleService {
+function buildService(metrics = new MetricsService()): OracleService {
   const configService = {
     get: jest.fn().mockReturnValue(oraclesConfig),
   } as unknown as ConfigService<AppConfig, true>;
-  return new OracleService(configService);
+  return new OracleService(configService, metrics);
 }
 
 describe("OracleService", () => {
@@ -42,6 +43,18 @@ describe("OracleService", () => {
       expect(reading.message).toContain("[CoinGecko]");
     });
 
+    it("records successful source checks", async () => {
+      const metrics = new MetricsService();
+      service = buildService(metrics);
+      mockedAxios.get.mockResolvedValueOnce({ data: { "usd-coin": { usd: 1.0 } } });
+
+      await service.checkStablecoinDepeg();
+
+      expect(await metrics.metrics()).toContain(
+        'refract_oracle_checks_total{coverage_type="StablecoinDepeg",outcome="success"} 1'
+      );
+    });
+
     it.each([
       [0.985, "medium"],
       [0.975, "high"],
@@ -55,6 +68,8 @@ describe("OracleService", () => {
     });
 
     it("degrades to a non-triggering low reading when CoinGecko errors", async () => {
+      const metrics = new MetricsService();
+      service = buildService(metrics);
       mockedAxios.get.mockRejectedValueOnce(new Error("network down"));
 
       const reading = await service.checkStablecoinDepeg();
@@ -63,6 +78,9 @@ describe("OracleService", () => {
       expect(reading.severity).toBe("low");
       expect(reading.value).toBe(reading.threshold);
       expect(reading.message).toContain("degraded");
+      expect(await metrics.metrics()).toContain(
+        'refract_oracle_checks_total{coverage_type="StablecoinDepeg",outcome="failure"} 1'
+      );
     });
   });
 

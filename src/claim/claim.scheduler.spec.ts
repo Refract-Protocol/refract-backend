@@ -1,6 +1,7 @@
 import { ClaimScheduler } from "./claim.scheduler";
 import { ClaimService } from "./claim.service";
 import { ClaimResult } from "./claim-result";
+import { MetricsService } from "../metrics/metrics.service";
 
 function buildResult(overrides: Partial<ClaimResult> = {}): ClaimResult {
   return {
@@ -22,18 +23,22 @@ describe("ClaimScheduler", () => {
       const claimService = {
         processTriggered: jest.fn().mockResolvedValue([buildResult()]),
       } as unknown as jest.Mocked<ClaimService>;
-      const scheduler = new ClaimScheduler(claimService);
+      const metrics = new MetricsService();
+      const scheduler = new ClaimScheduler(claimService, metrics);
 
       await scheduler.scanAndSettle();
 
       expect(claimService.processTriggered).toHaveBeenCalledTimes(1);
+      expect(await metrics.metrics()).toContain(
+        'refract_scheduler_runs_total{scheduler="claim_settlement",outcome="success"} 1'
+      );
     });
 
     it("does not throw when nothing settles this tick", async () => {
       const claimService = {
         processTriggered: jest.fn().mockResolvedValue([]),
       } as unknown as jest.Mocked<ClaimService>;
-      const scheduler = new ClaimScheduler(claimService);
+      const scheduler = new ClaimScheduler(claimService, new MetricsService());
 
       await expect(scheduler.scanAndSettle()).resolves.toBeUndefined();
     });
@@ -42,9 +47,13 @@ describe("ClaimScheduler", () => {
       const claimService = {
         processTriggered: jest.fn().mockRejectedValue(new Error("oracle sources unreachable")),
       } as unknown as jest.Mocked<ClaimService>;
-      const scheduler = new ClaimScheduler(claimService);
+      const metrics = new MetricsService();
+      const scheduler = new ClaimScheduler(claimService, metrics);
 
       await expect(scheduler.scanAndSettle()).resolves.toBeUndefined();
+      expect(await metrics.metrics()).toContain(
+        'refract_scheduler_runs_total{scheduler="claim_settlement",outcome="failure"} 1'
+      );
     });
   });
 });

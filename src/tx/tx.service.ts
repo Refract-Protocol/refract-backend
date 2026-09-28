@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 import { ConfirmationResult, pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
 /**
@@ -19,7 +20,10 @@ export class TxService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly metricsService: MetricsService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -34,11 +38,13 @@ export class TxService {
     }
 
     try {
-      const sendResult = await this.server.sendTransaction(tx);
+      const sendResult = await this.metricsService.observeSorobanRpc("send_transaction", () =>
+        this.server.sendTransaction(tx)
+      );
       if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
         return { confirmed: false, txHash: sendResult.hash, error: `Submission not accepted: ${sendResult.status}` };
       }
-      return await pollForConfirmation(this.server, sendResult.hash);
+      return await pollForConfirmation(this.server, sendResult.hash, this.metricsService);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error("Soroban submission failed", message);

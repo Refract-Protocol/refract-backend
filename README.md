@@ -67,6 +67,7 @@ remain in Docker volumes; `docker compose down -v` removes them.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
+| `GET` | `/metrics` | Prometheus-format HTTP, scheduler, oracle, and Soroban RPC metrics |
 | `GET` | `/api/v1/quotes/coverage-types` | List coverage types & rates |
 | `POST` | `/api/v1/quotes/quote` | Quote a premium |
 | `GET` | `/api/v1/policies/holder/:address` | Policies for a holder |

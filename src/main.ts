@@ -7,11 +7,15 @@ import { WsAdapter } from "@nestjs/platform-ws";
 import { AppModule } from "./app.module";
 import { winstonLogger } from "./common/logger";
 import { AppConfig } from "./config/configuration";
+import { MetricsService } from "./metrics/metrics.service";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: winstonLogger,
   });
+
+  const metrics = app.get(MetricsService);
+  app.use(metrics.httpMiddleware);
 
   const config = app.get(ConfigService<AppConfig, true>);
 

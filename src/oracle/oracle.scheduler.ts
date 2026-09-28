@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Interval } from "@nestjs/schedule";
 import { OracleGateway } from "./oracle.gateway";
 import { OracleService } from "./oracle.service";
+import { MetricsService } from "../metrics/metrics.service";
 
 /**
  * Polls oracle data sources on a fixed interval and broadcasts anything
@@ -15,11 +16,14 @@ export class OracleScheduler {
 
   constructor(
     private readonly oracleService: OracleService,
-    private readonly oracleGateway: OracleGateway
+    private readonly oracleGateway: OracleGateway,
+    private readonly metricsService: MetricsService
   ) {}
 
   @Interval(60_000)
   async pollOracles(): Promise<void> {
+    const startedAt = process.hrtime.bigint();
+    let outcome: "success" | "failure" = "success";
     try {
       const readings = await this.oracleService.checkAll();
       for (const reading of readings) {
@@ -29,7 +33,11 @@ export class OracleScheduler {
         }
       }
     } catch (err) {
+      outcome = "failure";
       this.logger.error("Oracle monitor error", err instanceof Error ? err.stack : err);
+    } finally {
+      const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+      this.metricsService.recordSchedulerRun("oracle_poll", outcome, durationSeconds);
     }
   }
 }

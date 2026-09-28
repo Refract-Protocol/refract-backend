@@ -25,6 +25,7 @@
     "@nestjs/platform-ws": "^11.1.28",
     "@nestjs/schedule": "^6.1.3",
     "@nestjs/websockets": "^11.1.28",
+    "@prometheus-io/client": "^0.16.1",
     "@stellar/stellar-sdk": "^12.3.0",
     "axios": "^1.6.0",
     "class-transformer": "^0.5.1",

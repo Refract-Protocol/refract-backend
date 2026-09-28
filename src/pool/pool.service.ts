@@ -11,6 +11,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
@@ -51,7 +52,10 @@ export class PoolService {
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly metricsService: MetricsService
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -70,7 +74,9 @@ export class PoolService {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
     }
     try {
-      const sourceAccount = await this.server.getAccount(sourcePublicKey);
+      const sourceAccount = await this.metricsService.observeSorobanRpc("get_account", () =>
+        this.server.getAccount(sourcePublicKey)
+      );
       const contract = new Contract(this.poolContractId);
       const operation = contract.call(method, ...args);
 
@@ -86,7 +92,9 @@ export class PoolService {
       // fees/footprint — surfaces contract-level rejections (e.g.
       // InsufficientCapacity, CapitalLocked) as part of building the tx,
       // rather than only after the caller signs and submits it.
-      const preparedTx = await this.server.prepareTransaction(builtTx);
+      const preparedTx = await this.metricsService.observeSorobanRpc("prepare_transaction", () =>
+        this.server.prepareTransaction(builtTx)
+      );
       return preparedTx.toXDR();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -105,7 +113,9 @@ export class PoolService {
       return null;
     }
     try {
-      const sourceAccount = await this.server.getAccount(provider);
+      const sourceAccount = await this.metricsService.observeSorobanRpc("get_account", () =>
+        this.server.getAccount(provider)
+      );
       const contract = new Contract(this.poolContractId);
       const tx = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -115,7 +125,9 @@ export class PoolService {
         .setTimeout(30)
         .build();
 
-      const sim = await this.server.simulateTransaction(tx);
+      const sim = await this.metricsService.observeSorobanRpc("simulate_transaction", () =>
+        this.server.simulateTransaction(tx)
+      );
       if (rpc.Api.isSimulationError(sim)) {
         throw new Error(sim.error);
       }

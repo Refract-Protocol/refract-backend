@@ -12,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 import { PoolService } from "./pool.service";
 
 // Mirrors the module-private `mockPool` constants in pool.service.ts.
@@ -63,7 +64,7 @@ describe("PoolService", () => {
   let provider: string;
 
   beforeEach(() => {
-    service = new PoolService(buildConfig());
+    service = new PoolService(buildConfig(), new MetricsService());
     provider = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
@@ -248,7 +249,7 @@ describe("PoolService", () => {
     });
 
     it("returns null without contacting the network when the pool contract isn't configured", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }), new MetricsService());
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       expect(await unconfigured.lockupExpiresAt(provider)).toBeNull();
@@ -273,7 +274,7 @@ describe("PoolService", () => {
 
   describe("unconfigured pool contract", () => {
     it("rejects provide/withdraw with a clear error instead of calling a non-existent contract", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }), new MetricsService());
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);
 

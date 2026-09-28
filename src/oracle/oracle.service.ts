@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 import { OracleReading, Severity } from "./oracle-reading";
 
 interface DefiLlamaTvlPoint {
@@ -46,7 +47,10 @@ export class OracleService {
   private readonly defiLlamaBaseUrl: string;
   private readonly defiLlamaProtocolSlug: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly metricsService: MetricsService
+  ) {
     const oracles = this.configService.get("oracles", { infer: true });
     this.timeoutMs = oracles.httpTimeoutMs;
     this.coingeckoBaseUrl = oracles.coingeckoBaseUrl;
@@ -65,6 +69,7 @@ export class OracleService {
 
   async checkStablecoinDepeg(): Promise<OracleReading> {
     const threshold = 0.95; // 5% depeg
+    const startedAt = process.hrtime.bigint();
     try {
       const { data } = await axios.get<Record<string, { usd: number }>>(
         `${this.coingeckoBaseUrl}/simple/price`,
@@ -79,7 +84,7 @@ export class OracleService {
         : usdcPrice < 0.99   ? "medium"
         : "low";
 
-      return {
+      const reading: OracleReading = {
         coverageType: "StablecoinDepeg",
         type: "oracle_update",
         value: usdcPrice,
@@ -87,13 +92,17 @@ export class OracleService {
         severity,
         message: `USDC price: $${usdcPrice.toFixed(4)} (${deviation > 0 ? "-" : "+"}${Math.abs(deviation).toFixed(3)}% from peg) [CoinGecko]`,
       };
+      this.recordOracleCheck(reading.coverageType, "success", startedAt);
+      return reading;
     } catch (err) {
+      this.recordOracleCheck("StablecoinDepeg", "failure", startedAt);
       return this.degraded("StablecoinDepeg", threshold, "CoinGecko", err);
     }
   }
 
   async checkMarketCrash(): Promise<OracleReading> {
     const threshold = -30; // 30% crash triggers
+    const startedAt = process.hrtime.bigint();
     try {
       const priceRequest = axios.get<Record<string, { usd: number; usd_24h_change: number }>>(
         `${this.coingeckoBaseUrl}/simple/price`,
@@ -125,7 +134,7 @@ export class OracleService {
         ? ` [CoinGecko; Horizon testnet ledger #${ledger.sequence} @ ${ledger.closed_at}]`
         : " [CoinGecko]";
 
-      return {
+      const reading: OracleReading = {
         coverageType: "MarketCrash",
         type: "oracle_update",
         value: change24h,
@@ -133,13 +142,17 @@ export class OracleService {
         severity,
         message: `XLM 24h change: ${change24h.toFixed(2)}% (trigger at ${threshold}%)${chainContext}`,
       };
+      this.recordOracleCheck(reading.coverageType, "success", startedAt);
+      return reading;
     } catch (err) {
+      this.recordOracleCheck("MarketCrash", "failure", startedAt);
       return this.degraded("MarketCrash", threshold, "CoinGecko", err);
     }
   }
 
   async checkSmartContractRisk(): Promise<OracleReading> {
     const threshold = -50; // 50% TVL drop in 24h triggers
+    const startedAt = process.hrtime.bigint();
     try {
       const { data } = await axios.get<{ name?: string; tvl?: DefiLlamaTvlPoint[] }>(
         `${this.defiLlamaBaseUrl}/protocol/${this.defiLlamaProtocolSlug}`,
@@ -165,7 +178,7 @@ export class OracleService {
         : pctChange < -10    ? "medium"
         : "low";
 
-      return {
+      const reading: OracleReading = {
         coverageType: "SmartContractRisk",
         type: "oracle_update",
         value: pctChange,
@@ -173,12 +186,16 @@ export class OracleService {
         severity,
         message: `${data.name ?? this.defiLlamaProtocolSlug} TVL 24h change: ${pctChange.toFixed(2)}% (trigger at ${threshold}%) [DeFiLlama]`,
       };
+      this.recordOracleCheck(reading.coverageType, "success", startedAt);
+      return reading;
     } catch (err) {
+      this.recordOracleCheck("SmartContractRisk", "failure", startedAt);
       return this.degraded("SmartContractRisk", threshold, "DeFiLlama", err);
     }
   }
 
   async checkLiquidationShield(): Promise<OracleReading> {
+    const startedAt = process.hrtime.bigint();
     // No public keyless API exists for this — it requires reading
     // liquidation events from the (hypothetical) NEXUS Protocol contract
     // on-chain. Stays mocked; ClaimService consumes this the same way it
@@ -188,7 +205,7 @@ export class OracleService {
     const collateralRatio = 0.92 + (Math.random() - 0.5) * 0.3;
     const threshold = 0.85; // shield triggers below 85% collateralization
 
-    return {
+    const reading: OracleReading = {
       coverageType: "LiquidationShield",
       type: "oracle_update",
       value: collateralRatio,
@@ -196,16 +213,19 @@ export class OracleService {
       severity: collateralRatio < threshold ? "triggered" : "low",
       message: `Collateral ratio ${(collateralRatio * 100).toFixed(1)}% (shield triggers below ${(threshold * 100).toFixed(0)}%) [mocked — no NEXUS Protocol integration]`,
     };
+    this.recordOracleCheck(reading.coverageType, "mocked", startedAt);
+    return reading;
   }
 
   async checkFlightDelay(flightNumber: string): Promise<OracleReading> {
+    const startedAt = process.hrtime.bigint();
     // TODO: AviationStack requires a paid API key we don't have — this
     // trigger type stays mocked until a keyless (or budgeted) flight-data
     // source is available. See README's "Oracle data sources" section.
     const delayMinutes = Math.floor(Math.random() * 300);
     const threshold = 120; // 2h delay triggers
 
-    return {
+    const reading: OracleReading = {
       coverageType: "FlightDelay",
       type: "oracle_update",
       value: delayMinutes,
@@ -213,6 +233,17 @@ export class OracleService {
       severity: delayMinutes >= threshold ? "triggered" : "low",
       message: `Flight ${flightNumber}: ${delayMinutes}m delay (trigger at ${threshold}m) [mocked — AviationStack requires a paid key]`,
     };
+    this.recordOracleCheck(reading.coverageType, "mocked", startedAt);
+    return reading;
+  }
+
+  private recordOracleCheck(
+    coverageType: string,
+    outcome: "success" | "failure" | "mocked",
+    startedAt: bigint
+  ): void {
+    const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+    this.metricsService.recordOracleCheck(coverageType, outcome, durationSeconds);
   }
 
   /**
