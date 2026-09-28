@@ -17,12 +17,12 @@ export class ClaimController {
   }
 
   @Get("holder/:address")
-  getHistoryForHolder(@Param("address") address: string) {
-    return { claims: this.claimService.getHistoryForHolder(address) };
+  async getHistoryForHolder(@Param("address") address: string) {
+    return { claims: await this.claimService.getHistoryForHolder(address) };
   }
 
   @Get("recent")
-  getRecent() {
-    return { claims: this.claimService.getRecentSettlements() };
+  async getRecent() {
+    return { claims: await this.claimService.getRecentSettlements() };
   }
 }

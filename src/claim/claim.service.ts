@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
+import { ClaimRepository } from "./claim.repository";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
 
@@ -9,36 +10,25 @@ const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimPro
 
 /**
  * ClaimService scans active policies for triggered conditions and settles
- * payouts. This is a migration of src/services/claimProcessor.ts, with one
- * deliberate fix: the old ClaimProcessor kept its own private
- * `Map<string, Policy>` that nothing ever populated (routes/policies.ts's
- * `POST /buy` never called `registerPolicy()`), so claim scanning never
- * actually saw a real policy. ClaimService now reads directly from
- * PolicyService, so a bought policy is immediately eligible for scanning.
- *
- * It also consolidates two previously-separate mocked "oracle" data
- * sources (OracleMonitor's websocket-feed checks vs. ClaimProcessor's own
- * private mockValues map, which used inconsistent units — e.g. MarketCrash
- * as a fraction here vs. a percentage there) into a single OracleService.
+ * payouts.  All settled claims are persisted to the `claims` table via
+ * ClaimRepository (replaces the in-memory history[] array from the
+ * original implementation).
  */
 @Injectable()
 export class ClaimService {
   private readonly logger = new Logger(ClaimService.name);
   private processedCount = 0;
   private payoutTotal = BigInt(0);
-  // In-memory settlement history — same lifetime/limitations as
-  // PolicyService's in-memory store; replaced together once the
-  // Postgres-backed repository lands.
-  private readonly history: ClaimResult[] = [];
 
   constructor(
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
-    private readonly claimSettlementService: ClaimSettlementService
+    private readonly claimSettlementService: ClaimSettlementService,
+    private readonly claimRepository: ClaimRepository
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
-    const activePolicies = this.policyService.listActive();
+    const activePolicies = await this.policyService.listActive();
     const settled: ClaimResult[] = [];
     if (activePolicies.length === 0) return settled;
 
@@ -53,7 +43,7 @@ export class ClaimService {
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result);
+          const settledResult = await this.processPayout(policy, result, oracle);
           if (settledResult) settled.push(settledResult);
         }
       } catch (err) {
@@ -114,7 +104,11 @@ export class ClaimService {
   }
 
   /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */
-  private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<ClaimResult | undefined> {
+  private async processPayout(
+    policy: StoredPolicy,
+    result: ClaimResult,
+    oracle: OracleReading
+  ): Promise<ClaimResult | undefined> {
     this.logger.warn(
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
@@ -126,34 +120,45 @@ export class ClaimService {
     }
 
     this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
-    this.policyService.deactivate(policy.id);
+    await this.policyService.deactivate(policy.id);
     this.processedCount++;
     this.payoutTotal += BigInt(result.payout);
-    const settledResult = { ...result, settlementTxHash: settlement.txHash };
-    this.history.push(settledResult);
+
+    const settledResult: ClaimResult = { ...result, settlementTxHash: settlement.txHash };
+
+    // Persist to DB — errors here are logged but don't prevent the payout
+    // from being returned to the caller; settlement already confirmed.
+    try {
+      await this.claimRepository.insert(settledResult, {
+        triggerValue: oracle.value,
+        triggerSource: oracle.coverageType,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to persist claim record for policy ${policy.id}`,
+        err instanceof Error ? err.stack : String(err)
+      );
+    }
+
     return settledResult;
   }
 
-  getStats() {
+  async getStats() {
     return {
-      activePolicies: this.policyService.listActive().length,
+      activePolicies: (await this.policyService.listActive()).length,
       processedClaims: this.processedCount,
       totalPayout: this.payoutTotal.toString(),
-      // Surfaces whether ClaimSettlementService actually has a pool
-      // contract ID + relayer secret configured, so ops can tell from the
-      // API whether triggered claims will settle on-chain or just log a
-      // "not configured" error, without digging through env/logs.
       settlementConfigured: this.claimSettlementService.isConfigured(),
     };
   }
 
   /** Settled claim history for a holder, most recent first. */
-  getHistoryForHolder(address: string): ClaimResult[] {
-    return this.history.filter((claim) => claim.holder === address).sort((a, b) => b.processedAt - a.processedAt);
+  getHistoryForHolder(address: string): Promise<ClaimResult[]> {
+    return this.claimRepository.findByHolder(address);
   }
 
   /** Most recent settled claims across all holders, for public "recent activity" displays. */
-  getRecentSettlements(limit = 10): ClaimResult[] {
-    return [...this.history].sort((a, b) => b.processedAt - a.processedAt).slice(0, limit);
+  getRecentSettlements(limit = 10): Promise<ClaimResult[]> {
+    return this.claimRepository.findRecent(limit);
   }
 }

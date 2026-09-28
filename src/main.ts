@@ -29,6 +29,10 @@ async function bootstrap() {
   // any client already speaking to the oracle feed keeps working unchanged.
   app.useWebSocketAdapter(new WsAdapter(app));
 
+  // Required for DatabaseModule's OnApplicationShutdown to drain the pg
+  // Pool cleanly on SIGTERM / SIGINT (avoids leaked sockets in containers).
+  app.enableShutdownHooks();
+
   const port = config.get("port", { infer: true });
   await app.listen(port);
 }
