@@ -51,6 +51,10 @@ npm run dev                  # http://localhost:4001
 
 ## API surface
 
+Interactive OpenAPI documentation and the generated JSON document are served
+at [`/api/docs`](http://localhost:4001/api/docs) and `/api/docs-json`.
+Schemas are generated from the Nest controllers and request DTOs.
+
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |

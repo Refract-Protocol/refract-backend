@@ -1,4 +1,5 @@
 import { Controller, Get } from "@nestjs/common";
+import { ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { OracleReading } from "./oracle-reading";
 import { OracleService } from "./oracle.service";
 
@@ -10,11 +11,14 @@ import { OracleService } from "./oracle.service";
  * above-"low" broadcast to see any oracle data at all — there was no way
  * to just ask "what's the current reading right now."
  */
+@ApiTags("Oracle")
 @Controller("api/v1/oracle")
 export class OracleController {
   constructor(private readonly oracleService: OracleService) {}
 
   @Get("status")
+  @ApiOperation({ summary: "Read current oracle values" })
+  @ApiResponse({ status: 200, description: "Current oracle readings" })
   async getStatus(): Promise<{ readings: OracleReading[] }> {
     return { readings: await this.oracleService.checkAll() };
   }
