@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post } from "@nestjs/common";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 import { PoolService } from "./pool.service";
+import { RateLimit } from "../common/rate-limit";
 
 @Controller("api/v1/pool")
 export class PoolController {
@@ -29,11 +30,13 @@ export class PoolController {
   }
 
   @Post("provide")
+  @RateLimit(10)
   provide(@Body() dto: DepositDto) {
     return this.poolService.provide(dto);
   }
 
   @Post("withdraw")
+  @RateLimit(10)
   withdraw(@Body() dto: WithdrawDto) {
     return this.poolService.withdraw(dto);
   }

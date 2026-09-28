@@ -1,6 +1,7 @@
 import { Controller, Get } from "@nestjs/common";
 import { OracleReading } from "./oracle-reading";
 import { OracleService } from "./oracle.service";
+import { RateLimit } from "../common/rate-limit";
 
 /**
  * Exposes the same "real" oracle checks (CoinGecko, Horizon, DeFiLlama —
@@ -15,6 +16,7 @@ export class OracleController {
   constructor(private readonly oracleService: OracleService) {}
 
   @Get("status")
+  @RateLimit(10)
   async getStatus(): Promise<{ readings: OracleReading[] }> {
     return { readings: await this.oracleService.checkAll() };
   }

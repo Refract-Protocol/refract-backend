@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post } from "@nestjs/common";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
 import { CoverageTypeInfo, QuoteResult, QuoteService } from "./quote.service";
+import { RateLimit } from "../common/rate-limit";
 
 @Controller("api/v1/quotes")
 export class QuoteController {
@@ -8,12 +9,14 @@ export class QuoteController {
 
   /** POST /api/v1/quotes — calculate a premium quote */
   @Post()
+  @RateLimit(30)
   createQuote(@Body() dto: CreateQuoteDto): QuoteResult {
     return this.quoteService.createQuote(dto);
   }
 
   /** GET /api/v1/quotes/coverage-types — list available coverage with descriptions */
   @Get("coverage-types")
+  @RateLimit(60)
   listCoverageTypes(): { types: CoverageTypeInfo[] } {
     return { types: this.quoteService.listCoverageTypes() };
   }

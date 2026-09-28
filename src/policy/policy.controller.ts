@@ -1,12 +1,14 @@
 import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 import { PolicyService } from "./policy.service";
+import { RateLimit } from "../common/rate-limit";
 
 @Controller("api/v1/policies")
 export class PolicyController {
   constructor(private readonly policyService: PolicyService) {}
 
   @Get("types")
+  @RateLimit(60)
   listTypes() {
     return { coverageTypes: this.policyService.listTypes() };
   }
@@ -20,6 +22,7 @@ export class PolicyController {
    * swallowed as a policy id.
    */
   @Get("coverage-bounds")
+  @RateLimit(10)
   async getCoverageBounds() {
     const bounds = await this.policyService.onChainCoverageBounds();
     return {
@@ -41,6 +44,7 @@ export class PolicyController {
   }
 
   @Post("buy")
+  @RateLimit(10)
   buy(@Body() dto: BuyPolicyDto) {
     return this.policyService.buy(dto);
   }

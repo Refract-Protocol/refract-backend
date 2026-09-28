@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { ScheduleModule } from "@nestjs/schedule";
 import configuration from "./config/configuration";
@@ -9,6 +10,7 @@ import { PoolModule } from "./pool/pool.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { ClaimModule } from "./claim/claim.module";
 import { TxModule } from "./tx/tx.module";
+import { RateLimitGuard } from "./common/rate-limit";
 
 @Module({
   imports: [
@@ -25,5 +27,6 @@ import { TxModule } from "./tx/tx.module";
     ClaimModule,
     TxModule,
   ],
+  providers: [{ provide: APP_GUARD, useClass: RateLimitGuard }],
 })
 export class AppModule {}
