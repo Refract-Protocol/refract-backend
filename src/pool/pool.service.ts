@@ -13,17 +13,25 @@ import {
 import { AppConfig } from "../config/configuration";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
+import {
+  calculatePoolShareValue,
+  calculateSharesOut,
+  calculateUsdcOut,
+  divideRoundNearest,
+  formatFixedPercent,
+  SHARE_PRICE_SCALE,
+} from "./share-price.math";
 
 // Mock pool state — replaced by a Postgres-backed (pool_snapshots table)
 // read in a later PR that wires the app onto src/db/schema.sql.
 const mockPool = {
-  totalUsdc: BigInt(18_400_000 * 1e7),
-  totalShares: BigInt(17_800_000 * 1e7),
-  lockedUsdc: BigInt(2_900_000 * 1e7), // locked covering active policies
-  premiumAccrued: BigInt(284_000 * 1e7),
+  totalUsdc: 18_400_000n * 10_000_000n,
+  totalShares: 17_800_000n * 10_000_000n,
+  lockedUsdc: 2_900_000n * 10_000_000n, // locked covering active policies
+  premiumAccrued: 284_000n * 10_000_000n,
   utilizationBps: 1576, // 15.76%
   apyBps: 890, // 8.9% from premiums
-  sharePrice: 1.0319,
+  sharePriceScaled: 10_319n,
 };
 
 export interface PoolStats {
@@ -136,20 +144,21 @@ export class PoolService {
       availableUsdc: (mockPool.totalUsdc - mockPool.lockedUsdc).toString(),
       utilizationBps: mockPool.utilizationBps,
       apyBps: mockPool.apyBps,
-      sharePrice: mockPool.sharePrice,
+      sharePrice: Number(mockPool.sharePriceScaled) / Number(SHARE_PRICE_SCALE),
       maxUtilizationBps: 8000,
     };
   }
 
   getUserPosition(address: string) {
-    const mockShares = BigInt(Math.floor(30_000 * 1e7));
-    const usdcValue = Number(mockShares) * mockPool.sharePrice;
+    const mockShares = 30_000n * 10_000_000n;
+    const usdcValue = calculatePoolShareValue(mockShares, mockPool.sharePriceScaled);
+    const premiumEarned = divideRoundNearest(usdcValue * BigInt(mockPool.apyBps), 20_000n);
     return {
       address,
       shares: mockShares.toString(),
-      usdcValue: usdcValue.toFixed(0),
-      premiumEarned: (usdcValue * 0.089 * 0.5).toFixed(0),
-      pct: ((Number(mockShares) / Number(mockPool.totalShares)) * 100).toFixed(4),
+      usdcValue: usdcValue.toString(),
+      premiumEarned: premiumEarned.toString(),
+      pct: formatFixedPercent(mockShares, mockPool.totalShares),
     };
   }
 
@@ -159,7 +168,7 @@ export class PoolService {
     if (amountBn <= 0n) {
       throw new BadRequestException({ error: "Deposit amount must be greater than zero" });
     }
-    const sharesOut = (amountBn * mockPool.totalShares) / mockPool.totalUsdc;
+    const sharesOut = calculateSharesOut(amountBn, mockPool.totalShares, mockPool.totalUsdc);
 
     const txXdr = await this.buildUnsignedInvoke(provider, "provide_capital", [
       new Address(provider).toScVal(),
@@ -170,7 +179,7 @@ export class PoolService {
       provider,
       amountUsdc: amount,
       sharesOut: sharesOut.toString(),
-      sharePrice: mockPool.sharePrice,
+      sharePrice: Number(mockPool.sharePriceScaled) / Number(SHARE_PRICE_SCALE),
       txXdr,
       message: "Sign and submit to provide capital to Refract risk pool",
     };
@@ -194,7 +203,7 @@ export class PoolService {
       });
     }
 
-    const usdcOut = (sharesBn * mockPool.totalUsdc) / mockPool.totalShares;
+    const usdcOut = calculateUsdcOut(sharesBn, mockPool.totalUsdc, mockPool.totalShares);
     const available = mockPool.totalUsdc - mockPool.lockedUsdc;
 
     if (usdcOut > available) {
@@ -213,7 +222,7 @@ export class PoolService {
       provider,
       sharesIn: shares,
       usdcOut: usdcOut.toString(),
-      sharePrice: mockPool.sharePrice,
+      sharePrice: Number(mockPool.sharePriceScaled) / Number(SHARE_PRICE_SCALE),
       txXdr,
     };
   }

@@ -22,7 +22,8 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
     policyContractId: "",
     oracleContractId: "",
-    relayerSecret: "",
+    relayerSecretId: "",
+    relayerSecretRegion: "",
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
