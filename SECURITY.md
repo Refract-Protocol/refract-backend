@@ -72,3 +72,11 @@ operations still depend on Soroban wallet signatures and on-chain authorization.
 All deployments should use HTTPS, restrict access to trusted origins, configure
 the actual production/staging URLs explicitly, and treat exposed or compromised
 frontend deployments as untrusted until investigated.
+
+Signed transaction submissions are reserved atomically by transaction hash in
+Redis before reaching Soroban RPC. The record expires one hour after the XDR's
+maximum time bound; expired or unbounded transactions are rejected, and a
+duplicate is reported without a second network submission. Redis is therefore
+required for this endpoint and must be shared by every API replica. If Redis is
+unavailable, submission fails closed; do not bypass this guard to restore
+availability.
