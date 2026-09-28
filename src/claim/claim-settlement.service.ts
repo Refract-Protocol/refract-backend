@@ -1,8 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
+import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
+import { SorobanRpcClient } from "../stellar/soroban-rpc.client";
 
 export interface SettlementResult {
   settled: boolean;
@@ -39,7 +40,7 @@ export interface SettlementResult {
 @Injectable()
 export class ClaimSettlementService {
   private readonly logger = new Logger(ClaimSettlementService.name);
-  private readonly server: rpc.Server;
+  private readonly rpcClient: SorobanRpcClient;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
   private readonly configuredRelayerSecret: string;
@@ -47,7 +48,7 @@ export class ClaimSettlementService {
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
-    this.server = new rpc.Server(stellar.sorobanRpcUrl);
+    this.rpcClient = new SorobanRpcClient(stellar.sorobanRpcUrls);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
     this.configuredRelayerSecret = stellar.relayerSecret;
@@ -101,7 +102,7 @@ export class ClaimSettlementService {
         // This ensures concurrent claim scans don't build two transactions
         // from the same account sequence; refetching after confirmation also
         // reconciles the local sequence with the network after key rotation.
-        const sourceAccount = await this.server.getAccount(relayerKeypair.publicKey());
+        const sourceAccount = await this.rpcClient.call((server) => server.getAccount(relayerKeypair.publicKey()));
         const contract = new Contract(this.poolContractId);
 
         const operation = contract.call(
@@ -122,15 +123,15 @@ export class ClaimSettlementService {
         // Simulates against the live contract and fills in Soroban resource
         // fees/footprint — this is where a wrong function name or argument
         // shape for the ASSUMED interface above would surface.
-        const preparedTx = await this.server.prepareTransaction(builtTx);
+        const preparedTx = await this.rpcClient.call((server) => server.prepareTransaction(builtTx));
         preparedTx.sign(relayerKeypair);
 
-        const sendResult = await this.server.sendTransaction(preparedTx);
+        const sendResult = await this.rpcClient.call((server) => server.sendTransaction(preparedTx));
         if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
           return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
         }
 
-        const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+        const confirmation = await pollForConfirmation(this.rpcClient, sendResult.hash);
         return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

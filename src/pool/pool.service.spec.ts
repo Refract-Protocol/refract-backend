@@ -32,6 +32,7 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
   const stellar: AppConfig["stellar"] = {
     network: "testnet",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    sorobanRpcUrls: ["https://soroban-testnet.stellar.org"],
     networkPassphrase: NETWORK_PASSPHRASE,
     poolContractId: POOL_CONTRACT_ID,
     policyContractId: "",

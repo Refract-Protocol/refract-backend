@@ -1,4 +1,5 @@
 import { rpc } from "@stellar/stellar-sdk";
+import { SorobanRpcClient } from "./soroban-rpc.client";
 
 const CONFIRMATION_POLL_INTERVAL_MS = 2000;
 const CONFIRMATION_MAX_ATTEMPTS = 15; // ~30s at the interval above
@@ -15,9 +16,9 @@ export interface ConfirmationResult {
  * needs to know whether it actually landed on-chain (ClaimSettlementService's
  * relayer-signed process_claim call, and TxService's client-signed submits).
  */
-export async function pollForConfirmation(server: rpc.Server, hash: string): Promise<ConfirmationResult> {
+export async function pollForConfirmation(client: SorobanRpcClient, hash: string): Promise<ConfirmationResult> {
   for (let attempt = 0; attempt < CONFIRMATION_MAX_ATTEMPTS; attempt++) {
-    const result = await server.getTransaction(hash);
+    const result = await client.call((server) => server.getTransaction(hash));
     if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
       return { confirmed: true, txHash: hash };
     }

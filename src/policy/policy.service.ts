@@ -14,6 +14,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { SorobanRpcClient } from "../stellar/soroban-rpc.client";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
@@ -141,13 +142,13 @@ export class PolicyService {
   // follow-up PR that wires the app onto src/db/schema.sql.
   private readonly policies = new Map<string, StoredPolicy>();
 
-  private readonly server: rpc.Server;
+  private readonly rpcClient: SorobanRpcClient;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
-    this.server = new rpc.Server(stellar.sorobanRpcUrl);
+    this.rpcClient = new SorobanRpcClient(stellar.sorobanRpcUrls);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
   }
@@ -202,7 +203,7 @@ export class PolicyService {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
     }
     try {
-      const sourceAccount = await this.server.getAccount(holder);
+      const sourceAccount = await this.rpcClient.call((server) => server.getAccount(holder));
       const contract = new Contract(this.poolContractId);
       const operation = contract.call("buy_policy", new Address(holder).toScVal(), paramsScVal);
 
@@ -214,7 +215,7 @@ export class PolicyService {
         .setTimeout(30)
         .build();
 
-      const preparedTx = await this.server.prepareTransaction(builtTx);
+      const preparedTx = await this.rpcClient.call((server) => server.prepareTransaction(builtTx));
       return preparedTx.toXDR();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -255,7 +256,7 @@ export class PolicyService {
         .setTimeout(30)
         .build();
 
-      const sim = await this.server.simulateTransaction(tx);
+      const sim = await this.rpcClient.call((server) => server.simulateTransaction(tx));
       if (rpc.Api.isSimulationError(sim)) {
         throw new Error(sim.error);
       }

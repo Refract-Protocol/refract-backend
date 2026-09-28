@@ -18,6 +18,7 @@ export interface AppConfig {
   stellar: {
     network: string;
     sorobanRpcUrl: string;
+    sorobanRpcUrls: string[];
     networkPassphrase: string;
     poolContractId: string;
     policyContractId: string;
@@ -33,7 +34,13 @@ export interface AppConfig {
   };
 }
 
-export default (): AppConfig => ({
+export default (): AppConfig => {
+  const sorobanRpcUrl = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
+  const sorobanRpcUrls = [
+    ...new Set([sorobanRpcUrl, ...(process.env.SOROBAN_RPC_URLS || "").split(",").map((url) => url.trim())]),
+  ].filter(Boolean);
+
+  return {
   port: parseInt(process.env.PORT || "4001", 10),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   database: {
@@ -44,7 +51,8 @@ export default (): AppConfig => ({
   },
   stellar: {
     network: process.env.STELLAR_NETWORK || "testnet",
-    sorobanRpcUrl: process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org",
+    sorobanRpcUrl,
+    sorobanRpcUrls,
     networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || "Test SDF Network ; September 2015",
     poolContractId: process.env.REFRACT_POOL_CONTRACT_ID || "",
     policyContractId: process.env.REFRACT_POLICY_CONTRACT_ID || "",
@@ -62,4 +70,5 @@ export default (): AppConfig => ({
     defiLlamaProtocolSlug: process.env.DEFILLAMA_PROTOCOL_SLUG || "aave",
     httpTimeoutMs: parseInt(process.env.ORACLE_HTTP_TIMEOUT_MS || "5000", 10),
   },
-});
+  };
+};
