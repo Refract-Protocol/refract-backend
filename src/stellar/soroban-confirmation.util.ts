@@ -7,6 +7,7 @@ export interface ConfirmationResult {
   confirmed: boolean;
   txHash: string;
   error?: string;
+  code?: string;
 }
 
 /**
@@ -22,9 +23,19 @@ export async function pollForConfirmation(server: rpc.Server, hash: string): Pro
       return { confirmed: true, txHash: hash };
     }
     if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-      return { confirmed: false, txHash: hash, error: "Transaction failed on-chain" };
+      return {
+        confirmed: false,
+        txHash: hash,
+        error: "The transaction failed on-chain.",
+        code: "TRANSACTION_FAILED",
+      };
     }
     await new Promise((resolve) => setTimeout(resolve, CONFIRMATION_POLL_INTERVAL_MS));
   }
-  return { confirmed: false, txHash: hash, error: "Timed out waiting for confirmation" };
+  return {
+    confirmed: false,
+    txHash: hash,
+    error: "Timed out waiting for transaction confirmation.",
+    code: "CONFIRMATION_TIMEOUT",
+  };
 }

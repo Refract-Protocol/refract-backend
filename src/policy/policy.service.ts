@@ -14,6 +14,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { decodeSorobanError } from "../common/soroban-error";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
@@ -217,8 +218,7 @@ export class PolicyService {
       const preparedTx = await this.server.prepareTransaction(builtTx);
       return preparedTx.toXDR();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to build Soroban transaction: ${message}` });
+      throw new BadRequestException(decodeSorobanError(err));
     }
   }
 
@@ -266,8 +266,7 @@ export class PolicyService {
       if (!config) return null;
       return { minCoverage: config.min_coverage, maxCoverage: config.max_coverage };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to read pool config: ${message}` });
+      throw new BadRequestException(decodeSorobanError(err));
     }
   }
 

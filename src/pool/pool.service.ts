@@ -11,6 +11,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { decodeSorobanError } from "../common/soroban-error";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 
@@ -89,8 +90,7 @@ export class PoolService {
       const preparedTx = await this.server.prepareTransaction(builtTx);
       return preparedTx.toXDR();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to build Soroban transaction: ${message}` });
+      throw new BadRequestException(decodeSorobanError(err));
     }
   }
 
@@ -122,8 +122,7 @@ export class PoolService {
       const value = scValToNative(sim.result!.retval);
       return value === null ? null : BigInt(value as bigint);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException({ error: `Failed to read lockup status: ${message}` });
+      throw new BadRequestException(decodeSorobanError(err));
     }
   }
 

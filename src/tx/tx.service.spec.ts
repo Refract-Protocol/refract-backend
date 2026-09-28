@@ -98,7 +98,8 @@ describe("TxService", () => {
       const result = await service.submit(signedXdr);
 
       expect(result.confirmed).toBe(false);
-      expect(result.error).toContain("ERROR");
+      expect(result.error).toBe("The Soroban request failed. Please retry later or contact support.");
+      expect(result.code).toBe("SOROBAN_REQUEST_FAILED");
       expect(getTransactionSpy).not.toHaveBeenCalled();
     });
 
@@ -124,7 +125,12 @@ describe("TxService", () => {
 
       const result = await service.submit(signedXdr);
 
-      expect(result).toEqual({ confirmed: false, txHash: "mock-tx-hash", error: "Transaction failed on-chain" });
+      expect(result).toEqual({
+        confirmed: false,
+        txHash: "mock-tx-hash",
+        error: "The transaction failed on-chain.",
+        code: "TRANSACTION_FAILED",
+      });
     });
 
     it("catches an unexpected error (e.g. a network failure) and reports confirmed:false", async () => {
@@ -136,7 +142,8 @@ describe("TxService", () => {
       const result = await service.submit(signedXdr);
 
       expect(result.confirmed).toBe(false);
-      expect(result.error).toBe("connection refused");
+      expect(result.error).toBe("The Soroban request failed. Please retry later or contact support.");
+      expect(result.code).toBe("SOROBAN_REQUEST_FAILED");
     });
   });
 });

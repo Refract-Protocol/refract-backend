@@ -285,8 +285,11 @@ describe("PolicyService", () => {
         await service.buy(buildDto(holder));
       } catch (err) {
         expect(err).toBeInstanceOf(BadRequestException);
-        const response = (err as BadRequestException).getResponse() as { error: string };
-        expect(response.error).toContain("InsufficientCapacity");
+        const response = (err as BadRequestException).getResponse() as { error: string; code: string };
+        expect(response).toEqual({
+          error: "The pool does not have enough available capacity for this operation.",
+          code: "POOL_INSUFFICIENT_CAPACITY",
+        });
       }
     });
 

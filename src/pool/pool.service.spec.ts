@@ -153,8 +153,11 @@ describe("PoolService", () => {
         await service.provide({ provider, amount: "100" });
       } catch (err) {
         expect(err).toBeInstanceOf(BadRequestException);
-        const response = (err as BadRequestException).getResponse() as { error: string };
-        expect(response.error).toContain("InsufficientCapacity");
+        const response = (err as BadRequestException).getResponse() as { error: string; code: string };
+        expect(response).toEqual({
+          error: "The pool does not have enough available capacity for this operation.",
+          code: "POOL_INSUFFICIENT_CAPACITY",
+        });
       }
     });
   });
@@ -265,8 +268,11 @@ describe("PoolService", () => {
         await service.lockupExpiresAt(provider);
       } catch (err) {
         expect(err).toBeInstanceOf(BadRequestException);
-        const response = (err as BadRequestException).getResponse() as { error: string };
-        expect(response.error).toContain("boom");
+        const response = (err as BadRequestException).getResponse() as { error: string; code: string };
+        expect(response).toEqual({
+          error: "The Soroban request failed. Please retry later or contact support.",
+          code: "SOROBAN_REQUEST_FAILED",
+        });
       }
     });
   });

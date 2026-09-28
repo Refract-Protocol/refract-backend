@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { decodeSorobanError } from "../common/soroban-error";
 import { ConfirmationResult, pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
 /**
@@ -36,13 +37,21 @@ export class TxService {
     try {
       const sendResult = await this.server.sendTransaction(tx);
       if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
-        return { confirmed: false, txHash: sendResult.hash, error: `Submission not accepted: ${sendResult.status}` };
+        return {
+          confirmed: false,
+          txHash: sendResult.hash,
+          ...decodeSorobanError({
+            status: sendResult.status,
+            errorResult: sendResult.errorResult,
+            diagnosticEvents: sendResult.diagnosticEvents,
+          }),
+        };
       }
       return await pollForConfirmation(this.server, sendResult.hash);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error("Soroban submission failed", message);
-      return { confirmed: false, txHash: "", error: message };
+      const failure = decodeSorobanError(err);
+      this.logger.error(`Soroban submission failed (${failure.code})`);
+      return { confirmed: false, txHash: "", ...failure };
     }
   }
 }
