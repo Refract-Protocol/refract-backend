@@ -68,6 +68,7 @@ ledger for the first run; subsequent progress is checkpointed in Postgres.
 | `POST` | `/api/v1/policies/buy` | Build a buy-policy transaction |
 | `GET` | `/api/v1/pool/stats` | Pool capital / utilization / APY |
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
+| `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
 
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
@@ -77,16 +78,13 @@ ledger for the first run; subsequent progress is checkpointed in Postgres.
 > and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
 > liquidation events, and AviationStack (flight data) requires a paid key
 > this project doesn't have. See `src/oracle/oracle.service.ts` for details.
-> Claim settlement now builds, signs, and submits a real
-> `pool.process_claim()` Soroban transaction via `ClaimSettlementService`
-> (falls back to a safe no-op when `REFRACT_POOL_CONTRACT_ID` /
-> `ORACLE_RELAYER_SECRET` aren't set). **The contract's exact function
-> signature is an unverified best-effort guess** — this repo doesn't
-> include the `refract-contracts` source, so it needs confirmation
-> against the real deployed contract; see
-> `src/claim/claim-settlement.service.ts` for details. A policy only
-> deactivates once settlement actually confirms on-chain — a failed or
-> unconfirmed payout leaves it active for the next scheduled retry.
+> Claim settlement builds, signs, and submits the pool's
+> `process_claim(policy_id: u64)` transaction. Relayer account sequences are
+> serialized across replicas using PostgreSQL advisory locks; during key
+> rotation, roll out the new key while old replicas drain. A policy is
+> deactivated only after settlement confirms on-chain. Policy purchases are
+> marked pending until the signed transaction confirms, then use the u64 ID
+> returned by `buy_policy()`.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).

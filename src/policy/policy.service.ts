@@ -12,7 +12,6 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
 import { SorobanRpcClient } from "../stellar/soroban-rpc.client";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
@@ -65,6 +64,12 @@ export interface StoredPolicy {
   isActive: boolean;
   createdAt: string;
   triggerParams?: Record<string, unknown>;
+}
+
+export interface PendingPolicy extends Omit<StoredPolicy, "id" | "isActive"> {
+  id: null;
+  isActive: false;
+  status: "awaiting_signature";
 }
 
 const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
@@ -141,6 +146,7 @@ export class PolicyService {
   // In-memory store — replaced by the Postgres-backed repository in a
   // follow-up PR that wires the app onto src/db/schema.sql.
   private readonly policies = new Map<string, StoredPolicy>();
+  private readonly pendingPurchases = new Map<string, Omit<StoredPolicy, "id" | "isActive">>();
 
   private readonly rpcClient: SorobanRpcClient;
   private readonly networkPassphrase: string;
@@ -299,7 +305,23 @@ export class PolicyService {
     }
   }
 
-  async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
+  confirmPurchase(txHash: string, onChainPolicyId: string): StoredPolicy | undefined {
+    if (!/^\d+$/.test(onChainPolicyId) || BigInt(onChainPolicyId) > (1n << 64n) - 1n) {
+      throw new Error("buy_policy returned an invalid u64 policy id");
+    }
+    const pending = this.pendingPurchases.get(txHash);
+    if (!pending) return undefined;
+    if (this.policies.has(onChainPolicyId)) {
+      throw new Error(`A policy with on-chain id ${onChainPolicyId} is already registered`);
+    }
+
+    const policy: StoredPolicy = { ...pending, id: onChainPolicyId, isActive: true };
+    this.policies.set(onChainPolicyId, policy);
+    this.pendingPurchases.delete(txHash);
+    return policy;
+  }
+
+  async buy(dto: BuyPolicyDto): Promise<{ policy: PendingPolicy; txXdr: string; message: string }> {
     const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
 
     if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
@@ -347,11 +369,9 @@ export class PolicyService {
     const premiumFraction = dailyRate * durationDays;
     const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
 
-    const policyId = uuidv4();
     const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
 
-    const policy: StoredPolicy = {
-      id: policyId,
+    const pendingPolicy: Omit<StoredPolicy, "id" | "isActive"> = {
       holder,
       coverageType,
       coverageTypeName: COVERAGE_NAMES[coverageType],
@@ -359,12 +379,9 @@ export class PolicyService {
       premium: premium.toString(),
       durationDays,
       expiresAt,
-      isActive: true,
       createdAt: new Date().toISOString(),
       triggerParams,
     };
-
-    this.policies.set(policyId, policy);
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
@@ -373,9 +390,16 @@ export class PolicyService {
       TRIGGER_THRESHOLDS[coverageType]
     );
     const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
+    const txHash = TransactionBuilder.fromXDR(txXdr, this.networkPassphrase).hash().toString("hex");
+    this.pendingPurchases.set(txHash, pendingPolicy);
 
     return {
-      policy,
+      policy: {
+        ...pendingPolicy,
+        id: null,
+        isActive: false,
+        status: "awaiting_signature",
+      },
       txXdr,
       message: "Sign and submit to activate coverage",
     };

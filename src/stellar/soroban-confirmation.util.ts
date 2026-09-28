@@ -1,4 +1,4 @@
-import { rpc } from "@stellar/stellar-sdk";
+import { rpc, xdr } from "@stellar/stellar-sdk";
 import { SorobanRpcClient } from "./soroban-rpc.client";
 
 const CONFIRMATION_POLL_INTERVAL_MS = 2000;
@@ -8,6 +8,7 @@ export interface ConfirmationResult {
   confirmed: boolean;
   txHash: string;
   error?: string;
+  returnValue?: xdr.ScVal;
 }
 
 /**
@@ -20,7 +21,7 @@ export async function pollForConfirmation(client: SorobanRpcClient, hash: string
   for (let attempt = 0; attempt < CONFIRMATION_MAX_ATTEMPTS; attempt++) {
     const result = await client.call((server) => server.getTransaction(hash));
     if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-      return { confirmed: true, txHash: hash };
+      return { confirmed: true, txHash: hash, returnValue: result.returnValue };
     }
     if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
       return { confirmed: false, txHash: hash, error: "Transaction failed on-chain" };

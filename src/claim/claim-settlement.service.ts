@@ -1,6 +1,7 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
+import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
+import { Pool } from "pg";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 import { SorobanRpcClient } from "../stellar/soroban-rpc.client";
@@ -16,30 +17,15 @@ export interface SettlementResult {
  * that actually pays out a triggered claim — replaces the logged stub that
  * used to live in ClaimService.processPayout().
  *
- * CONFIRMED MISMATCH AGAINST refract-contracts — DO NOT DEPLOY AS-IS:
- * refract-contracts/pool/src/lib.rs's real signature is
+ * Calls the pool's real process_claim(policy_id: u64) entrypoint. The
+ * contract looks up the holder and payout from its own policy storage, so
+ * callers must pass the on-chain policy ID rather than off-chain claim data.
  *
- *   pub fn process_claim(env: Env, policy_id: u64) -> Result<i128, PoolError>
- *
- * i.e. it takes a single u64 policy id — no holder, no payout — and looks
- * up the holder/payout/trigger condition itself from on-chain Policy
- * storage, returning the payout amount. The call built below still passes
- * the old guessed 3-argument shape (String policy_id, Address holder, i128
- * payout), which fails Soroban's argument-count/type check during
- * simulation on every invocation.
- *
- * That argument mismatch is also downstream of a bigger gap: StoredPolicy.id
- * (see policy.service.ts) is a uuidv4() string minted entirely off-chain,
- * never the u64 the real buy_policy() call returns on-chain (buy_policy
- * itself is also still a txXdr stub — see PolicyService.buy()). There is
- * currently no code path that produces a real on-chain policy id to submit
- * here, so fixing the argument shape alone isn't sufficient; the buy flow
- * needs to actually invoke buy_policy() and thread its returned id through
- * before this can settle a real claim.
  */
 @Injectable()
-export class ClaimSettlementService {
+export class ClaimSettlementService implements OnModuleDestroy {
   private readonly logger = new Logger(ClaimSettlementService.name);
+  private readonly databasePool: Pool;
   private readonly rpcClient: SorobanRpcClient;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
@@ -48,10 +34,15 @@ export class ClaimSettlementService {
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
+    this.databasePool = new Pool({ connectionString: this.configService.get("database.url", { infer: true }) });
     this.rpcClient = new SorobanRpcClient(stellar.sorobanRpcUrls);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
     this.configuredRelayerSecret = stellar.relayerSecret;
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.databasePool.end();
   }
 
   /** True once a pool contract ID and relayer secret are configured. */
@@ -60,8 +51,8 @@ export class ClaimSettlementService {
   }
 
   private getRelayerKeypair(): Keypair | null {
-    // Read the environment on each operation so a secret rotation can take
-    // effect without rebuilding this service or restarting the application.
+    // Resolve the active environment value per settlement rather than
+    // retaining a Keypair, allowing runtime secret providers to rotate it.
     const secret = process.env.ORACLE_RELAYER_SECRET ?? this.configuredRelayerSecret;
     if (!secret) return null;
     try {
@@ -80,7 +71,7 @@ export class ClaimSettlementService {
     return result;
   }
 
-  async settleClaim(policyId: string, holder: string, payout: bigint): Promise<SettlementResult> {
+  async settleClaim(policyId: string): Promise<SettlementResult> {
     if (!this.poolContractId) {
       return {
         settled: false,
@@ -98,46 +89,71 @@ export class ClaimSettlementService {
       }
 
       try {
-        // Keep sequence lookup, submission, and confirmation serialized.
-        // This ensures concurrent claim scans don't build two transactions
-        // from the same account sequence; refetching after confirmation also
-        // reconciles the local sequence with the network after key rotation.
-        const sourceAccount = await this.rpcClient.call((server) => server.getAccount(relayerKeypair.publicKey()));
-        const contract = new Contract(this.poolContractId);
+        return await this.withAccountSequenceLock(relayerKeypair.publicKey(), async () => {
+          try {
+            // The PostgreSQL advisory lock serializes this account across
+            // application replicas. Refresh the sequence only after the prior
+            // transaction has reached a terminal confirmation state.
+            const sourceAccount = await this.rpcClient.call((server) => server.getAccount(relayerKeypair.publicKey()));
+            const contract = new Contract(this.poolContractId);
+            const operation = contract.call("process_claim", nativeToScVal(BigInt(policyId), { type: "u64" }));
+            const builtTx = new TransactionBuilder(sourceAccount, {
+              fee: BASE_FEE,
+              networkPassphrase: this.networkPassphrase,
+            })
+              .addOperation(operation)
+              .setTimeout(30)
+              .build();
 
-        const operation = contract.call(
-          "process_claim",
-          nativeToScVal(policyId, { type: "string" }),
-          new Address(holder).toScVal(),
-          nativeToScVal(payout, { type: "i128" })
-        );
+            const preparedTx = await this.rpcClient.call((server) => server.prepareTransaction(builtTx));
+            preparedTx.sign(relayerKeypair);
 
-        const builtTx = new TransactionBuilder(sourceAccount, {
-          fee: BASE_FEE,
-          networkPassphrase: this.networkPassphrase,
-        })
-          .addOperation(operation)
-          .setTimeout(30)
-          .build();
+            const sendResult = await this.rpcClient.call((server) => server.sendTransaction(preparedTx));
+            if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
+              return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
+            }
 
-        // Simulates against the live contract and fills in Soroban resource
-        // fees/footprint — this is where a wrong function name or argument
-        // shape for the ASSUMED interface above would surface.
-        const preparedTx = await this.rpcClient.call((server) => server.prepareTransaction(builtTx));
-        preparedTx.sign(relayerKeypair);
-
-        const sendResult = await this.rpcClient.call((server) => server.sendTransaction(preparedTx));
-        if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
-          return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
-        }
-
-        const confirmation = await pollForConfirmation(this.rpcClient, sendResult.hash);
-        return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
+            const confirmation = await pollForConfirmation(this.rpcClient, sendResult.hash);
+            return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
+            return { settled: false, error: message };
+          }
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
+        this.logger.error(`Failed to acquire relayer sequence lock for policy ${policyId}`, message);
         return { settled: false, error: message };
       }
     });
+  }
+
+  private async withAccountSequenceLock<T>(publicKey: string, operation: () => Promise<T>): Promise<T> {
+    const client = await this.databasePool.connect();
+    let transactionStarted = false;
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [publicKey]);
+      const result = await operation();
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return result;
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          this.logger.error(
+            "Failed to roll back relayer sequence lock transaction",
+            rollbackError instanceof Error ? rollbackError.stack : String(rollbackError)
+          );
+        }
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }

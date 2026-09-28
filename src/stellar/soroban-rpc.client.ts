@@ -29,7 +29,7 @@ function isTransientRpcError(error: unknown): boolean {
 
   return (
     typeof details.message === "string" &&
-    /\b(timeout|timed out|network|connection reset|connection refused|fetch failed|temporarily unavailable|rate limit|too many requests|bad gateway|service unavailable|gateway timeout)\b/i.test(
+    /\b(timeout|timed out|network|connection reset|connection refused|fetch failed|temporarily unavailable|rate limit|too many requests|bad gateway|service unavailable|gateway timeout|408|425|429|500|502|503|504)\b/i.test(
       details.message
     )
   );

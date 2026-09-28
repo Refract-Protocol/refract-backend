@@ -55,6 +55,10 @@ function buildDto(holder: string, overrides: Partial<BuyPolicyDto> = {}): BuyPol
   };
 }
 
+function transactionHash(txXdr: string): string {
+  return TransactionBuilder.fromXDR(txXdr, NETWORK_PASSPHRASE).hash().toString("hex");
+}
+
 /** A minimal simulateTransaction success response carrying just a return value. */
 function simulateSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionResponse {
   return { result: { retval, auth: [] } } as unknown as rpc.Api.SimulateTransactionResponse;
@@ -158,7 +162,7 @@ describe("PolicyService", () => {
       expect(diff).toBeLessThanOrEqual(1n);
     });
 
-    it("stores an active policy with the expected fields and an unsigned buy_policy invocation", async () => {
+    it("returns a pending policy without inventing an ID before buy_policy is submitted", async () => {
       const dto = buildDto(holder, { coverageType: 2, durationDays: 10 });
       const beforeSeconds = Math.floor(Date.now() / 1000);
 
@@ -169,7 +173,10 @@ describe("PolicyService", () => {
       expect(policy.coverageTypeName).toBe("Liquidation Shield");
       expect(policy.coverageAmount).toBe(dto.coverageAmount);
       expect(policy.durationDays).toBe(10);
-      expect(policy.isActive).toBe(true);
+      expect(policy.id).toBeNull();
+      expect(policy.isActive).toBe(false);
+      expect(policy.status).toBe("awaiting_signature");
+      expect(service.findByHolder(holder)).toEqual([]);
       expect(policy.expiresAt).toBeGreaterThanOrEqual(beforeSeconds + 10 * 86_400);
       expect(message).toBe("Sign and submit to activate coverage");
 
@@ -198,8 +205,8 @@ describe("PolicyService", () => {
         triggerParams: { flightNumber: "BA249" },
       });
 
-      const { policy } = await service.buy(dto);
-      const stored = service.findById(policy.id);
+      const { txXdr } = await service.buy(dto);
+      const stored = service.confirmPurchase(transactionHash(txXdr), "43");
 
       expect(stored?.triggerParams).toEqual({ flightNumber: "BA249" });
     });
@@ -344,16 +351,31 @@ describe("PolicyService", () => {
 
   describe("lookups and lifecycle", () => {
     it("findById/findByHolder return a bought policy, and listActive drops it once deactivated", async () => {
-      const { policy } = await service.buy(buildDto(holder));
+      const { txXdr } = await service.buy(buildDto(holder));
+      const policy = service.confirmPurchase(transactionHash(txXdr), "42");
 
-      expect(service.findById(policy.id)).toEqual(policy);
+      expect(policy).toMatchObject({ id: "42", holder, isActive: true });
+      expect(service.findById("42")).toEqual(policy);
       expect(service.findByHolder(holder)).toEqual([policy]);
-      expect(service.listActive().map((p) => p.id)).toContain(policy.id);
+      expect(service.listActive().map((p) => p.id)).toContain("42");
 
-      service.deactivate(policy.id);
+      service.deactivate("42");
 
-      expect(service.findById(policy.id)?.isActive).toBe(false);
-      expect(service.listActive().map((p) => p.id)).not.toContain(policy.id);
+      expect(service.findById("42")?.isActive).toBe(false);
+      expect(service.listActive().map((p) => p.id)).not.toContain("42");
+    });
+
+    it("does not associate a policy with a different transaction hash", async () => {
+      await service.buy(buildDto(holder));
+
+      expect(service.confirmPurchase("different-transaction", "42")).toBeUndefined();
+      expect(service.findById("42")).toBeUndefined();
+    });
+
+    it("rejects a returned ID outside the u64 range", () => {
+      expect(() => service.confirmPurchase("tx-hash", (1n << 64n).toString())).toThrow(
+        "buy_policy returned an invalid u64 policy id"
+      );
     });
 
     it("findById returns undefined for an unknown id", () => {
