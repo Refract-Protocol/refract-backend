@@ -19,6 +19,7 @@ export interface AppConfig {
     network: string;
     sorobanRpcUrl: string;
     sorobanRpcUrls: string[];
+    eventStartLedger: number;
     networkPassphrase: string;
     poolContractId: string;
     policyContractId: string;
@@ -39,6 +40,10 @@ export default (): AppConfig => {
   const sorobanRpcUrls = [
     ...new Set([sorobanRpcUrl, ...(process.env.SOROBAN_RPC_URLS || "").split(",").map((url) => url.trim())]),
   ].filter(Boolean);
+  const eventStartLedger = Number.parseInt(process.env.SOROBAN_EVENT_START_LEDGER || "1", 10);
+  if (!Number.isSafeInteger(eventStartLedger) || eventStartLedger < 1) {
+    throw new Error("SOROBAN_EVENT_START_LEDGER must be a positive integer");
+  }
 
   return {
   port: parseInt(process.env.PORT || "4001", 10),
@@ -53,6 +58,7 @@ export default (): AppConfig => {
     network: process.env.STELLAR_NETWORK || "testnet",
     sorobanRpcUrl,
     sorobanRpcUrls,
+    eventStartLedger,
     networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || "Test SDF Network ; September 2015",
     poolContractId: process.env.REFRACT_POOL_CONTRACT_ID || "",
     policyContractId: process.env.REFRACT_POLICY_CONTRACT_ID || "",

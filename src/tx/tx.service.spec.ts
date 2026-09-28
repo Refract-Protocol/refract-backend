@@ -19,6 +19,7 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     network: "testnet",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
     sorobanRpcUrls: ["https://soroban-testnet.stellar.org"],
+    eventStartLedger: 1,
     networkPassphrase: NETWORK_PASSPHRASE,
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
     policyContractId: "",

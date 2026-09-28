@@ -9,6 +9,7 @@ import { PoolModule } from "./pool/pool.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { ClaimModule } from "./claim/claim.module";
 import { TxModule } from "./tx/tx.module";
+import { EventsModule } from "./events/events.module";
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { TxModule } from "./tx/tx.module";
     OracleModule,
     ClaimModule,
     TxModule,
+    EventsModule,
   ],
 })
 export class AppModule {}

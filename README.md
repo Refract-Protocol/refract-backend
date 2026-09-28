@@ -39,6 +39,14 @@ psql "$DATABASE_URL" -f src/db/schema.sql   # one-time schema apply
 npm run dev                  # http://localhost:4001
 ```
 
+For an existing database, apply
+`src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
+checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
+the backend polls the configured Soroban RPC endpoint every 10 seconds and
+stores policy purchases, capital deposits/withdrawals, and settled claims in
+`soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
+ledger for the first run; subsequent progress is checkpointed in Postgres.
+
 ## Scripts
 
 | Command | Purpose |
