@@ -1,4 +1,5 @@
-import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
+import { Controller, Get, NotFoundException, Param, Post, Body, Query } from "@nestjs/common";
+import { PageQueryDto, paginateDesc } from "../common/pagination";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 import { PolicyService } from "./policy.service";
 
@@ -28,9 +29,16 @@ export class PolicyController {
     };
   }
 
+  /** Newest first, keyset-paginated on (createdAt, id); `?limit=` defaults to 50. */
   @Get("holder/:address")
-  findByHolder(@Param("address") address: string) {
-    return { policies: this.policyService.findByHolder(address) };
+  findByHolder(@Param("address") address: string, @Query() query: PageQueryDto) {
+    const page = paginateDesc(
+      this.policyService.findByHolder(address),
+      (p) => ({ at: Date.parse(p.createdAt), id: p.id }),
+      query,
+      50
+    );
+    return { policies: page.items, nextCursor: page.nextCursor };
   }
 
   @Get(":id")
