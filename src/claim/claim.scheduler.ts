@@ -9,11 +9,18 @@ import { ClaimService } from "./claim.service";
 @Injectable()
 export class ClaimScheduler {
   private readonly logger = new Logger(ClaimScheduler.name);
+  private scanInProgress = false;
 
   constructor(private readonly claimService: ClaimService) {}
 
   @Interval(300_000)
   async scanAndSettle(): Promise<void> {
+    if (this.scanInProgress) {
+      this.logger.warn("Skipping claim scan because the previous scan is still running");
+      return;
+    }
+
+    this.scanInProgress = true;
     try {
       const processed = await this.claimService.processTriggered();
       if (processed.length > 0) {
@@ -21,6 +28,8 @@ export class ClaimScheduler {
       }
     } catch (err) {
       this.logger.error("Claim processor error", err instanceof Error ? err.stack : String(err));
+    } finally {
+      this.scanInProgress = false;
     }
   }
 }

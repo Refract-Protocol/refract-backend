@@ -46,5 +46,29 @@ describe("ClaimScheduler", () => {
 
       await expect(scheduler.scanAndSettle()).resolves.toBeUndefined();
     });
+
+    it("skips overlapping scans and permits a new scan after the active scan finishes", async () => {
+      let finishScan!: (results: ClaimResult[]) => void;
+      const processTriggered = jest
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<ClaimResult[]>((resolve) => {
+              finishScan = resolve;
+            })
+        )
+        .mockResolvedValue([]);
+      const claimService = { processTriggered } as unknown as jest.Mocked<ClaimService>;
+      const scheduler = new ClaimScheduler(claimService);
+
+      const firstScan = scheduler.scanAndSettle();
+      await scheduler.scanAndSettle();
+      expect(claimService.processTriggered).toHaveBeenCalledTimes(1);
+
+      finishScan([]);
+      await firstScan;
+      await scheduler.scanAndSettle();
+      expect(claimService.processTriggered).toHaveBeenCalledTimes(2);
+    });
   });
 });
