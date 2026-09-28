@@ -10,18 +10,29 @@ export interface ConfirmationResult {
 }
 
 /**
- * Polls a submitted Soroban transaction until it lands SUCCESS/FAILED or
- * polling is exhausted. Shared by every path that submits a transaction and
- * needs to know whether it actually landed on-chain (ClaimSettlementService's
- * relayer-signed process_claim call, and TxService's client-signed submits).
+ * Polls a submitted Soroban transaction until the RPC reports a finalized
+ * ledger result. Soroban RPC only returns SUCCESS/FAILED from getTransaction
+ * after the transaction is included in a closed ledger; checking both ledger
+ * fields prevents a partially populated response from being mistaken for
+ * finality.
  */
 export async function pollForConfirmation(server: rpc.Server, hash: string): Promise<ConfirmationResult> {
   for (let attempt = 0; attempt < CONFIRMATION_MAX_ATTEMPTS; attempt++) {
     const result = await server.getTransaction(hash);
-    if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+    if (
+      result.status === rpc.Api.GetTransactionStatus.SUCCESS &&
+      result.ledger !== undefined &&
+      result.latestLedger !== undefined &&
+      result.latestLedger >= result.ledger
+    ) {
       return { confirmed: true, txHash: hash };
     }
-    if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+    if (
+      result.status === rpc.Api.GetTransactionStatus.FAILED &&
+      result.ledger !== undefined &&
+      result.latestLedger !== undefined &&
+      result.latestLedger >= result.ledger
+    ) {
       return { confirmed: false, txHash: hash, error: "Transaction failed on-chain" };
     }
     await new Promise((resolve) => setTimeout(resolve, CONFIRMATION_POLL_INTERVAL_MS));
