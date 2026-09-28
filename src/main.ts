@@ -16,7 +16,13 @@ async function bootstrap() {
   const config = app.get(ConfigService<AppConfig, true>);
 
   app.use(helmet());
-  app.enableCors({ origin: config.get("frontendUrl", { infer: true }) });
+  app.enableCors({
+    origin: config.get("frontendOrigins", { infer: true }),
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+    credentials: false,
+    maxAge: 600,
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

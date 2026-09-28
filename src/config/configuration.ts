@@ -8,7 +8,7 @@
  */
 export interface AppConfig {
   port: number;
-  frontendUrl: string;
+  frontendOrigins: string[];
   database: {
     url: string;
   };
@@ -33,9 +33,46 @@ export interface AppConfig {
   };
 }
 
+export function parseFrontendOrigins(value: string): string[] {
+  const origins = value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (origins.length === 0) {
+    throw new Error("At least one frontend origin must be configured");
+  }
+
+  const normalized = origins.map((origin) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(`Invalid frontend origin: ${origin}`);
+    }
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      origin.includes("*") ||
+      parsed.origin !== origin ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error(`Frontend CORS entries must be exact http(s) origins: ${origin}`);
+    }
+    return parsed.origin;
+  });
+
+  return [...new Set(normalized)];
+}
+
 export default (): AppConfig => ({
   port: parseInt(process.env.PORT || "4001", 10),
-  frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+  frontendOrigins: parseFrontendOrigins(
+    process.env.FRONTEND_URLS || process.env.FRONTEND_URL || "http://localhost:3000"
+  ),
   database: {
     url: process.env.DATABASE_URL || "postgres://refract:refract@localhost:5432/refract",
   },
