@@ -159,6 +159,7 @@ export class PoolService {
     if (amountBn <= 0n) {
       throw new BadRequestException({ error: "Deposit amount must be greater than zero" });
     }
+
     const sharesOut = (amountBn * mockPool.totalShares) / mockPool.totalUsdc;
 
     const txXdr = await this.buildUnsignedInvoke(provider, "provide_capital", [
@@ -216,6 +217,16 @@ export class PoolService {
       sharePrice: mockPool.sharePrice,
       txXdr,
     };
+  }
+
+  async simulateProvide(dto: DepositDto) {
+    const result = await this.provide(dto);
+    return { ...result, simulated: true, message: "Simulation succeeded; no transaction was submitted" };
+  }
+
+  async simulateWithdraw(dto: WithdrawDto) {
+    const result = await this.withdraw(dto);
+    return { ...result, simulated: true, message: "Simulation succeeded; no transaction was submitted" };
   }
 
   getPremiumHistory(): PremiumHistoryEntry[] {

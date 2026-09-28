@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { TransactionBuilder, rpc } from "@stellar/stellar-sdk";
+import { FeeBumpTransaction, Keypair, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { ConfirmationResult, pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
@@ -18,11 +18,13 @@ export class TxService {
   private readonly logger = new Logger(TxService.name);
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
+  private readonly feeBumpKeypair: Keypair | null;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
+    this.feeBumpKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
   }
 
   async submit(signedXdr: string): Promise<ConfirmationResult> {
@@ -42,6 +44,42 @@ export class TxService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error("Soroban submission failed", message);
+      return { confirmed: false, txHash: "", error: message };
+    }
+  }
+
+  async feeBump(signedXdr: string, fee: string): Promise<ConfirmationResult> {
+    const feeBumpKeypair = this.feeBumpKeypair;
+    if (!feeBumpKeypair) {
+      throw new BadRequestException({ error: "Fee bump signer is not configured" });
+    }
+
+    let tx: ReturnType<typeof TransactionBuilder.fromXDR>;
+    try {
+      tx = TransactionBuilder.fromXDR(signedXdr, this.networkPassphrase);
+    } catch {
+      throw new BadRequestException({ error: "Malformed transaction XDR" });
+    }
+    if (tx instanceof FeeBumpTransaction) {
+      throw new BadRequestException({ error: "Cannot fee-bump an existing fee-bump transaction" });
+    }
+
+    try {
+      const feeBump = TransactionBuilder.buildFeeBumpTransaction(
+        feeBumpKeypair,
+        fee,
+        tx,
+        this.networkPassphrase
+      );
+      feeBump.sign(feeBumpKeypair);
+      const sendResult = await this.server.sendTransaction(feeBump);
+      if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
+        return { confirmed: false, txHash: sendResult.hash, error: `Submission not accepted: ${sendResult.status}` };
+      }
+      return await pollForConfirmation(this.server, sendResult.hash);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error("Soroban fee-bump submission failed", message);
       return { confirmed: false, txHash: "", error: message };
     }
   }
