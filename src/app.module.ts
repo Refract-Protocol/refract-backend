@@ -11,6 +11,7 @@ import { OracleModule } from "./oracle/oracle.module";
 import { ClaimModule } from "./claim/claim.module";
 import { TxModule } from "./tx/tx.module";
 import { RateLimitGuard } from "./common/rate-limit";
+import { AdminApiKeyGuard } from "./common/admin-auth";
 
 @Module({
   imports: [
@@ -27,6 +28,9 @@ import { RateLimitGuard } from "./common/rate-limit";
     ClaimModule,
     TxModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: RateLimitGuard }],
+  providers: [
+    { provide: APP_GUARD, useClass: RateLimitGuard },
+    { provide: APP_GUARD, useClass: AdminApiKeyGuard },
+  ],
 })
 export class AppModule {}

@@ -9,6 +9,7 @@
 export interface AppConfig {
   port: number;
   frontendUrl: string;
+  adminApiKey: string;
   database: {
     url: string;
   };
@@ -36,6 +37,7 @@ export interface AppConfig {
 export default (): AppConfig => ({
   port: parseInt(process.env.PORT || "4001", 10),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+  adminApiKey: process.env.ADMIN_API_KEY || "",
   database: {
     url: process.env.DATABASE_URL || "postgres://refract:refract@localhost:5432/refract",
   },
