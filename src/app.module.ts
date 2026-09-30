@@ -17,6 +17,7 @@ import { PoolModule } from "./pool/pool.module";
 import { QuoteModule } from "./quote/quote.module";
 import { StellarModule } from "./stellar/stellar.module";
 import { TxModule } from "./tx/tx.module";
+import { EventsModule } from "./events/events.module";
 import { HealthModule } from "./health/health.module";
 import { AuthModule } from "./auth/auth.module";
 import { ApiKeyGuard } from "./auth/api-key.guard";
@@ -103,6 +104,7 @@ import { StellarModule } from "./stellar/stellar.module";
     ClaimModule,
     TxModule,
     StellarModule,
+    EventsModule,
   ],
 })
 export class AppModule {}

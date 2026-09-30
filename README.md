@@ -39,6 +39,14 @@ psql "$DATABASE_URL" -f src/db/schema.sql   # one-time schema apply
 npm run dev                  # http://localhost:4001
 ```
 
+For an existing database, apply
+`src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
+checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
+the backend polls the configured Soroban RPC endpoint every 10 seconds and
+stores policy purchases, capital deposits/withdrawals, and settled claims in
+`soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
+ledger for the first run; subsequent progress is checkpointed in Postgres.
+
 ## Scripts
 
 | Command | Purpose |
@@ -65,6 +73,7 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `GET` | `/api/v1/pool/stats` | Pool capital / utilization / APY |
 | `GET` | `/api/v1/pool/positions` | Paginated LP positions sorted by committed capital |
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
+| `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
 
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
@@ -83,6 +92,10 @@ Schemas are generated from the Nest controllers and request DTOs.
 > refuses a null on-chain id without entering the retry loop. A policy only
 > deactivates once settlement actually confirms on-chain — a failed or
 > unconfirmed payout leaves it active for the next scheduled retry.
+>
+> Relayer account sequences are serialized across replicas using PostgreSQL
+> advisory locks; during key rotation, roll out the new key while old
+> replicas drain.
 >
 > Every transaction signed by the relayer is also recorded in the dedicated
 > PostgreSQL `relayer_transaction_audit` table with its lifecycle status,
