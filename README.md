@@ -69,16 +69,24 @@ npm run dev                  # http://localhost:4001
 > and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
 > liquidation events, and AviationStack (flight data) requires a paid key
 > this project doesn't have. See `src/oracle/oracle.service.ts` for details.
-> Claim settlement now builds, signs, and submits a real
-> `pool.process_claim()` Soroban transaction via `ClaimSettlementService`
-> (falls back to a safe no-op when `REFRACT_POOL_CONTRACT_ID` /
-> `ORACLE_RELAYER_SECRET` aren't set). **The contract's exact function
-> signature is an unverified best-effort guess** — this repo doesn't
-> include the `refract-contracts` source, so it needs confirmation
-> against the real deployed contract; see
-> `src/claim/claim-settlement.service.ts` for details. A policy only
-> deactivates once settlement actually confirms on-chain — a failed or
-> unconfirmed payout leaves it active for the next scheduled retry.
+>
+> **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
+> `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
+> are looked up on-chain). Policies start `pending` after `POST /buy`; once
+> the holder submits the signed XDR through `POST /api/v1/tx/submit`, the
+> buy_policy return value is stored as `onChainPolicyId` and the policy
+> becomes `active` (only active policies are claim-scanned). Settlement
+> refuses a null on-chain id without entering the retry loop.
+>
+> **Oracle publisher** (`OraclePublisherService`) pushes readings to
+> `REFRACT_ORACLE_CONTRACT_ID` via `update_reading(u32, i128)` when the
+> relayer secret is set. Degraded fail-safe readings are never published.
+> Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
+> `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
+>
+> **Confirmation polling** uses configurable exponential backoff + jitter
+> (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
+>
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
