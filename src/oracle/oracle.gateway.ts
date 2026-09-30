@@ -1,42 +1,61 @@
-import { OnGatewayConnection, WebSocketGateway, WebSocketServer } from "@nestjs/websockets";
-import { Logger } from "@nestjs/common";
-import { Server, WebSocket } from "ws";
-import { OracleReading } from "./oracle-reading";
+import {
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  OnModuleDestroy,
+  WebSocketGateway,
+  WebSocketServer,
+} from '@nestjs/websockets';
+import { Logger } from '@nestjs/common';
+import { Server, WebSocket } from 'ws';
 
-/**
- * Live oracle alert feed, reachable at `ws://<host>/` — same wire format
- * as the raw `ws` server the old src/index.ts ran directly. Nest's
- * WsAdapter (see src/main.ts) attaches this gateway to the same HTTP
- * server the REST API listens on, so no separate port is needed.
- */
-@WebSocketGateway()
-export class OracleGateway implements OnGatewayConnection {
+@WebSocketGateway({ path: '/oracle' })
+export class OracleGateway
+  implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy
+{
   private readonly logger = new Logger(OracleGateway.name);
 
   @WebSocketServer()
-  server!: Server;
+  server: Server;
 
   handleConnection(client: WebSocket): void {
-    client.send(JSON.stringify({ type: "connected", message: "Refract oracle feed" }));
+    this.logger.log('Oracle WebSocket client connected');
+    client.on('error', (err) => {
+      this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
+    });
   }
 
-  broadcastAlert(alert: OracleReading): void {
-    const payload = JSON.stringify({ ...alert, timestamp: Date.now() });
-    let sent = 0;
-    for (const client of this.server.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      // A single client whose socket is mid-close can throw synchronously
-      // from send() (readyState can still read OPEN in that window). Without
-      // catching it here, that throw would abort this whole loop — silently
-      // dropping the alert for every other connected client too, not just
-      // the bad one.
+  handleDisconnect(client: WebSocket): void {
+    this.logger.log('Oracle WebSocket client disconnected');
+  }
+
+  /**
+   * Graceful shutdown: send a proper close frame to every connected client
+   * before the shared HTTP server stops accepting connections. Dropping the
+   * socket without a close frame would leave clients unable to distinguish a
+   * clean shutdown from a network failure.
+   */
+  onModuleDestroy(): void {
+    if (!this.server) {
+      return;
+    }
+
+    const clients = this.server.clients;
+    if (!clients || clients.size === 0) {
+      return;
+    }
+
+    this.logger.log(
+      `Closing ${clients.size} Oracle WebSocket client(s) during shutdown`,
+    );
+
+    for (const client of clients) {
       try {
-        client.send(payload);
-        sent++;
+        client.close(1001, 'Server shutting down');
       } catch (err) {
-        this.logger.warn(`Failed to send oracle alert to a client: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.warn(
+          `Failed to close Oracle WebSocket client: ${(err as Error).message}`,
+        );
       }
     }
-    this.logger.debug(`Broadcast ${alert.coverageType} alert to ${sent} client(s)`);
   }
 }
