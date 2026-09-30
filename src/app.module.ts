@@ -8,6 +8,8 @@ import configuration from "./config/configuration";
 import { CacheModule } from "./cache/cache.module";
 import { ClaimModule } from "./claim/claim.module";
 import { DbModule } from "./db/db.module";
+import { DatabaseModule } from "./db/database.module";
+import { IdempotencyModule } from "./common/idempotency.module";
 import { HealthModule } from "./health/health.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { PolicyModule } from "./policy/policy.module";
@@ -64,6 +66,8 @@ import { StellarModule } from "./stellar/stellar.module";
       }),
     }),
     ScheduleModule.forRoot(),
+    DatabaseModule,
+    IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
     CacheModule,
     StellarModule,

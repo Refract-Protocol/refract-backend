@@ -37,6 +37,10 @@ async function bootstrap() {
     logger: winstonLogger,
   });
 
+  // Allow the pg pool (and any other OnApplicationShutdown hooks) to drain
+  // cleanly on SIGTERM/SIGINT instead of being hard-killed mid-query.
+  app.enableShutdownHooks();
+
   const config = app.get(ConfigService<AppConfig, true>);
 
   // Trust the configured number of proxy hops so throttling (and any other

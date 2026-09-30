@@ -265,6 +265,16 @@ export class PolicyService {
     return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
   }
 
+  /**
+   * Policies whose expiresAt is in the past but whose isActive flag is still
+   * true — silently excluded from listActive() scans but still visible in
+   * findByHolder().  Exposed for the ReconciliationService drift check.
+   */
+  getExpiredActive(): StoredPolicy[] {
+    const now = Math.floor(Date.now() / 1000);
+    return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt <= now);
+  }
+
   /** Marks a policy inactive after a claim has been paid out. */
   deactivate(id: string): void {
     const policy = this.policies.get(id);
