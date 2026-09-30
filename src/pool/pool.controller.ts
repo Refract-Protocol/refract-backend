@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post } from "@nestjs/common";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 import { PoolService } from "./pool.service";
+import { SecurityAudit } from "../common/security-audit.interceptor";
 
 @Controller("api/v1/pool")
 export class PoolController {
@@ -29,13 +30,25 @@ export class PoolController {
   }
 
   @Post("provide")
+  @SecurityAudit("pool.provide")
   provide(@Body() dto: DepositDto) {
     return this.poolService.provide(dto);
   }
 
+  @Post("provide/simulate")
+  simulateProvide(@Body() dto: DepositDto) {
+    return this.poolService.simulateProvide(dto);
+  }
+
   @Post("withdraw")
+  @SecurityAudit("pool.withdraw")
   withdraw(@Body() dto: WithdrawDto) {
     return this.poolService.withdraw(dto);
+  }
+
+  @Post("withdraw/simulate")
+  simulateWithdraw(@Body() dto: WithdrawDto) {
+    return this.poolService.simulateWithdraw(dto);
   }
 
   @Get("premium-history")

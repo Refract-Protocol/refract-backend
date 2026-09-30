@@ -1,5 +1,7 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
+import { COVERAGE_TYPES, coverageTypeByName } from "../common/coverage-types";
 import { CoverageTypeName } from "./coverage-type";
+import { CompareQuotesDto } from "./dto/compare-quotes.dto";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
 
 export interface QuoteResult {
@@ -14,6 +16,21 @@ export interface QuoteResult {
   availableCapacity: string;
 }
 
+/**
+ * One coverage type's outcome within a comparison. A type whose own limits
+ * reject the requested terms (e.g. Flight Delay beyond 1 day) is reported
+ * with the same error body createQuote() would return, not omitted.
+ */
+export type QuoteComparisonEntry =
+  | { coverageType: CoverageTypeName; status: "quoted"; quote: QuoteResult }
+  | { coverageType: CoverageTypeName; status: "rejected"; error: string; maxDuration?: number };
+
+export interface QuoteComparison {
+  coverageAmount: number;
+  durationDays: number;
+  results: QuoteComparisonEntry[];
+}
+
 export interface CoverageTypeInfo {
   id: CoverageTypeName;
   name: string;
@@ -23,14 +40,6 @@ export interface CoverageTypeInfo {
   maxDuration: number;
   riskMultiplier: number;
 }
-
-const RISK_MULTIPLIERS: Record<CoverageTypeName, number> = {
-  [CoverageTypeName.StablecoinDepeg]: 1.0,
-  [CoverageTypeName.MarketCrash]: 1.5,
-  [CoverageTypeName.LiquidationShield]: 2.0,
-  [CoverageTypeName.SmartContractRisk]: 3.0,
-  [CoverageTypeName.FlightDelay]: 0.8,
-};
 
 const DEFAULT_THRESHOLDS: Record<CoverageTypeName, number> = {
   [CoverageTypeName.StablecoinDepeg]: 500, // 5%
@@ -42,58 +51,10 @@ const DEFAULT_THRESHOLDS: Record<CoverageTypeName, number> = {
 
 const BASE_RATE = 0.03; // 3% annual base premium
 
-const COVERAGE_TYPES: CoverageTypeInfo[] = [
-  {
-    id: CoverageTypeName.StablecoinDepeg,
-    name: "Stablecoin Depeg",
-    description: "Pays out if USDC/USDT depegs from $1 by more than 5%",
-    trigger: "USDC < $0.95",
-    riskLevel: "Low",
-    maxDuration: 365,
-    riskMultiplier: 1.0,
-  },
-  {
-    id: CoverageTypeName.MarketCrash,
-    name: "Market Crash",
-    description: "Pays out if XLM or BTC drops >30% in a 24-hour window",
-    trigger: ">30% 24h decline",
-    riskLevel: "Medium",
-    maxDuration: 90,
-    riskMultiplier: 1.5,
-  },
-  {
-    id: CoverageTypeName.LiquidationShield,
-    name: "Liquidation Shield",
-    description: "Covers loss from being auto-liquidated on NEXUS Protocol",
-    trigger: "Position liquidated on NEXUS",
-    riskLevel: "Medium-High",
-    maxDuration: 30,
-    riskMultiplier: 2.0,
-  },
-  {
-    id: CoverageTypeName.SmartContractRisk,
-    name: "Smart Contract Risk",
-    description: "Compensates if a verified Soroban protocol is exploited",
-    trigger: "Verified on-chain exploit",
-    riskLevel: "High",
-    maxDuration: 180,
-    riskMultiplier: 3.0,
-  },
-  {
-    id: CoverageTypeName.FlightDelay,
-    name: "Flight Delay",
-    description: "Pays out automatically if your flight is delayed >2 hours",
-    trigger: ">2hr AviationStack-verified delay",
-    riskLevel: "Very Low",
-    maxDuration: 1,
-    riskMultiplier: 0.8,
-  },
-];
-
 @Injectable()
 export class QuoteService {
-  private calcPremium(coverageAmount: number, coverageType: CoverageTypeName, durationDays: number): number {
-    const annualPremium = coverageAmount * BASE_RATE * RISK_MULTIPLIERS[coverageType];
+  private calcPremium(coverageAmount: number, riskMultiplier: number, durationDays: number): number {
+    const annualPremium = coverageAmount * BASE_RATE * riskMultiplier;
     const dailyPremium = annualPremium / 365;
     return parseFloat((dailyPremium * durationDays).toFixed(4));
   }
@@ -105,15 +66,18 @@ export class QuoteService {
     // listCoverageTypes() (e.g. Flight Delay is capped at 1 day), but the
     // DTO only enforces a flat 365-day ceiling — this was the only place
     // that per-type limit was actually supposed to be checked.
-    const catalogEntry = COVERAGE_TYPES.find((t) => t.id === coverageType);
-    if (catalogEntry && durationDays > catalogEntry.maxDuration) {
+    const catalogEntry = coverageTypeByName(coverageType);
+    if (!catalogEntry) {
+      throw new BadRequestException({ error: `Unknown coverage type: ${coverageType}` });
+    }
+    if (durationDays > catalogEntry.maxDuration) {
       throw new BadRequestException({
         error: `${catalogEntry.name} coverage is limited to ${catalogEntry.maxDuration} day(s)`,
         maxDuration: catalogEntry.maxDuration,
       });
     }
 
-    const premium = this.calcPremium(coverageAmount, coverageType, durationDays);
+    const premium = this.calcPremium(coverageAmount, catalogEntry.riskMultiplier, durationDays);
 
     return {
       coverageType,
@@ -128,7 +92,41 @@ export class QuoteService {
     };
   }
 
+  /**
+   * Quotes the same amount and duration across several coverage types.
+   * Each type goes through createQuote() so pricing and per-type
+   * validation stay in one place; a per-type rejection is captured in its
+   * entry instead of failing the whole comparison. Results follow the
+   * catalog order regardless of the order requested.
+   */
+  compareQuotes(dto: CompareQuotesDto): QuoteComparison {
+    const { coverageAmount, durationDays, coverageTypes } = dto;
+    const requested = new Set(coverageTypes ?? Object.values(CoverageTypeName));
+
+    const results = Object.values(CoverageTypeName)
+      .filter((coverageType) => requested.has(coverageType))
+      .map((coverageType): QuoteComparisonEntry => {
+        try {
+          return { coverageType, status: "quoted", quote: this.createQuote({ coverageType, coverageAmount, durationDays }) };
+        } catch (err) {
+          if (!(err instanceof BadRequestException)) throw err;
+          const body = err.getResponse() as { error: string; maxDuration?: number };
+          return { coverageType, status: "rejected", error: body.error, maxDuration: body.maxDuration };
+        }
+      });
+
+    return { coverageAmount, durationDays, results };
+  }
+
   listCoverageTypes(): CoverageTypeInfo[] {
-    return COVERAGE_TYPES;
+    return COVERAGE_TYPES.map(({ key, name, description, trigger, riskLevel, maxDuration, riskMultiplier }) => ({
+      id: key,
+      name,
+      description,
+      trigger,
+      riskLevel,
+      maxDuration,
+      riskMultiplier,
+    }));
   }
 }
