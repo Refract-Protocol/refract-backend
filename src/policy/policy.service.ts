@@ -14,31 +14,17 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import {
+  COVERAGE_TYPE_CODE,
+  COVERAGE_TYPE_LABEL,
+  COVERAGE_TYPE_RISK_MULTIPLIER,
+  COVERAGE_TYPE_TRIGGER_THRESHOLD,
+  codeToSoroban,
+} from "../common/coverage-type.map";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+import { PolicyRepository } from "./policy.repository";
 
-const FLIGHT_DELAY_COVERAGE_TYPE = 4;
-
-/**
- * Mirrors refract-contracts/pool/src/lib.rs's `CoverageType` enum, in
- * declaration order — buy-policy.dto.ts's `coverageType` is validated as
- * 0-4 against exactly this ordering.
- */
-const COVERAGE_TYPE_VARIANTS = [
-  "StablecoinDepeg",
-  "MarketCrash",
-  "LiquidationShield",
-  "SmartContractRisk",
-  "FlightDelay",
-] as const;
-
-/**
- * trigger_threshold per coverage type, in the units process_claim() compares
- * against (see lib.rs): bps for StablecoinDepeg/MarketCrash, minutes for
- * FlightDelay. LiquidationShield/SmartContractRisk trigger on
- * `oracle_value > 0` and never read trigger_threshold, so its value there is
- * inert — kept non-zero only for consistency with the other entries.
- */
-const TRIGGER_THRESHOLDS = [500, 3000, 500, 500, 120];
+const FLIGHT_DELAY_COVERAGE_TYPE = COVERAGE_TYPE_CODE.FlightDelay;
 
 export interface CoverageTypeCatalogEntry {
   id: number;
@@ -66,68 +52,59 @@ export interface StoredPolicy {
   triggerParams?: Record<string, unknown>;
 }
 
-const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
 const BASE_RATE_BPS = 300; // 3% annual
-
-const COVERAGE_NAMES = [
-  "Stablecoin Depeg",
-  "Market Crash",
-  "Liquidation Shield",
-  "Smart Contract Risk",
-  "Flight Delay",
-];
 
 const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
   {
-    id: 0,
-    name: "Stablecoin Depeg",
+    id: COVERAGE_TYPE_CODE.StablecoinDepeg,
+    name: COVERAGE_TYPE_LABEL.StablecoinDepeg,
     description: "Pays out if a major stablecoin depegs below $0.95",
     riskLevel: "medium",
-    riskMultiplier: 1.0,
+    riskMultiplier: COVERAGE_TYPE_RISK_MULTIPLIER.StablecoinDepeg,
     baseRatePct: 3.0,
     maxCoverage: 100_000,
     trigger: "USDC price < $0.95 for 15+ minutes",
     icon: "🪙",
   },
   {
-    id: 1,
-    name: "Market Crash",
+    id: COVERAGE_TYPE_CODE.MarketCrash,
+    name: COVERAGE_TYPE_LABEL.MarketCrash,
     description: "Covers catastrophic market downturns exceeding 30% in 24h",
     riskLevel: "high",
-    riskMultiplier: 1.5,
+    riskMultiplier: COVERAGE_TYPE_RISK_MULTIPLIER.MarketCrash,
     baseRatePct: 4.5,
     maxCoverage: 50_000,
     trigger: "Market index 24h return < -30%",
     icon: "📉",
   },
   {
-    id: 2,
-    name: "Liquidation Shield",
+    id: COVERAGE_TYPE_CODE.LiquidationShield,
+    name: COVERAGE_TYPE_LABEL.LiquidationShield,
     description: "Pays out if your DeFi position gets liquidated",
     riskLevel: "high",
-    riskMultiplier: 2.0,
+    riskMultiplier: COVERAGE_TYPE_RISK_MULTIPLIER.LiquidationShield,
     baseRatePct: 6.0,
     maxCoverage: 200_000,
     trigger: "Collateral ratio drops below maintenance threshold",
     icon: "🛡️",
   },
   {
-    id: 3,
-    name: "Smart Contract Risk",
+    id: COVERAGE_TYPE_CODE.SmartContractRisk,
+    name: COVERAGE_TYPE_LABEL.SmartContractRisk,
     description: "Protection against smart contract exploits and hacks",
     riskLevel: "critical",
-    riskMultiplier: 3.0,
+    riskMultiplier: COVERAGE_TYPE_RISK_MULTIPLIER.SmartContractRisk,
     baseRatePct: 9.0,
     maxCoverage: 500_000,
     trigger: "Covered protocol TVL drops >50% in <1 hour",
     icon: "🔐",
   },
   {
-    id: 4,
-    name: "Flight Delay",
+    id: COVERAGE_TYPE_CODE.FlightDelay,
+    name: COVERAGE_TYPE_LABEL.FlightDelay,
     description: "Automatic payout for flight delays over 2 hours",
     riskLevel: "low",
-    riskMultiplier: 0.8,
+    riskMultiplier: COVERAGE_TYPE_RISK_MULTIPLIER.FlightDelay,
     baseRatePct: 2.4,
     maxCoverage: 2_000,
     trigger: "Flight delayed > 120 minutes per AviationStack data",
@@ -137,15 +114,14 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
 
 @Injectable()
 export class PolicyService {
-  // In-memory store — replaced by the Postgres-backed repository in a
-  // follow-up PR that wires the app onto src/db/schema.sql.
-  private readonly policies = new Map<string, StoredPolicy>();
-
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly policyRepository: PolicyRepository
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -178,7 +154,7 @@ export class PolicyService {
       }),
       new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol("coverage_type"),
-        val: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(COVERAGE_TYPE_VARIANTS[coverageType])]),
+        val: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(codeToSoroban(coverageType))]),
       }),
       new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol("duration_days"),
@@ -272,30 +248,47 @@ export class PolicyService {
   }
 
   listTypes(): CoverageTypeCatalogEntry[] {
-    return COVERAGE_TYPES;
+    return COVERAGE_TYPES.map(
+      ({ id, name, description, riskLevel, riskMultiplier, baseRatePct, maxCoverage, trigger, icon }) => ({
+        id,
+        name,
+        description,
+        riskLevel,
+        riskMultiplier,
+        baseRatePct,
+        maxCoverage,
+        trigger,
+        icon,
+      })
+    );
   }
 
-  findByHolder(address: string): StoredPolicy[] {
-    return [...this.policies.values()].filter((p) => p.holder === address);
+  findByHolder(address: string): Promise<StoredPolicy[]> {
+    return this.policyRepository.findByHolder(address);
   }
 
-  findById(id: string): StoredPolicy | undefined {
-    return this.policies.get(id);
+  findById(id: string): Promise<StoredPolicy | undefined> {
+    return this.policyRepository.findById(id);
   }
 
   /** Active, unexpired policies — the pool ClaimService scans for triggers. */
-  listActive(): StoredPolicy[] {
+  listActive(): Promise<StoredPolicy[]> {
+    return this.policyRepository.listActive();
+  }
+
+  /**
+   * Policies whose expiresAt is in the past but whose isActive flag is still
+   * true — silently excluded from listActive() scans but still visible in
+   * findByHolder().  Exposed for the ReconciliationService drift check.
+   */
+  getExpiredActive(): StoredPolicy[] {
     const now = Math.floor(Date.now() / 1000);
-    return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
+    return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt <= now);
   }
 
   /** Marks a policy inactive after a claim has been paid out. */
-  deactivate(id: string): void {
-    const policy = this.policies.get(id);
-    if (policy) {
-      policy.isActive = false;
-      this.policies.set(id, policy);
-    }
+  deactivate(id: string): Promise<void> {
+    return this.policyRepository.deactivate(id);
   }
 
   async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
@@ -317,10 +310,11 @@ export class PolicyService {
     // advertised cap (e.g. 500,000 on a Flight Delay policy capped at
     // 2,000) and it would be silently accepted. The Soroban pool contract
     // enforces the equivalent check in buy_policy(); mirror it here.
-    const maxCoverage = COVERAGE_TYPES[coverageType].maxCoverage;
+    const catalogEntry = COVERAGE_TYPES[coverageType];
+    const maxCoverage = catalogEntry.maxCoverage;
     if (coverage > BigInt(maxCoverage) * 10_000_000n) {
       throw new BadRequestException({
-        error: `coverageAmount exceeds the ${COVERAGE_NAMES[coverageType]} maximum of ${maxCoverage} USDC`,
+        error: `coverageAmount exceeds the ${COVERAGE_TYPE_LABEL[codeToSoroban(coverageType)]} maximum of ${maxCoverage} USDC`,
         maxCoverage,
       });
     }
@@ -340,7 +334,7 @@ export class PolicyService {
       });
     }
 
-    const multiplier = RISK_MULTIPLIERS[coverageType];
+    const multiplier = COVERAGE_TYPE_RISK_MULTIPLIER[codeToSoroban(coverageType)];
     const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
     const dailyRate = annualRate / 365;
     const premiumFraction = dailyRate * durationDays;
@@ -353,7 +347,7 @@ export class PolicyService {
       id: policyId,
       holder,
       coverageType,
-      coverageTypeName: COVERAGE_NAMES[coverageType],
+      coverageTypeName: COVERAGE_TYPE_LABEL[codeToSoroban(coverageType)],
       coverageAmount,
       premium: premium.toString(),
       durationDays,
@@ -363,13 +357,13 @@ export class PolicyService {
       triggerParams,
     };
 
-    this.policies.set(policyId, policy);
+    await this.policyRepository.insert(policy);
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
       coverage,
       durationDays,
-      TRIGGER_THRESHOLDS[coverageType]
+      COVERAGE_TYPE_TRIGGER_THRESHOLD[codeToSoroban(coverageType)]
     );
     const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
 

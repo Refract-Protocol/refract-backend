@@ -74,19 +74,30 @@ Schemas are generated from the Nest controllers and request DTOs.
 > and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
 > liquidation events, and AviationStack (flight data) requires a paid key
 > this project doesn't have. See `src/oracle/oracle.service.ts` for details.
-> Claim settlement builds, signs, and submits the deployed
-> `pool.process_claim(u64 policy_id)` invocation via
-> `ClaimSettlementService`; it uses the on-chain policy ID because the
-> contract loads the holder and payout itself. Settlement requires a
-> numeric on-chain policy ID, while the current policy purchase flow still
-> creates an off-chain UUID; wiring the returned on-chain ID through that
-> flow remains necessary for end-to-end automatic settlement. A policy only
+> **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
+> `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
+> are looked up on-chain). Policies start `pending` after `POST /buy`; once
+> the holder submits the signed XDR through `POST /api/v1/tx/submit`, the
+> buy_policy return value is stored as `onChainPolicyId` and the policy
+> becomes `active` (only active policies are claim-scanned). Settlement
+> refuses a null on-chain id without entering the retry loop. A policy only
 > deactivates once settlement actually confirms on-chain — a failed or
 > unconfirmed payout leaves it active for the next scheduled retry.
+>
 > Every transaction signed by the relayer is also recorded in the dedicated
 > PostgreSQL `relayer_transaction_audit` table with its lifecycle status,
 > transaction hash, signing key's public address, and policy ID. Apply the
 > current `src/db/schema.sql` before enabling relayer settlement.
+>
+> **Oracle publisher** (`OraclePublisherService`) pushes readings to
+> `REFRACT_ORACLE_CONTRACT_ID` via `update_reading(u32, i128)` when the
+> relayer secret is set. Degraded fail-safe readings are never published.
+> Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
+> `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
+>
+> **Confirmation polling** uses configurable exponential backoff + jitter
+> (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
+
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
