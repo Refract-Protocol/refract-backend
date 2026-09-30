@@ -31,7 +31,7 @@ CREATE TABLE pool_snapshots (
 
 CREATE TABLE policies (
   id              UUID            PRIMARY KEY DEFAULT uuid_generate_v4(),
-  policy_id       VARCHAR(32)     UNIQUE,             -- on-chain policy ID
+  policy_id       VARCHAR(20)     UNIQUE,             -- on-chain u64 as decimal string
   holder          VARCHAR(56)     NOT NULL,            -- Stellar address
   coverage_type   coverage_type   NOT NULL,
   coverage_amount NUMERIC(30, 0)  NOT NULL,            -- 1e7 USDC
@@ -39,13 +39,17 @@ CREATE TABLE policies (
   duration_days   SMALLINT        NOT NULL,
   expires_at      TIMESTAMPTZ     NOT NULL,
   trigger_params  JSONB           NOT NULL DEFAULT '{}',
-  is_active       BOOLEAN         NOT NULL DEFAULT true,
+  status          VARCHAR(16)     NOT NULL DEFAULT 'pending', -- pending | active | inactive
+  is_active       BOOLEAN         NOT NULL DEFAULT false,     -- mirror of status = 'active'
+  pending_tx_hash VARCHAR(64)     UNIQUE,
+  pending_expires_at TIMESTAMPTZ,
   created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_policies_holder  ON policies(holder);
 CREATE INDEX idx_policies_type    ON policies(coverage_type);
-CREATE INDEX idx_policies_active  ON policies(is_active, expires_at);
+CREATE INDEX idx_policies_active  ON policies(status, expires_at) WHERE status = 'active';
+
 
 -- ─── Claims ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +93,38 @@ CREATE TABLE lp_positions (
   last_updated    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
+-- ─── LP Position Events (append-only ledger) ─────────────────────────────────
+--
+-- Every deposit or withdrawal appends a row here so LP balances are fully
+-- reconstructible and auditable.  lp_positions continues to store the
+-- current summary balance for fast reads; lp_position_events is the
+-- source of truth for history.
+--
+-- event_type  : 'deposit' | 'withdrawal' | 'premium_accrual'
+-- delta_shares: signed — positive for deposits/accruals, negative for withdrawals
+-- delta_usdc  : signed USDC amount in 1e7 base units corresponding to the event
+-- tx_hash     : on-chain transaction hash from the confirmed Soroban invocation
+-- ledger_seq  : Stellar ledger sequence at confirmation (NULL for off-chain events
+--               such as synthetic premium_accrual bookkeeping entries)
+
+CREATE TABLE lp_position_events (
+  id              BIGSERIAL       PRIMARY KEY,
+  provider        VARCHAR(56)     NOT NULL,
+  event_type      VARCHAR(20)     NOT NULL CHECK (event_type IN ('deposit', 'withdrawal', 'premium_accrual')),
+  delta_shares    NUMERIC(30, 0)  NOT NULL,
+  delta_usdc      NUMERIC(30, 0)  NOT NULL,
+  tx_hash         VARCHAR(64),
+  ledger_seq      BIGINT,
+  recorded_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT lp_position_events_provider_fk
+    FOREIGN KEY (provider) REFERENCES lp_positions(provider)
+    ON DELETE CASCADE
+);
+
+CREATE INDEX idx_lp_events_provider ON lp_position_events(provider, recorded_at DESC);
+CREATE INDEX idx_lp_events_tx       ON lp_position_events(tx_hash) WHERE tx_hash IS NOT NULL;
+
 -- ─── Premium Revenue ─────────────────────────────────────────────────────────
 
 CREATE TABLE premium_revenue (
@@ -98,3 +134,29 @@ CREATE TABLE premium_revenue (
   coverage_type   coverage_type   NOT NULL,
   collected_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
+
+-- ─── Settlement Attempts / Dead-letter (issue #48) ───────────────────────────
+
+CREATE TYPE settlement_error_class AS ENUM (
+  'transient',
+  'permanent',
+  'indeterminate'
+);
+
+CREATE TABLE settlement_attempts (
+  policy_id         UUID            PRIMARY KEY REFERENCES policies(id),
+  holder            VARCHAR(56)     NOT NULL,
+  attempt_count     INTEGER         NOT NULL DEFAULT 0,
+  first_attempt_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+  last_attempt_at   TIMESTAMPTZ,
+  last_error        TEXT,
+  last_error_class  settlement_error_class,
+  pending_tx_hash   VARCHAR(64),
+  dead_lettered     BOOLEAN         NOT NULL DEFAULT false,
+  dead_lettered_at  TIMESTAMPTZ,
+  error_history     JSONB           NOT NULL DEFAULT '[]',
+  updated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_settlement_attempts_dead ON settlement_attempts(dead_lettered)
+  WHERE dead_lettered = true;

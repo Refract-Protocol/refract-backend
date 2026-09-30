@@ -24,7 +24,7 @@ jobs:
         run: npm run lint --if-present
 
       - name: Build
-        run: npm run build --if-present
+        run: npm run build
 
       - name: Test
         run: npm test --if-present
@@ -36,3 +36,39 @@ jobs:
             echo "::error::openapi.json is out of date. Run 'npm run openapi:generate' and commit the result."
             exit 1
           fi
+
+  soroban-integration:
+    name: soroban integration (non-blocking)
+    runs-on: ubuntu-latest
+    # Non-blocking initially: the local Soroban network takes minutes to boot and
+    # ledgers close on a real cadence. Once this job has been green on main for a
+    # sustained period, remove `continue-on-error` and add it to the required
+    # status checks for the default branch.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start local Soroban network
+        run: npm run soroban:up
+
+      - name: Deploy refract-contracts
+        run: npm run soroban:deploy
+
+      - name: Run Soroban integration suite
+        run: npm run test:soroban
+        env:
+          SOROBAN_RPC_URL: http://localhost:8000/soroban/rpc
+          SOROBAN_NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+          SOROBAN_HORIZON_URL: http://localhost:8000
+
+      - name: Stop local Soroban network
+        if: always()
+        run: npm run soroban:down
