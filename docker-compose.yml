@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: refract
+      POSTGRES_USER: refract
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-refract_dev}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./src/db/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U refract -d refract"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: 4001
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      DATABASE_URL: postgresql://refract:${POSTGRES_PASSWORD:-refract_dev}@postgres:5432/refract
+      REDIS_URL: redis://redis:6379
+      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
+      SOROBAN_RPC_URL: ${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+      STELLAR_NETWORK_PASSPHRASE: ${STELLAR_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+      REFRACT_POOL_CONTRACT_ID: ${REFRACT_POOL_CONTRACT_ID:-}
+      REFRACT_POLICY_CONTRACT_ID: ${REFRACT_POLICY_CONTRACT_ID:-}
+      REFRACT_ORACLE_CONTRACT_ID: ${REFRACT_ORACLE_CONTRACT_ID:-}
+      ORACLE_RELAYER_SECRET: ${ORACLE_RELAYER_SECRET:-}
+      COINGECKO_BASE_URL: ${COINGECKO_BASE_URL:-https://api.coingecko.com/api/v3}
+      STELLAR_HORIZON_URL: ${STELLAR_HORIZON_URL:-https://horizon-testnet.stellar.org}
+      DEFILLAMA_BASE_URL: ${DEFILLAMA_BASE_URL:-https://api.llama.fi}
+      DEFILLAMA_PROTOCOL_SLUG: ${DEFILLAMA_PROTOCOL_SLUG:-aave}
+      ORACLE_HTTP_TIMEOUT_MS: ${ORACLE_HTTP_TIMEOUT_MS:-5000}
+    ports:
+      - "4001:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  redis-data:

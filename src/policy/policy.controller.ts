@@ -1,6 +1,7 @@
 import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 import { PolicyService } from "./policy.service";
+import { SecurityAudit } from "../common/security-audit.interceptor";
 
 @Controller("api/v1/policies")
 export class PolicyController {
@@ -41,7 +42,13 @@ export class PolicyController {
   }
 
   @Post("buy")
+  @SecurityAudit("policy.buy")
   buy(@Body() dto: BuyPolicyDto) {
     return this.policyService.buy(dto);
+  }
+
+  @Post("buy/simulate")
+  simulateBuy(@Body() dto: BuyPolicyDto) {
+    return this.policyService.simulateBuy(dto);
   }
 }
