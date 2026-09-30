@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "jest",
-    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts"
+    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts",
+    "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand"
   },
   "jest": {
     "preset": "ts-jest",

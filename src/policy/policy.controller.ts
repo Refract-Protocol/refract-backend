@@ -1,5 +1,6 @@
-import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
+import { Controller, Get, NotFoundException, Param, Post, Body, Query } from "@nestjs/common";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+import { ListPoliciesDto } from "./dto/list-policies.dto";
 import { PolicyService } from "./policy.service";
 
 @Controller("api/v1/policies")
@@ -28,9 +29,20 @@ export class PolicyController {
     };
   }
 
+  /**
+   * Returns a paginated, filterable, sortable list of policies for a holder.
+   *
+   * Query params (all optional):
+   *   page        – 1-based page number (default 1)
+   *   limit       – results per page, 1–100 (default 20)
+   *   isActive    – "true" | "false" — filter by active status
+   *   coverageType – 0–4 — filter by coverage type
+   *   sortBy      – createdAt | expiresAt | coverageAmount | premium (default createdAt)
+   *   sortDir     – asc | desc (default desc)
+   */
   @Get("holder/:address")
-  findByHolder(@Param("address") address: string) {
-    return { policies: this.policyService.findByHolder(address) };
+  findByHolder(@Param("address") address: string, @Query() query: ListPoliciesDto) {
+    return this.policyService.findByHolder(address, query);
   }
 
   @Get(":id")

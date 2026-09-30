@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Contract, Keypair, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
+import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { FeeCeilingExceededError, FeeStrategyService } from "../stellar/fee-strategy.service";
 import { encodeProcessClaimArg } from "../stellar/scval-encoders";
@@ -11,23 +11,42 @@ export interface SettlementResult {
   settled: boolean;
   txHash?: string;
   error?: string;
-  resultCode?: string;
+  /** True when the failure is a permanent code-level bug (wrong arity/types) — do not retry. */
+  permanent?: boolean;
 }
 
 /**
- * Builds, signs, and submits the pool.process_claim(policy_id: u64) Soroban
- * transaction that pays out a triggered claim.
+ * Optional holder/payout retained for logging and audit only. The on-chain
+ * `process_claim(policy_id: u64)` looks up holder, payout, and trigger
+ * condition from Policy storage — they are never encoded into the call.
+ */
+export interface SettlementAudit {
+  holder?: string;
+  payout?: bigint;
+}
+
+/**
+ * Builds, signs, and submits the pool.process_claim() Soroban transaction
+ * that actually pays out a triggered claim.
  *
- * Encoding comes from scval-encoders.encodeProcessClaimArg — a single u64
- * matching refract-contracts/pool/src/lib.rs. The on-chain policy id must be
- * threaded from buy_policy()'s return value (StoredPolicy.onChainPolicyId);
- * without it settlement is a permanent failure, not a retryable one.
+ * Contract interface (refract-contracts / RefractPool):
+ *
+ *   pub fn process_claim(env: Env, policy_id: u64) -> Result<i128, PoolError>
+ *
+ * Exactly one argument: the on-chain u64 policy id minted by buy_policy().
+ * Encoded as `nativeToScVal(policyId, { type: "u64" })` with an explicit
+ * bigint — a JS number would pick the wrong ScVal discriminant, and values
+ * above Number.MAX_SAFE_INTEGER must survive (see CONTRIBUTING.md BigInt rule).
+ *
+ * Decoding the returned i128 payout is a separate follow-on; this service
+ * only cares that settlement confirms.
  */
 @Injectable()
 export class ClaimSettlementService {
   private readonly logger = new Logger(ClaimSettlementService.name);
   private readonly poolContractId: string;
   private readonly relayerKeypair: Keypair | null;
+  private readonly confirmationDefaults: AppConfig["confirmation"];
 
   constructor(
     private readonly configService: ConfigService<AppConfig, true>,
@@ -37,6 +56,7 @@ export class ClaimSettlementService {
     const stellar = this.configService.get("stellar", { infer: true });
     this.poolContractId = stellar.poolContractId;
     this.relayerKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
+    this.confirmationDefaults = this.configService.get("confirmation", { infer: true });
   }
 
   private get server(): rpc.Server {
@@ -53,23 +73,31 @@ export class ClaimSettlementService {
   }
 
   /**
-   * Settles using the on-chain u64 policy id. `holder`/`payout` are retained
-   * for logging/audit only — the contract looks them up from storage.
+   * @param onChainPolicyId - u64 minted by buy_policy(), carried as bigint end-to-end.
+   * @param audit - holder/payout for logs only; not sent to the contract.
    */
-  async settleClaim(onChainPolicyId: bigint, _holder: string, _payout: bigint): Promise<SettlementResult> {
+  async settleClaim(onChainPolicyId: bigint, audit: SettlementAudit = {}): Promise<SettlementResult> {
     if (!this.relayerKeypair || !this.poolContractId) {
       return {
         settled: false,
         error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET)",
+        permanent: true,
       };
     }
+
+    const auditSuffix =
+      audit.holder !== undefined || audit.payout !== undefined
+        ? ` holder=${audit.holder ?? "?"} payout=${audit.payout?.toString() ?? "?"}`
+        : "";
 
     try {
       const inclusionFee = await this.feeStrategy.estimateInclusionFee("aggressive");
       const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
       const contract = new Contract(this.poolContractId);
 
-      const operation = contract.call("process_claim", encodeProcessClaimArg(onChainPolicyId));
+      // Single u64 arg — must be bigint + explicit { type: "u64" } so the
+      // XDR discriminant is scvU64 (not scvString / scvI128 / scvU32).
+      const operation = contract.call("process_claim", nativeToScVal(onChainPolicyId, { type: "u64" }));
 
       const builtTx = new TransactionBuilder(sourceAccount, {
         fee: inclusionFee,
@@ -80,8 +108,8 @@ export class ClaimSettlementService {
         .build();
 
       // Simulates against the live contract and fills in Soroban resource
-      // fees/footprint — this is where a wrong function name or argument
-      // shape would surface.
+      // fees/footprint — argument/arity mismatches surface here as a
+      // permanent code-level bug (distinct from transient RPC failures).
       const preparedTx = await this.server.prepareTransaction(builtTx);
       const preparedFee = (preparedTx as { fee?: string }).fee;
       this.feeStrategy.assertTotalUnderCeiling(
@@ -97,10 +125,28 @@ export class ClaimSettlementService {
         validityWindowMs: 30_000,
       });
 
+      const confirmation = await pollForConfirmation(this.server, sendResult.hash, {
+        initialIntervalMs: this.confirmationDefaults.initialIntervalMs,
+        backoffMultiplier: this.confirmationDefaults.backoffMultiplier,
+        maxIntervalMs: this.confirmationDefaults.maxIntervalMs,
+        jitterRatio: this.confirmationDefaults.jitterRatio,
+        deadlineMs: this.confirmationDefaults.settlementDeadlineMs,
+      });
+
+      if (confirmation.outcome === "success") {
+        this.logger.log(
+          `Settlement confirmed for on-chain policy ${onChainPolicyId}${auditSuffix}: tx=${confirmation.txHash}`
+        );
+        return { settled: true, txHash: confirmation.txHash };
+      }
+
       return {
-        settled: confirmation.confirmed,
+        settled: false,
         txHash: confirmation.txHash,
         error: confirmation.error,
+        // Deadline exceeded is indeterminate — caller may retry. On-chain
+        // failure is definite; still leave retry policy to ClaimService.
+        permanent: confirmation.outcome === "failed_on_chain",
         resultCode: confirmation.resultCode,
       };
     } catch (err) {
@@ -109,8 +155,51 @@ export class ClaimSettlementService {
         return { settled: false, error: err.message, resultCode: "txINSUFFICIENT_FEE" };
       }
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Soroban settlement failed for policy ${onChainPolicyId}`, message);
+      if (isArgumentArityMismatch(message)) {
+        // Greppable permanent marker — do not treat as a transient RPC blip.
+        this.logger.error(
+          `CLAIM_SETTLEMENT_SIGNATURE_MISMATCH policy=${onChainPolicyId}${auditSuffix}: ${message}`
+        );
+        return {
+          settled: false,
+          error: message,
+          permanent: true,
+        };
+      }
+      this.logger.error(`Soroban settlement failed for on-chain policy ${onChainPolicyId}${auditSuffix}`, message);
       return { settled: false, error: message };
     }
   }
+}
+
+/**
+ * Heuristic for Soroban simulation / prepareTransaction failures that
+ * indicate a wrong function arity or ScVal type — a permanent code bug —
+ * vs. timeouts / 5xx / connection errors that should stay retryable.
+ */
+export function isArgumentArityMismatch(message: string): boolean {
+  const lower = message.toLowerCase();
+  // Timeouts and transport failures must not be classified as signature bugs.
+  if (
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("econnreset") ||
+    lower.includes("econnrefused") ||
+    lower.includes("network") ||
+    lower.includes("503") ||
+    lower.includes("429")
+  ) {
+    return false;
+  }
+  return (
+    lower.includes("argument") ||
+    lower.includes("arity") ||
+    lower.includes("unexpected type") ||
+    lower.includes("invalid type") ||
+    lower.includes("wrong type") ||
+    lower.includes("type mismatch") ||
+    lower.includes("missingargument") ||
+    lower.includes("extraneousargument") ||
+    lower.includes("invalidinput")
+  );
 }
