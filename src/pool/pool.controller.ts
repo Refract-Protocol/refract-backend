@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, Header, Param, Post } from "@nestjs/common";
+import { STATIC_RESOURCE_CACHE_CONTROL } from "../common/http-cache";
 import { DepositDto } from "./dto/deposit.dto";
 import { WithdrawDto } from "./dto/withdraw.dto";
 import { PoolService } from "./pool.service";
@@ -8,6 +9,7 @@ export class PoolController {
   constructor(private readonly poolService: PoolService) {}
 
   @Get("stats")
+  @Header("Cache-Control", STATIC_RESOURCE_CACHE_CONTROL)
   getStats() {
     return this.poolService.getStats();
   }

@@ -6,11 +6,18 @@ import { ClaimRepository } from "./claim.repository";
 import { ClaimScheduler } from "./claim.scheduler";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimService } from "./claim.service";
+import { ReconciliationService } from "./reconciliation.service";
 
 @Module({
   imports: [PolicyModule, OracleModule],
   controllers: [ClaimController],
-  providers: [ClaimRepository, ClaimService, ClaimScheduler, ClaimSettlementService],
-  exports: [ClaimService],
+  providers: [
+    ClaimRepository,
+    ClaimService,
+    ClaimScheduler,
+    ClaimSettlementService,
+    ReconciliationService,
+  ],
+  exports: [ClaimService, ReconciliationService],
 })
 export class ClaimModule {}
