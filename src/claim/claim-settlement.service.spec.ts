@@ -1,6 +1,7 @@
 import { ConfigService } from "@nestjs/config";
-import { Account, Keypair, StrKey, TransactionBuilder, nativeToScVal, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Account, Keypair, StrKey, Transaction, TransactionBuilder, nativeToScVal, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { ClaimSettlementService, isArgumentArityMismatch } from "./claim-settlement.service";
+import { RelayerAuditService } from "./relayer-audit.service";
 import { AppConfig } from "../config/configuration";
 import { ConfigService } from "@nestjs/config";
 import { testStellarConfig } from "../config/test-stellar";
@@ -53,6 +54,12 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     }),
   } as unknown as ConfigService<AppConfig, true>;
 }
+
+const PENDING_SEND_RESULT = { status: "PENDING" as const, hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 };
+const relayerAuditService = {
+  recordSignedTransaction: jest.fn().mockResolvedValue(undefined),
+  recordOutcome: jest.fn().mockResolvedValue(undefined),
+} as unknown as RelayerAuditService;
 
 function createService(overrides: Partial<AppConfig["stellar"]> = {}): ClaimSettlementService {
   const config = buildConfig(overrides);
@@ -154,7 +161,47 @@ function successTxResponse(returnValue?: ReturnType<typeof nativeToScVal>) {
   };
 }
 
+  const fees: AppConfig["fees"] = {
+    ceilingStroops: "10000000",
+    statsTtlMs: 15_000,
+    profiles: {
+      moderate: { percentile: 90, multiplier: 1.0 },
+      aggressive: { percentile: 99, multiplier: 1.0 },
+    },
+  };
+  return {
+    get: jest.fn((key: string) => {
+      if (key === "stellar") return stellar;
+      if (key === "fees") return fees;
+      if (key === "confirmation") return CONFIRMATION;
+      return undefined;
+    }),
+  } as unknown as ConfigService<AppConfig, true>;
+}
+
+
 describe("ClaimSettlementService", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  describe("isConfigured", () => {
+    it("is false when the pool contract ID is missing", () => {
+      const service = buildSettlementService({ poolContractId: "" });
+    });
+  });
+});
+
+describe("ClaimSettlementService", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
     jest.useRealTimers();
@@ -172,7 +219,7 @@ describe("ClaimSettlementService", () => {
     });
 
     it("is true once both the pool contract ID and relayer secret are set", () => {
-      const service = buildSettlementService();
+      const service = buildSettlementService({ relayerSecret: "" });
       expect(service.isConfigured()).toBe(true);
     });
   });
@@ -285,11 +332,22 @@ describe("ClaimSettlementService", () => {
 
       expect(result.settled).toBe(false);
       expect(result.error).toMatch(/rejected|ERROR|UNKNOWN/i);
+      expect(relayerAuditService.recordOutcome).toHaveBeenCalledWith(
+        expect.any(String),
+        "rejected",
+        "ERROR",
+        "Submission not accepted: ERROR"
+      );
       expect(getTransactionSpy).not.toHaveBeenCalled();
     });
 
     it("does not settle when the submitted transaction fails on-chain", async () => {
       const service = createService();
+
+      const result = await service.settleClaim(1n, { payout: 100n });
+
+      expect(result.settled).toBe(false);
+      expect(result.error).toMatch(/rejected|ERROR|UNKNOWN/i);
       const holder = Keypair.random().publicKey();
 
       const result = await service.settleClaim(1n, { payout: 100n });
@@ -313,21 +371,7 @@ describe("ClaimSettlementService", () => {
         resultMetaXdr: {} as never,
       });
 
-      const result = await service.settleCla
-      jest.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue({
-        status: rpc.Api.GetTransactionStatus.FAILED,
-        latestLedger: 2,
-        latestLedgerCloseTime: 2,
-        oldestLedger: 1,
-        oldestLedgerCloseTime: 1,
-        ledger: 2,
-        createdAt: 2,
-        applicationOrder: 1,
-        feeBump: false,
-        envelopeXdr: {} as never,
-        resultXdr: {} as never,
-        resultMetaXdr: {} as never,
-      });
+      const service = new ClaimSettlementService(buildConfig(), relayerAuditService);
 
       const result = await service.settleClaim(1n, { payout: 100n });
 
@@ -415,6 +459,18 @@ describe("ClaimSettlementService", () => {
       jest.spyOn(rpc.Server.prototype, "getAccount").mockRejectedValue(new Error("connection refused"));
 
       const result = await service.settleClaim(1n, holder, 100n);
+
+      expect(result.settled).toBe(false);
+      expect(result.error).toBe("connection refused");
+    });
+  });
+
+  describe("decodePoolErrorMessage", () => {
+    it("maps numeric PoolError codes", () => {
+      expect(decodePoolErrorMessage("error code: 6")).toContain("PolicyNotFound");
+    });
+  });
+});
 
       expect(result.settled).toBe(false);
       expect(result.error).toBe("connection refused");

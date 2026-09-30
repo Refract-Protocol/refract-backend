@@ -132,7 +132,7 @@ describe("ClaimService", () => {
         payout: "5000000000",
         settlementTxHash: "mock-tx-hash",
       });
-      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(policy.id, policy.holder, 5_000_000_000n);
+      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(policy.id);
       expect(policyService.deactivate).toHaveBeenCalledWith(policy.id);
     });
 
