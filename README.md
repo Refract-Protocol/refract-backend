@@ -39,6 +39,15 @@ psql "$DATABASE_URL" -f src/db/schema.sql   # one-time schema apply
 npm run dev                  # http://localhost:4001
 ```
 
+`STELLAR_NETWORK` selects `testnet`, `futurenet`, or `mainnet`; the matching
+Soroban RPC URL, Horizon URL, and network passphrase are selected together.
+Set the network-suffixed contract IDs for the selected network (for example,
+`REFRACT_POOL_CONTRACT_ID_TESTNET`) rather than overriding endpoint or
+passphrase values independently. The backend checks the RPC passphrase and,
+when a pool contract ID is configured, validates the live pool WASM contract
+spec at startup. Startup fails with the specific interface mismatch if the
+deployed contract differs from the backend's assumed interface.
+
 For an existing database, apply
 `src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
 checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
@@ -73,6 +82,7 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `GET` | `/api/v1/pool/stats` | Pool capital / utilization / APY |
 | `GET` | `/api/v1/pool/positions` | Paginated LP positions sorted by committed capital |
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
+| `GET` | `/api/v1/claims/dead-letter` | Triggered claims withheld after repeated failed settlement |
 | `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
 
@@ -101,6 +111,16 @@ reads, and 60/minute for coverage catalogs.
 > deactivates once settlement actually confirms on-chain — a failed or
 > unconfirmed payout leaves it active for the next scheduled retry.
 >
+> Claim settlement retries failed submissions for up to three scheduled
+> scans, then exposes the claim and last error through
+> `/api/v1/claims/dead-letter` and stops retrying it automatically. This
+> dead-letter list is currently in memory and is cleared on process restart.
+> The known `process_claim` argument mismatch is checked against the deployed
+> contract spec at startup; this check intentionally prevents startup until
+> the backend call matches the deployed interface. See
+> `src/claim/claim-settlement.service.ts` and
+> `src/stellar/pool-contract-interface.service.ts`.
+>
 > Relayer account sequences are serialized across replicas using PostgreSQL
 > advisory locks; during key rotation, roll out the new key while old
 > replicas drain.
@@ -118,7 +138,10 @@ reads, and 60/minute for coverage catalogs.
 >
 > **Confirmation polling** uses configurable exponential backoff + jitter
 > (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
-
+>
+> Before building a caller-signed policy purchase or pool-capital XDR, the
+> backend checks via Horizon that the caller's account exists and has a
+> positive native XLM balance, and returns a funding instruction if not.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).

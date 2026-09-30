@@ -7,6 +7,7 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
   const stellar: AppConfig["stellar"] = {
     network: "testnet",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    horizonUrl: "https://horizon-testnet.stellar.org",
     networkPassphrase: "Test SDF Network ; September 2015",
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
     policyContractId: "",

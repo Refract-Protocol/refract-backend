@@ -43,6 +43,7 @@ export class ClaimSettlementService {
   private readonly logger = new Logger(ClaimSettlementService.name);
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
+  private readonly network: AppConfig["stellar"]["network"];
   private readonly poolContractId: string;
   private readonly relayerKeypair: Keypair | null;
 
@@ -50,6 +51,7 @@ export class ClaimSettlementService {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
+    this.network = stellar.network;
     this.poolContractId = stellar.poolContractId;
     this.relayerKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
   }
@@ -63,7 +65,7 @@ export class ClaimSettlementService {
     if (!this.relayerKeypair || !this.poolContractId) {
       return {
         settled: false,
-        error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET)",
+        error: `Soroban relayer not configured (set REFRACT_POOL_CONTRACT_ID_${this.network.toUpperCase()} and ORACLE_RELAYER_SECRET)`,
       };
     }
 

@@ -25,6 +25,7 @@ import configuration, { AppConfig } from "./config/configuration";
 import { StellarModule } from "./stellar/stellar.module";
 import { RateLimitGuard } from "./common/rate-limit";
 import { AdminApiKeyGuard } from "./common/admin-auth";
+import { PoolContractInterfaceService } from "./stellar/pool-contract-interface.service";
 
 @Module({
   imports: [
@@ -112,5 +113,6 @@ import { AdminApiKeyGuard } from "./common/admin-auth";
     { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: AdminApiKeyGuard },
   ],
+  providers: [PoolContractInterfaceService],
 })
 export class AppModule {}
