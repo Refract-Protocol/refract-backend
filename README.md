@@ -32,11 +32,11 @@ src/
 
 ## Quick start
 
+Start the backend and its PostgreSQL and Redis dependencies with Docker
+Compose; Docker Compose initializes the database schema on first startup:
+
 ```bash
-cp .env.example .env         # then fill in DATABASE_URL, contract IDs, etc.
-npm install
-psql "$DATABASE_URL" -f src/db/schema.sql   # one-time schema apply
-npm run dev                  # http://localhost:4001
+docker compose up --build
 ```
 
 `STELLAR_NETWORK` selects `testnet`, `futurenet`, or `mainnet`; the matching
@@ -56,6 +56,19 @@ stores policy purchases, capital deposits/withdrawals, and settled claims in
 `soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
 ledger for the first run; subsequent progress is checkpointed in Postgres.
 
+The API listens on http://localhost:4001. PostgreSQL and Redis are also
+available on localhost ports 5432 and 6379. Compose uses the development-only
+Postgres password `refract_dev` unless `POSTGRES_PASSWORD` is set in the
+environment or `.env`; configure secrets and production service settings
+separately before deployment. Contract IDs and the relayer key can be added to
+`.env` when exercising configured on-chain operations.
+
+To run the API directly on the host, start PostgreSQL and Redis yourself,
+copy `.env.example` to `.env`, install Node.js 22 dependencies, apply
+`src/db/schema.sql` once, and run `npm run dev`.
+
+Stop the stack with `docker compose down`. Persistent database and Redis data
+remain in Docker volumes; `docker compose down -v` removes them.
 ## Scripts
 
 | Command | Purpose |
@@ -75,6 +88,7 @@ Schemas are generated from the Nest controllers and request DTOs.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
+| `GET` | `/metrics` | Prometheus-format HTTP, scheduler, oracle, and Soroban RPC metrics |
 | `GET` | `/api/v1/quotes/coverage-types` | List coverage types & rates |
 | `POST` | `/api/v1/quotes/quote` | Quote a premium |
 | `GET` | `/api/v1/policies/holder/:address` | Policies for a holder |
