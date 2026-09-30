@@ -241,6 +241,19 @@ describe("PolicyService", () => {
       await expect(service.buy(buildDto(holder, { coverageType: 0 }))).resolves.not.toThrow();
     });
 
+    it("rejects an unsupported coverageType before contacting the network", async () => {
+      const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
+      expect.assertions(3);
+      try {
+        await service.buy(buildDto(holder, { coverageType: 99 }));
+      } catch (err) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = (err as BadRequestException).getResponse() as { error: string };
+        expect(response.error).toBe("coverageType must be between 0 and 4");
+        expect(getAccountSpy).not.toHaveBeenCalled();
+      }
+    });
+
     it("rejects a zero coverageAmount without contacting the network", async () => {
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);

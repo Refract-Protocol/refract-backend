@@ -311,6 +311,13 @@ export class PolicyService {
   async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
     const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
 
+    const catalogEntry = COVERAGE_TYPES[coverageType];
+    if (!catalogEntry) {
+      throw new BadRequestException({
+        error: `coverageType must be between 0 and ${COVERAGE_TYPES.length - 1}`,
+      });
+    }
+
     if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
       throw new BadRequestException({
         error: "Flight Delay coverage requires triggerParams.flightNumber",
@@ -327,7 +334,7 @@ export class PolicyService {
     // advertised cap (e.g. 500,000 on a Flight Delay policy capped at
     // 2,000) and it would be silently accepted. The Soroban pool contract
     // enforces the equivalent check in buy_policy(); mirror it here.
-    const maxCoverage = COVERAGE_TYPES[coverageType].maxCoverage;
+    const maxCoverage = catalogEntry.maxCoverage;
     if (coverage > BigInt(maxCoverage) * 10_000_000n) {
       throw new BadRequestException({
         error: `coverageAmount exceeds the ${COVERAGE_NAMES[coverageType]} maximum of ${maxCoverage} USDC`,
