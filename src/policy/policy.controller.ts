@@ -46,4 +46,9 @@ export class PolicyController {
   buy(@Body() dto: BuyPolicyDto) {
     return this.policyService.buy(dto);
   }
+
+  @Post("buy/simulate")
+  simulateBuy(@Body() dto: BuyPolicyDto) {
+    return this.policyService.simulateBuy(dto);
+  }
 }

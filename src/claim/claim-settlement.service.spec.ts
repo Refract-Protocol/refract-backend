@@ -1,4 +1,5 @@
 import { ConfigService } from "@nestjs/config";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { Account, Keypair, StrKey, rpc } from "@stellar/stellar-sdk";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { AppConfig } from "../config/configuration";
@@ -7,11 +8,13 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
   const stellar: AppConfig["stellar"] = {
     network: "testnet",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    horizonUrl: "https://horizon-testnet.stellar.org",
     networkPassphrase: "Test SDF Network ; September 2015",
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
     policyContractId: "",
     oracleContractId: "",
-    relayerSecret: Keypair.random().secret(),
+    relayerSecretId: "test/relayer",
+    relayerSecretRegion: "us-east-1",
     ...overrides,
   };
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
@@ -20,9 +23,15 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
 const PENDING_SEND_RESULT = { status: "PENDING" as const, hash: "mock-tx-hash", latestLedger: 1, latestLedgerCloseTime: 1 };
 
 describe("ClaimSettlementService", () => {
+  const relayerSecret = Keypair.random().secret();
+
   afterEach(() => {
     jest.restoreAllMocks();
     jest.useRealTimers();
+  });
+
+  beforeEach(() => {
+    jest.spyOn(SecretsManagerClient.prototype, "send").mockResolvedValue({ SecretString: relayerSecret } as never);
   });
 
   describe("isConfigured", () => {
@@ -31,12 +40,12 @@ describe("ClaimSettlementService", () => {
       expect(service.isConfigured()).toBe(false);
     });
 
-    it("is false when the relayer secret is missing", () => {
-      const service = new ClaimSettlementService(buildConfig({ relayerSecret: "" }));
+    it("is false when the relayer secret ID is missing", () => {
+      const service = new ClaimSettlementService(buildConfig({ relayerSecretId: "" }));
       expect(service.isConfigured()).toBe(false);
     });
 
-    it("is true once both the pool contract ID and relayer secret are set", () => {
+    it("is true once both the pool contract ID and relayer secret ID are set", () => {
       const service = new ClaimSettlementService(buildConfig());
       expect(service.isConfigured()).toBe(true);
     });
@@ -77,11 +86,14 @@ describe("ClaimSettlementService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.settleClaim("1");
 
       expect(result).toEqual({ settled: true, txHash: "mock-tx-hash" });
+      expect(SecretsManagerClient.prototype.send).toHaveBeenCalledWith(expect.any(GetSecretValueCommand));
     });
 
     it("does not settle when the submission is rejected outright", async () => {
@@ -98,7 +110,10 @@ describe("ClaimSettlementService", () => {
       const result = await service.settleClaim("1");
 
       expect(result.settled).toBe(false);
-      expect(result.error).toContain("ERROR");
+      expect(result).toMatchObject({
+        code: "SOROBAN_REQUEST_FAILED",
+        error: "The Soroban request failed. Please retry later or contact support.",
+      });
       expect(getTransactionSpy).not.toHaveBeenCalled();
     });
 
@@ -122,11 +137,18 @@ describe("ClaimSettlementService", () => {
         envelopeXdr: {} as never,
         resultXdr: {} as never,
         resultMetaXdr: {} as never,
+        events: { transactionEventsXdr: [], contractEventsXdr: [] },
+        txHash: "mock-tx-hash",
       });
 
       const result = await service.settleClaim("1");
 
-      expect(result).toEqual({ settled: false, txHash: "mock-tx-hash", error: "Transaction failed on-chain" });
+      expect(result).toEqual({
+        settled: false,
+        txHash: "mock-tx-hash",
+        error: "The transaction failed on-chain.",
+        code: "TRANSACTION_FAILED",
+      });
     });
 
     it("gives up and reports a timeout once confirmation polling is exhausted", async () => {
@@ -143,13 +165,19 @@ describe("ClaimSettlementService", () => {
         latestLedgerCloseTime: 1,
         oldestLedger: 1,
         oldestLedgerCloseTime: 1,
+        txHash: "mock-tx-hash",
       });
 
       const resultPromise = service.settleClaim("1");
       await jest.runAllTimersAsync();
       const result = await resultPromise;
 
-      expect(result).toEqual({ settled: false, txHash: "mock-tx-hash", error: "Timed out waiting for confirmation" });
+      expect(result).toEqual({
+        settled: false,
+        txHash: "mock-tx-hash",
+        error: "Timed out waiting for transaction confirmation.",
+        code: "CONFIRMATION_TIMEOUT",
+      });
     });
 
     it("catches an unexpected error (e.g. a network failure) and reports settled:false", async () => {
@@ -160,7 +188,8 @@ describe("ClaimSettlementService", () => {
       const result = await service.settleClaim("1");
 
       expect(result.settled).toBe(false);
-      expect(result.error).toBe("connection refused");
+      expect(result.error).toBe("The Soroban request failed. Please retry later or contact support.");
+      expect(result.code).toBe("SOROBAN_REQUEST_FAILED");
     });
   });
 });
