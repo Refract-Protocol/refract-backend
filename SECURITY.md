@@ -12,11 +12,38 @@ security audit. Do not deploy to mainnet or custody real value until it has.
 
 **Do not open a public issue for security vulnerabilities.**
 
-Instead, email **security@refract.example** with:
+### Structured intake (primary mechanism)
 
-- A description of the issue and its impact
-- Steps to reproduce (proof-of-concept where possible)
-- Affected contract/service and version/commit
+Submit reports through the authenticated intake API at
+`POST /api/v1/security-reports`. This is the **primary reporting mechanism**;
+the email address below is retained only as a fallback for reporters who
+cannot use the API.
+
+The endpoint requires authentication and a submitter identity/contact so that
+reports are trackable and anonymous spam is prevented. Each report is
+structured with:
+
+- `severity` — one of `low`, `medium`, `high`, `critical`
+- `affectedComponent` — the contract/service/component affected
+- `description` — a description of the issue and its impact
+- `reproductionSteps` — steps to reproduce (proof-of-concept where possible)
+- `submitterName` and `submitterContact` — who to follow up with
+
+Reports are persisted with a triage status workflow:
+`new` → `triaging` → `resolved` / `wontfix`. On submission, a notification is
+sent to the team's configured communication channel so reports do not sit
+unnoticed.
+
+**Confidentiality:** report contents — especially reproduction steps for
+unpatched vulnerabilities — are never exposed via any public or list endpoint.
+Only authenticated triagers may read a report's contents; a non-triager can
+never read another submitter's report. Triage access is controlled by the same
+admin-only guard used elsewhere in the API.
+
+### Email fallback
+
+If you cannot use the intake API, email **security@refract.example** with the
+same structured fields listed above.
 
 We aim to acknowledge reports within **72 hours** and to provide a remediation
 timeline after triage. We will credit reporters who wish to be named once a fix
