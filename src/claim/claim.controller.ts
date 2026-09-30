@@ -1,10 +1,18 @@
-import { Controller, Get, Param } from "@nestjs/common";
+import { Controller, Get, Param, Query } from "@nestjs/common";
 import { plainToInstance } from "class-transformer";
+import { PageKey, PageQueryDto, paginateDesc } from "../common/pagination";
+import { ClaimResult } from "./claim-result";
 import { ClaimService } from "./claim.service";
 import {
   ClaimStatsOpsResponseDto,
   ClaimStatsResponseDto,
 } from "./dto/claim-stats.response";
+
+/**
+ * A policy settles at most once (it is deactivated on payout), so
+ * policyId is a unique tie-breaker for claims sharing a processedAt.
+ */
+const claimKey = (c: ClaimResult): PageKey => ({ at: c.processedAt, id: c.policyId });
 
 /**
  * New in the NestJS migration — the pre-migration ClaimProcessor tracked
@@ -37,13 +45,17 @@ export class ClaimController {
     );
   }
 
+  /** Newest first, keyset-paginated on (processedAt, policyId); `?limit=` defaults to 50. */
   @Get("holder/:address")
-  async getHistoryForHolder(@Param("address") address: string) {
-    return { claims: await this.claimService.getHistoryForHolder(address) };
+  async getHistoryForHolder(@Param("address") address: string, @Query() query: PageQueryDto) {
+    const page = paginateDesc(this.claimService.getHistoryForHolder(address), claimKey, query, 50);
+    return { claims: page.items, nextCursor: page.nextCursor };
   }
 
+  /** Newest first across all holders; `?limit=` defaults to 10, as before pagination. */
   @Get("recent")
-  async getRecent() {
-    return { claims: await this.claimService.getRecentSettlements() };
+  async getRecent(@Query() query: PageQueryDto) {
+    const page = paginateDesc(this.claimService.getRecentSettlements(Infinity), claimKey, query, 10);
+    return { claims: page.items, nextCursor: page.nextCursor };
   }
 }
