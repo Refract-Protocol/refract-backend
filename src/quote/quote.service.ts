@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { COVERAGE_TYPES, coverageTypeByName } from "../common/coverage-types";
 import { CoverageTypeName } from "./coverage-type";
+import { CompareQuotesDto } from "./dto/compare-quotes.dto";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
 
 export interface QuoteResult {
@@ -13,6 +14,21 @@ export interface QuoteResult {
   expiresAt: string;
   poolUtilization: string;
   availableCapacity: string;
+}
+
+/**
+ * One coverage type's outcome within a comparison. A type whose own limits
+ * reject the requested terms (e.g. Flight Delay beyond 1 day) is reported
+ * with the same error body createQuote() would return, not omitted.
+ */
+export type QuoteComparisonEntry =
+  | { coverageType: CoverageTypeName; status: "quoted"; quote: QuoteResult }
+  | { coverageType: CoverageTypeName; status: "rejected"; error: string; maxDuration?: number };
+
+export interface QuoteComparison {
+  coverageAmount: number;
+  durationDays: number;
+  results: QuoteComparisonEntry[];
 }
 
 export interface CoverageTypeInfo {
@@ -74,6 +90,32 @@ export class QuoteService {
       poolUtilization: "42%", // live in production
       availableCapacity: "4,200,000",
     };
+  }
+
+  /**
+   * Quotes the same amount and duration across several coverage types.
+   * Each type goes through createQuote() so pricing and per-type
+   * validation stay in one place; a per-type rejection is captured in its
+   * entry instead of failing the whole comparison. Results follow the
+   * catalog order regardless of the order requested.
+   */
+  compareQuotes(dto: CompareQuotesDto): QuoteComparison {
+    const { coverageAmount, durationDays, coverageTypes } = dto;
+    const requested = new Set(coverageTypes ?? Object.values(CoverageTypeName));
+
+    const results = Object.values(CoverageTypeName)
+      .filter((coverageType) => requested.has(coverageType))
+      .map((coverageType): QuoteComparisonEntry => {
+        try {
+          return { coverageType, status: "quoted", quote: this.createQuote({ coverageType, coverageAmount, durationDays }) };
+        } catch (err) {
+          if (!(err instanceof BadRequestException)) throw err;
+          const body = err.getResponse() as { error: string; maxDuration?: number };
+          return { coverageType, status: "rejected", error: body.error, maxDuration: body.maxDuration };
+        }
+      });
+
+    return { coverageAmount, durationDays, results };
   }
 
   listCoverageTypes(): CoverageTypeInfo[] {
