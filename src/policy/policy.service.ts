@@ -248,7 +248,19 @@ export class PolicyService {
   }
 
   listTypes(): CoverageTypeCatalogEntry[] {
-    return COVERAGE_TYPES;
+    return COVERAGE_TYPES.map(
+      ({ id, name, description, riskLevel, riskMultiplier, baseRatePct, maxCoverage, trigger, icon }) => ({
+        id,
+        name,
+        description,
+        riskLevel,
+        riskMultiplier,
+        baseRatePct,
+        maxCoverage,
+        trigger,
+        icon,
+      })
+    );
   }
 
   findByHolder(address: string): StoredPolicy[] {
@@ -303,7 +315,8 @@ export class PolicyService {
     // advertised cap (e.g. 500,000 on a Flight Delay policy capped at
     // 2,000) and it would be silently accepted. The Soroban pool contract
     // enforces the equivalent check in buy_policy(); mirror it here.
-    const maxCoverage = COVERAGE_TYPES[coverageType].maxCoverage;
+    const catalogEntry = COVERAGE_TYPES[coverageType];
+    const maxCoverage = catalogEntry.maxCoverage;
     if (coverage > BigInt(maxCoverage) * 10_000_000n) {
       throw new BadRequestException({
         error: `coverageAmount exceeds the ${COVERAGE_TYPE_LABEL[codeToSoroban(coverageType)]} maximum of ${maxCoverage} USDC`,
