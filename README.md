@@ -76,6 +76,14 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
 
+Endpoints with the `@AdminOnly()` guard require `X-API-Key: $ADMIN_API_KEY`.
+Set a strong, private `ADMIN_API_KEY` before enabling admin-only routes; if
+it is unset, those routes fail closed with `503`. The current API has no
+admin CRUD, dead-letter review, or contract-override routes. API request
+limits are applied per client IP and endpoint: 30/minute for quotes,
+10/minute for policy buys, LP actions, oracle status, and on-chain coverage
+reads, and 60/minute for coverage catalogs.
+
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
 > `SmartContractRisk` now call real, keyless public APIs — CoinGecko
 > (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama

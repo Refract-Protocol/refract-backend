@@ -23,6 +23,8 @@ import { AuthModule } from "./auth/auth.module";
 import { ApiKeyGuard } from "./auth/api-key.guard";
 import configuration, { AppConfig } from "./config/configuration";
 import { StellarModule } from "./stellar/stellar.module";
+import { RateLimitGuard } from "./common/rate-limit";
+import { AdminApiKeyGuard } from "./common/admin-auth";
 
 @Module({
   imports: [
@@ -105,6 +107,10 @@ import { StellarModule } from "./stellar/stellar.module";
     TxModule,
     StellarModule,
     EventsModule,
+  ],
+  providers: [
+    { provide: APP_GUARD, useClass: RateLimitGuard },
+    { provide: APP_GUARD, useClass: AdminApiKeyGuard },
   ],
 })
 export class AppModule {}
