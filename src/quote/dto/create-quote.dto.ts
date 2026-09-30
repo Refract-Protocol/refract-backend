@@ -1,18 +1,18 @@
-import { IsEnum, IsInt, IsNumber, IsOptional, Max, Min } from "class-validator";
+import { IsEnum, IsInt, IsNumber, IsOptional, Min } from "class-validator";
+import { IsWithinCoverageLimits } from "../../common/validators/coverage-limits.validator";
 import { CoverageTypeName } from "../coverage-type";
 
+@IsWithinCoverageLimits()
 export class CreateQuoteDto {
   @IsEnum(CoverageTypeName)
   coverageType!: CoverageTypeName;
 
   @IsNumber()
-  @Min(10)
-  @Max(100_000)
+  @Min(0)
   coverageAmount!: number;
 
   @IsInt()
   @Min(1)
-  @Max(365)
   durationDays!: number;
 
   @IsOptional()
