@@ -1,104 +1,62 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import Redis from "ioredis";
-import { AppConfig } from "../config/configuration";
-
-/**
- * CacheService — thin, typed wrapper around ioredis.
- *
- * Design goals
- * ------------
- * - Single Redis connection per process, shared across all consumers.
- * - Fail-open: every public method swallows Redis errors and falls back
- *   to the non-cached path so a Redis outage never brings down the API.
- * - `wrap<T>()` is the primary interface: "return cached value or run
- *   the loader, cache the result, return it."
- *
- * TTL conventions (seconds)
- * -------------------------
- * ORACLE_TTL   55 s — just under the 60 s scheduler interval so the
- *              HTTP endpoint always returns data that is at most one
- *              cycle stale without issuing a redundant upstream call.
- */
-export const ORACLE_TTL = 55;
+import { Injectable, OnApplicationShutdown, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 
 @Injectable()
-export class CacheService implements OnModuleInit, OnModuleDestroy {
+export class CacheService implements OnApplicationShutdown {
   private readonly logger = new Logger(CacheService.name);
-  private client!: Redis;
+  private readonly client: Redis;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {}
+  constructor(private readonly configService: ConfigService) {
+    const url = this.configService.get<string>('REDIS_URL');
+    this.client = url
+      ? new Redis(url, { lazyConnect: false })
+      : new Redis({
+          host: this.configService.get<string>('REDIS_HOST', 'localhost'),
+          port: this.configService.get<number>('REDIS_PORT', 6379),
+          password: this.configService.get<string>('REDIS_PASSWORD'),
+        });
 
-  onModuleInit(): void {
-    const { url } = this.configService.get("redis", { infer: true });
-    this.client = new Redis(url, {
-      // Don't retry indefinitely — give up after 3 reconnection attempts
-      // so a missing Redis doesn't stall startup.
-      maxRetriesPerRequest: 1,
-      enableReadyCheck: false,
-      lazyConnect: false,
+    this.client.on('error', (err) => {
+      this.logger.error(`Redis client error: ${err.message}`);
     });
-
-    this.client.on("connect", () => this.logger.log("Redis connected"));
-    this.client.on("error", (err: Error) =>
-      this.logger.warn(`Redis error (cache degraded): ${err.message}`)
-    );
   }
 
-  async onModuleDestroy(): Promise<void> {
-    await this.client?.quit().catch(() => undefined);
-  }
-
-  /** Returns the parsed JSON value for `key`, or `null` on miss or error. */
   async get<T>(key: string): Promise<T | null> {
-    try {
-      const raw = await this.client.get(key);
-      return raw ? (JSON.parse(raw) as T) : null;
-    } catch (err) {
-      this.logger.warn(`cache.get("${key}") failed: ${(err as Error).message}`);
-      return null;
+    const value = await this.client.get(key);
+    return value ? (JSON.parse(value) as T) : null;
+  }
+
+  async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
+    const serialized = JSON.stringify(value);
+    if (ttlSeconds) {
+      await this.client.set(key, serialized, 'EX', ttlSeconds);
+    } else {
+      await this.client.set(key, serialized);
     }
   }
 
-  /** Serialises `value` to JSON and stores it under `key` for `ttlSeconds`. */
-  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
-    try {
-      await this.client.set(key, JSON.stringify(value), "EX", ttlSeconds);
-    } catch (err) {
-      this.logger.warn(`cache.set("${key}") failed: ${(err as Error).message}`);
-    }
-  }
-
-  /** Deletes one or more keys (best-effort). */
-  async del(...keys: string[]): Promise<void> {
-    try {
-      if (keys.length > 0) await this.client.del(...keys);
-    } catch (err) {
-      this.logger.warn(`cache.del(${keys.join(",")}) failed: ${(err as Error).message}`);
-    }
+  async del(key: string): Promise<void> {
+    await this.client.del(key);
   }
 
   /**
-   * Cache-aside helper.
-   *
-   * Returns the cached value for `key` when present.  Otherwise calls
-   * `loader`, stores the result for `ttlSeconds`, and returns it.
-   * If either the cache read or write throws, the loader result is
-   * returned without caching (fail-open).
-   *
-   * @example
-   * const readings = await this.cacheService.wrap(
-   *   "oracle:checkAll",
-   *   ORACLE_TTL,
-   *   () => this.runAllChecks()
-   * );
+   * Gracefully close the Redis connection pool during application shutdown.
+   * Called by Nest when `app.enableShutdownHooks()` is active and the process
+   * receives SIGTERM/SIGINT, ensuring in-flight commands drain before exit.
    */
-  async wrap<T>(key: string, ttlSeconds: number, loader: () => Promise<T>): Promise<T> {
-    const cached = await this.get<T>(key);
-    if (cached !== null) return cached;
-
-    const fresh = await loader();
-    await this.set(key, fresh, ttlSeconds);
-    return fresh;
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    this.logger.log(
+      `Closing Redis connection pool${signal ? ` (signal: ${signal})` : ''}...`,
+    );
+    try {
+      await this.client.quit();
+      this.logger.log('Redis connection pool closed cleanly.');
+    } catch (err) {
+      this.logger.error(
+        `Failed to close Redis connection pool cleanly: ${(err as Error).message}`,
+      );
+      this.client.disconnect();
+    }
   }
 }
