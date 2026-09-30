@@ -19,6 +19,14 @@ export interface CoverageType {
   maxCoverage: number;
   /** Longest policy term offered, in days. */
   maxDuration: number;
+  /**
+   * Maximum share of the pool's locked capital that may be actively exposed
+   * to this coverage type at once, as a percentage (0-100). Enforced at
+   * `buy()` time against the sum of active coverage in this type so capital
+   * cannot concentrate in a single risk category. Configurable via the
+   * coverage-type admin API alongside the rest of this catalog.
+   */
+  maxPoolExposurePct: number;
   trigger: string;
   icon: string;
 }
@@ -39,6 +47,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     baseRatePct: 3.0,
     maxCoverage: 100_000,
     maxDuration: 365,
+    maxPoolExposurePct: 40,
     trigger: "USDC price < $0.95 for 15+ minutes",
     icon: "🪙",
   },
@@ -52,6 +61,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     baseRatePct: 4.5,
     maxCoverage: 50_000,
     maxDuration: 90,
+    maxPoolExposurePct: 30,
     trigger: "Market index 24h return < -30%",
     icon: "📉",
   },
@@ -65,6 +75,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     baseRatePct: 6.0,
     maxCoverage: 200_000,
     maxDuration: 30,
+    maxPoolExposurePct: 30,
     trigger: "Collateral ratio drops below maintenance threshold",
     icon: "🛡️",
   },
@@ -78,6 +89,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     baseRatePct: 9.0,
     maxCoverage: 500_000,
     maxDuration: 180,
+    maxPoolExposurePct: 30,
     trigger: "Covered protocol TVL drops >50% in <1 hour",
     icon: "🔐",
   },
@@ -91,6 +103,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     baseRatePct: 2.4,
     maxCoverage: 2_000,
     maxDuration: 1,
+    maxPoolExposurePct: 10,
     trigger: "Flight delayed > 120 minutes per AviationStack data",
     icon: "✈️",
   },
