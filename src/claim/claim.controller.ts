@@ -1,5 +1,10 @@
 import { Controller, Get, Param } from "@nestjs/common";
+import { plainToInstance } from "class-transformer";
 import { ClaimService } from "./claim.service";
+import {
+  ClaimStatsOpsResponseDto,
+  ClaimStatsResponseDto,
+} from "./dto/claim-stats.response";
 
 /**
  * New in the NestJS migration — the pre-migration ClaimProcessor tracked
@@ -13,7 +18,23 @@ export class ClaimController {
 
   @Get("stats")
   getStats() {
-    return this.claimService.getStats();
+    return plainToInstance(ClaimStatsResponseDto, this.claimService.getStats(), {
+      excludeExtraneousValues: true,
+    });
+  }
+
+  /**
+   * Ops-only view of the stats. `settlementConfigured` is an operational
+   * detail about the relayer and must not be served on the public stats
+   * route above. Authentication for this route is handled separately.
+   */
+  @Get("stats/ops")
+  getOpsStats() {
+    return plainToInstance(
+      ClaimStatsOpsResponseDto,
+      this.claimService.getStats(),
+      { excludeExtraneousValues: true },
+    );
   }
 
   @Get("holder/:address")

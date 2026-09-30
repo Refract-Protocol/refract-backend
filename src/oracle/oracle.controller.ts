@@ -9,6 +9,11 @@ import { OracleService } from "./oracle.service";
  * a client had to open a WebSocket connection and wait for the next
  * above-"low" broadcast to see any oracle data at all — there was no way
  * to just ask "what's the current reading right now."
+ *
+ * checkAll() is now backed by a 55-second Redis cache so repeated HTTP
+ * calls within a scheduler cycle do not issue duplicate CoinGecko /
+ * DeFiLlama requests.  The `cached` field in the response body tells
+ * callers whether the data came from cache or a fresh upstream call.
  */
 @Controller("api/v1/oracle")
 export class OracleController {
