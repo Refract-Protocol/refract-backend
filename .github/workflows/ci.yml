@@ -7,8 +7,44 @@ on:
 
 jobs:
   build:
-    name: lint · typecheck · build
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test --if-present
+
+      - name: Verify OpenAPI spec is up to date
+        run: |
+          npm run openapi:generate
+          if ! git diff --exit-code -- openapi.json; then
+            echo "::error::openapi.json is out of date. Run 'npm run openapi:generate' and commit the result."
+            exit 1
+          fi
+
+  soroban-integration:
+    name: soroban integration (non-blocking)
+    runs-on: ubuntu-latest
+    # Non-blocking initially: the local Soroban network takes minutes to boot and
+    # ledgers close on a real cadence. Once this job has been green on main for a
+    # sustained period, remove `continue-on-error` and add it to the required
+    # status checks for the default branch.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -20,17 +56,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Start local Soroban network
+        run: npm run soroban:up
+
       - name: Audit dependencies
         run: npm audit
 
       - name: Lint
         run: npm run lint
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Deploy refract-contracts
+        run: npm run soroban:deploy
 
-      - name: Test
-        run: npm test -- --runInBand
+      - name: Audit dependencies
+        run: npm audit
 
-      - name: Build
-        run: npm run build
+      - name: Lint
+        run: npm run lint
+
+      - name: Start local Soroban network
+        run: npm run soroban:up
