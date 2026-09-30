@@ -107,7 +107,14 @@ reads, and 60/minute for coverage catalogs.
 > the holder submits the signed XDR through `POST /api/v1/tx/submit`, the
 > buy_policy return value is stored as `onChainPolicyId` and the policy
 > becomes `active` (only active policies are claim-scanned). Settlement
-> refuses a null on-chain id without entering the retry loop. A policy only
+> refuses a null on-chain id without entering the retry loop. The signing key
+> is fetched at runtime from AWS Secrets Manager using the workload's AWS
+> credentials; configure `ORACLE_RELAYER_SECRET_ID` and grant the runtime IAM
+> role `secretsmanager:GetSecretValue` on that secret. **The contract's exact
+> function signature is an unverified best-effort guess** — this repo doesn't
+> include the `refract-contracts` source, so it needs confirmation against the
+> real deployed contract; see `src/claim/claim-settlement.service.ts` for
+> details. A policy only
 > deactivates once settlement actually confirms on-chain — a failed or
 > unconfirmed payout leaves it active for the next scheduled retry.
 >
