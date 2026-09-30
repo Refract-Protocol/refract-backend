@@ -3,6 +3,7 @@ import { PolicyService, StoredPolicy } from "../policy/policy.service";
 import { OracleService } from "../oracle/oracle.service";
 import { OracleReading } from "../oracle/oracle-reading";
 import { ClaimSettlementService, SettlementResult } from "./claim-settlement.service";
+import { ReconciliationService } from "./reconciliation.service";
 
 function buildPolicy(overrides: Partial<StoredPolicy> = {}): StoredPolicy {
   return {
@@ -54,15 +55,19 @@ function buildServices() {
     isConfigured: jest.fn().mockReturnValue(true),
   } as unknown as jest.Mocked<ClaimSettlementService>;
 
-  return { policyService, oracleService, claimSettlementService };
+  const reconciliationService = {
+    recordFailedSettlement: jest.fn(),
+  } as unknown as jest.Mocked<ReconciliationService>;
+
+  return { policyService, oracleService, claimSettlementService, reconciliationService };
 }
 
 describe("ClaimService", () => {
   describe("processTriggered", () => {
     it("returns an empty array and touches no oracle when there are no active policies", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       policyService.listActive.mockReturnValue([]);
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       const results = await service.processTriggered();
 
@@ -76,10 +81,10 @@ describe("ClaimService", () => {
       [2, "checkLiquidationShield"],
       [3, "checkSmartContractRisk"],
     ] as const)("routes coverageType %d to OracleService.%s", async (coverageType, method) => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       policyService.listActive.mockReturnValue([buildPolicy({ coverageType })]);
       oracleService[method].mockResolvedValue(buildReading({ value: 1, threshold: 0.5 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
 
@@ -87,10 +92,10 @@ describe("ClaimService", () => {
     });
 
     it("falls back to a placeholder flight number when the policy has no triggerParams", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       policyService.listActive.mockReturnValue([buildPolicy({ coverageType: 4 })]);
       oracleService.checkFlightDelay.mockResolvedValue(buildReading({ value: 0, threshold: 120 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
 
@@ -98,12 +103,12 @@ describe("ClaimService", () => {
     });
 
     it("routes coverageType 4 (FlightDelay) to OracleService.checkFlightDelay using the buy-time flight number", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       policyService.listActive.mockReturnValue([
         buildPolicy({ coverageType: 4, triggerParams: { flightNumber: "BA249" } }),
       ]);
       oracleService.checkFlightDelay.mockResolvedValue(buildReading({ value: 0, threshold: 120 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
 
@@ -111,11 +116,11 @@ describe("ClaimService", () => {
     });
 
     it("triggers, settles on-chain, and pays out a below-threshold policy (StablecoinDepeg-style)", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policy = buildPolicy({ coverageType: 0, coverageAmount: "5000000000" });
       policyService.listActive.mockReturnValue([policy]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       const results = await service.processTriggered();
 
@@ -127,16 +132,16 @@ describe("ClaimService", () => {
         payout: "5000000000",
         settlementTxHash: "mock-tx-hash",
       });
-      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(policy.id, policy.holder, 5_000_000_000n);
+      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(policy.id);
       expect(policyService.deactivate).toHaveBeenCalledWith(policy.id);
     });
 
     it("triggers a FlightDelay policy when the delay exceeds threshold (inverted comparison)", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policy = buildPolicy({ coverageType: 4, coverageAmount: "20000000" });
       policyService.listActive.mockReturnValue([policy]);
       oracleService.checkFlightDelay.mockResolvedValue(buildReading({ value: 180, threshold: 120 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       const results = await service.processTriggered();
 
@@ -146,11 +151,11 @@ describe("ClaimService", () => {
     });
 
     it("does not trigger or deactivate when the oracle reading is on the non-triggering side", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policy = buildPolicy({ coverageType: 0 });
       policyService.listActive.mockReturnValue([policy]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 1.0, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       const results = await service.processTriggered();
 
@@ -160,12 +165,12 @@ describe("ClaimService", () => {
     });
 
     it("does not deactivate or count a claim whose on-chain settlement fails to confirm", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policy = buildPolicy({ coverageType: 0, coverageAmount: "5000000000" });
       policyService.listActive.mockReturnValue([policy]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
       claimSettlementService.settleClaim.mockResolvedValue({ settled: false, error: "Transaction failed on-chain" });
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       const results = await service.processTriggered();
 
@@ -207,7 +212,7 @@ describe("ClaimService", () => {
     });
 
     it("skips a stale oracle reading without triggering, even if the value would otherwise trigger", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policy = buildPolicy({ coverageType: 0 });
       policyService.listActive.mockReturnValue([policy]);
 
@@ -224,7 +229,7 @@ describe("ClaimService", () => {
         return buildReading({ value: 0.5, threshold: 0.95 });
       });
 
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
       const results = await service.processTriggered();
 
       expect(results).toEqual([]);
@@ -234,12 +239,12 @@ describe("ClaimService", () => {
     });
 
     it("logs and continues past a policy with an unknown coverageType, still processing the rest", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const badPolicy = buildPolicy({ id: "bad-policy", coverageType: 99 });
       const goodPolicy = buildPolicy({ id: "good-policy", coverageType: 0 });
       policyService.listActive.mockReturnValue([badPolicy, goodPolicy]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       const results = await service.processTriggered();
 
@@ -250,11 +255,11 @@ describe("ClaimService", () => {
 
   describe("getStats", () => {
     it("aggregates active policy count, processed claims, and total payout", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policy = buildPolicy({ coverageType: 0, coverageAmount: "7000000000" });
       policyService.listActive.mockReturnValue([policy]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
       policyService.listActive.mockReturnValue([]); // policy is now inactive post-payout
@@ -267,9 +272,9 @@ describe("ClaimService", () => {
     });
 
     it("reflects ClaimSettlementService.isConfigured()", () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       claimSettlementService.isConfigured.mockReturnValue(false);
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       expect(service.getStats().settlementConfigured).toBe(false);
     });
@@ -277,12 +282,12 @@ describe("ClaimService", () => {
 
   describe("getHistoryForHolder", () => {
     it("returns only settled claims for the given holder, most recent first", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const alice = buildPolicy({ id: "policy-alice", holder: "GALICE", coverageType: 0 });
       const bob = buildPolicy({ id: "policy-bob", holder: "GBOB", coverageType: 0 });
       policyService.listActive.mockReturnValue([alice, bob]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
 
@@ -292,18 +297,18 @@ describe("ClaimService", () => {
     });
 
     it("returns an empty array for a holder with no settled claims", () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       expect(service.getHistoryForHolder("GNOBODY")).toEqual([]);
     });
 
     it("excludes claims that were evaluated but didn't trigger", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policy = buildPolicy({ holder: "GALICE", coverageType: 0 });
       policyService.listActive.mockReturnValue([policy]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 1.0, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
 
@@ -313,12 +318,12 @@ describe("ClaimService", () => {
 
   describe("getRecentSettlements", () => {
     it("returns settled claims across all holders, most recent first", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const alice = buildPolicy({ id: "policy-alice", holder: "GALICE", coverageType: 0 });
       const bob = buildPolicy({ id: "policy-bob", holder: "GBOB", coverageType: 0 });
       policyService.listActive.mockReturnValue([alice, bob]);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
 
@@ -327,13 +332,13 @@ describe("ClaimService", () => {
     });
 
     it("caps results at the given limit", async () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
       const policies = Array.from({ length: 5 }, (_, i) =>
         buildPolicy({ id: `policy-${i}`, holder: `GHOLDER${i}`, coverageType: 0 })
       );
       policyService.listActive.mockReturnValue(policies);
       oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       await service.processTriggered();
 
@@ -341,8 +346,8 @@ describe("ClaimService", () => {
     });
 
     it("returns an empty array when nothing has settled yet", () => {
-      const { policyService, oracleService, claimSettlementService } = buildServices();
-      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+      const { policyService, oracleService, claimSettlementService, reconciliationService } = buildServices();
+      const service = new ClaimService(policyService, oracleService, claimSettlementService, reconciliationService);
 
       expect(service.getRecentSettlements()).toEqual([]);
     });

@@ -33,9 +33,19 @@ export class PoolController {
     return this.poolService.provide(dto);
   }
 
+  @Post("provide/simulate")
+  simulateProvide(@Body() dto: DepositDto) {
+    return this.poolService.simulateProvide(dto);
+  }
+
   @Post("withdraw")
   withdraw(@Body() dto: WithdrawDto) {
     return this.poolService.withdraw(dto);
+  }
+
+  @Post("withdraw/simulate")
+  simulateWithdraw(@Body() dto: WithdrawDto) {
+    return this.poolService.simulateWithdraw(dto);
   }
 
   @Get("premium-history")

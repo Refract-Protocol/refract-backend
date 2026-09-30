@@ -99,7 +99,10 @@ describe("ClaimSettlementService", () => {
       const result = await service.settleClaim("policy-1", holder, 100n);
 
       expect(result.settled).toBe(false);
-      expect(result.error).toContain("ERROR");
+      expect(result).toMatchObject({
+        code: "SOROBAN_REQUEST_FAILED",
+        error: "The Soroban request failed. Please retry later or contact support.",
+      });
       expect(getTransactionSpy).not.toHaveBeenCalled();
     });
 
@@ -127,7 +130,12 @@ describe("ClaimSettlementService", () => {
 
       const result = await service.settleClaim("policy-1", holder, 100n);
 
-      expect(result).toEqual({ settled: false, txHash: "mock-tx-hash", error: "Transaction failed on-chain" });
+      expect(result).toEqual({
+        settled: false,
+        txHash: "mock-tx-hash",
+        error: "The transaction failed on-chain.",
+        code: "TRANSACTION_FAILED",
+      });
     });
 
     it("gives up and reports a timeout once confirmation polling is exhausted", async () => {
@@ -150,7 +158,12 @@ describe("ClaimSettlementService", () => {
       await jest.runAllTimersAsync();
       const result = await resultPromise;
 
-      expect(result).toEqual({ settled: false, txHash: "mock-tx-hash", error: "Timed out waiting for confirmation" });
+      expect(result).toEqual({
+        settled: false,
+        txHash: "mock-tx-hash",
+        error: "Timed out waiting for transaction confirmation.",
+        code: "CONFIRMATION_TIMEOUT",
+      });
     });
 
     it("catches an unexpected error (e.g. a network failure) and reports settled:false", async () => {
@@ -162,7 +175,8 @@ describe("ClaimSettlementService", () => {
       const result = await service.settleClaim("policy-1", holder, 100n);
 
       expect(result.settled).toBe(false);
-      expect(result.error).toBe("connection refused");
+      expect(result.error).toBe("The Soroban request failed. Please retry later or contact support.");
+      expect(result.code).toBe("SOROBAN_REQUEST_FAILED");
     });
   });
 });
