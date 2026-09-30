@@ -59,6 +59,10 @@ ledger for the first run; subsequent progress is checkpointed in Postgres.
 
 ## API surface
 
+Interactive OpenAPI documentation and the generated JSON document are served
+at [`/api/docs`](http://localhost:4001/api/docs) and `/api/docs-json`.
+Schemas are generated from the Nest controllers and request DTOs.
+
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
@@ -67,6 +71,7 @@ ledger for the first run; subsequent progress is checkpointed in Postgres.
 | `GET` | `/api/v1/policies/holder/:address` | Policies for a holder |
 | `POST` | `/api/v1/policies/buy` | Build a buy-policy transaction |
 | `GET` | `/api/v1/pool/stats` | Pool capital / utilization / APY |
+| `GET` | `/api/v1/pool/positions` | Paginated LP positions sorted by committed capital |
 | `POST` | `/api/v1/pool/provide` · `/withdraw` | LP capital flows |
 | `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
@@ -78,13 +83,34 @@ ledger for the first run; subsequent progress is checkpointed in Postgres.
 > and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
 > liquidation events, and AviationStack (flight data) requires a paid key
 > this project doesn't have. See `src/oracle/oracle.service.ts` for details.
-> Claim settlement builds, signs, and submits the pool's
-> `process_claim(policy_id: u64)` transaction. Relayer account sequences are
-> serialized across replicas using PostgreSQL advisory locks; during key
-> rotation, roll out the new key while old replicas drain. A policy is
-> deactivated only after settlement confirms on-chain. Policy purchases are
-> marked pending until the signed transaction confirms, then use the u64 ID
-> returned by `buy_policy()`.
+> **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
+> `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
+> are looked up on-chain). Policies start `pending` after `POST /buy`; once
+> the holder submits the signed XDR through `POST /api/v1/tx/submit`, the
+> buy_policy return value is stored as `onChainPolicyId` and the policy
+> becomes `active` (only active policies are claim-scanned). Settlement
+> refuses a null on-chain id without entering the retry loop. A policy only
+> deactivates once settlement actually confirms on-chain — a failed or
+> unconfirmed payout leaves it active for the next scheduled retry.
+>
+> Relayer account sequences are serialized across replicas using PostgreSQL
+> advisory locks; during key rotation, roll out the new key while old
+> replicas drain.
+>
+> Every transaction signed by the relayer is also recorded in the dedicated
+> PostgreSQL `relayer_transaction_audit` table with its lifecycle status,
+> transaction hash, signing key's public address, and policy ID. Apply the
+> current `src/db/schema.sql` before enabling relayer settlement.
+>
+> **Oracle publisher** (`OraclePublisherService`) pushes readings to
+> `REFRACT_ORACLE_CONTRACT_ID` via `update_reading(u32, i128)` when the
+> relayer secret is set. Degraded fail-safe readings are never published.
+> Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
+> `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
+>
+> **Confirmation polling** uses configurable exponential backoff + jitter
+> (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
+
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
