@@ -1,0 +1,19 @@
+{
+  "pool_config": [],
+  "lockup_expires_at": ["address"],
+  "provide_capital": ["address", "i128"],
+  "withdraw_capital": ["address", "i128"],
+  "buy_policy": [
+    "address",
+    {
+      "type": "map",
+      "fields": [
+        ["coverage_amount", "i128"],
+        ["coverage_type", { "type": "vec", "items": ["symbol"] }],
+        ["duration_days", "u32"],
+        ["trigger_threshold", "i128"]
+      ]
+    }
+  ],
+  "process_claim": ["u64"]
+}
