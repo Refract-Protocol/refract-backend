@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
+import { CacheService, ORACLE_TTL } from "../cache/cache.service";
 import { AppConfig } from "../config/configuration";
 import { OracleReading, Severity } from "./oracle-reading";
 
@@ -8,6 +9,8 @@ interface DefiLlamaTvlPoint {
   date: number; // unix seconds
   totalLiquidityUSD: number;
 }
+
+const CACHE_KEY_CHECK_ALL = "oracle:checkAll";
 
 /**
  * OracleService aggregates real-world data for Refract trigger conditions.
@@ -32,6 +35,16 @@ interface DefiLlamaTvlPoint {
  *  - FlightDelay: AviationStack requires a paid API key this project
  *    doesn't have. See README's "Oracle data sources" section.
  *
+ * Caching
+ * -------
+ * checkAll() is the hot path: OracleController.getStatus() calls it on
+ * every HTTP request, and ClaimService calls one of the individual checks
+ * per active policy every 5 minutes.  A 55-second Redis cache (just under
+ * the 60-second scheduler interval) is applied to checkAll() so repeated
+ * HTTP requests and the scheduler share a single upstream round-trip per
+ * cycle.  Individual check methods are NOT cached so OracleScheduler can
+ * always broadcast a fresh reading.
+ *
  * Every real check fails safe: if the upstream API errors or times out,
  * the check logs it and returns a "low" severity reading whose `value`
  * sits on the non-triggering side of its `threshold`, so a third-party
@@ -46,7 +59,10 @@ export class OracleService {
   private readonly defiLlamaBaseUrl: string;
   private readonly defiLlamaProtocolSlug: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly cacheService: CacheService
+  ) {
     const oracles = this.configService.get("oracles", { infer: true });
     this.timeoutMs = oracles.httpTimeoutMs;
     this.coingeckoBaseUrl = oracles.coingeckoBaseUrl;
@@ -55,7 +71,36 @@ export class OracleService {
     this.defiLlamaProtocolSlug = oracles.defiLlamaProtocolSlug;
   }
 
+  /**
+   * Returns all three live oracle readings.
+   *
+   * Results are served from Redis for up to ORACLE_TTL seconds (55 s) so
+   * the HTTP endpoint, the scheduler, and ClaimService share a single set
+   * of upstream calls per polling cycle rather than each issuing their own.
+   * CoinGecko's keyless tier allows ~10-30 req/min; without this cache,
+   * moderate REST traffic alone would exhaust that quota.
+   */
   async checkAll(): Promise<OracleReading[]> {
+    return this.cacheService.wrap(CACHE_KEY_CHECK_ALL, ORACLE_TTL, () =>
+      this.runAllChecks()
+    );
+  }
+
+  /**
+   * Bypasses the cache and issues live upstream calls.  Called by
+   * OracleScheduler so broadcasts always reflect the freshest data, and
+   * the result is also written back into the cache as a side-effect of
+   * checkAll()'s wrap() call on the next HTTP request.
+   */
+  async checkAllFresh(): Promise<OracleReading[]> {
+    const readings = await this.runAllChecks();
+    // Proactively refresh the cache so a subsequent HTTP call within the
+    // same cycle gets the scheduler's fresh data immediately.
+    await this.cacheService.set(CACHE_KEY_CHECK_ALL, readings, ORACLE_TTL);
+    return readings;
+  }
+
+  private async runAllChecks(): Promise<OracleReading[]> {
     return Promise.all([
       this.checkStablecoinDepeg(),
       this.checkMarketCrash(),
@@ -234,6 +279,7 @@ export class OracleService {
       threshold,
       severity: "low",
       message: `${source} unavailable — degraded to a non-triggering reading`,
+      degraded: true,
     };
   }
 }

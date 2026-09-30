@@ -37,6 +37,14 @@ async function bootstrap() {
 
   const config = app.get(ConfigService<AppConfig, true>);
 
+  // Trust the configured number of proxy hops so throttling (and any other
+  // client-IP logic) sees the real caller via X-Forwarded-For instead of the
+  // load balancer's address. Configured deliberately rather than implicitly.
+  const trustProxy = config.get("trustProxy", { infer: true });
+  if (trustProxy) {
+    app.getHttpAdapter().getInstance().set("trust proxy", trustProxy);
+  }
+
   app.use(helmet());
   app.enableCors({ origin: config.get("frontendUrl", { infer: true }) });
   app.useGlobalPipes(

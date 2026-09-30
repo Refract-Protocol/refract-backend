@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   Account,
+  BASE_FEE,
   Keypair,
   StrKey,
   Transaction,
@@ -12,6 +13,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { FeeStrategyService } from "../stellar/fee-strategy.service";
+import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { PoolService } from "./pool.service";
 
 // Mirrors the module-private `mockPool` constants in pool.service.ts.
@@ -39,7 +42,31 @@ function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigServi
     relayerSecret: "",
     ...overrides,
   };
-  return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
+  const fees: AppConfig["fees"] = {
+    ceilingStroops: "10000000",
+    statsTtlMs: 15_000,
+    profiles: {
+      moderate: { percentile: 90, multiplier: 1.0 },
+      aggressive: { percentile: 99, multiplier: 1.0 },
+    },
+  };
+  return {
+    get: jest.fn((key: string) => (key === "fees" ? fees : stellar)),
+  } as unknown as ConfigService<AppConfig, true>;
+}
+
+function buildService(overrides: Partial<AppConfig["stellar"]> = {}) {
+  const config = buildConfig(overrides);
+  const rpcService = new SorobanRpcService(config);
+  const feeStrategy = new FeeStrategyService(rpcService, config);
+  jest.spyOn(feeStrategy, "estimateInclusionFee").mockResolvedValue(BASE_FEE);
+  jest.spyOn(feeStrategy, "assertTotalUnderCeiling").mockImplementation(() => undefined);
+  jest.spyOn(rpcService.server, "getFeeStats").mockResolvedValue({
+    sorobanInclusionFee: { max: "100", p99: "100", p90: "100", p10: "100", min: "100", mode: "100" },
+    inclusionFee: { max: "100", p99: "100", p90: "100", p10: "100", min: "100", mode: "100" },
+    latestLedger: 1,
+  } as never);
+  return new PoolService(config, rpcService, feeStrategy);
 }
 
 /** Decodes the single invokeHostFunction operation out of a built (unsigned) tx envelope. */
@@ -63,7 +90,7 @@ describe("PoolService", () => {
   let provider: string;
 
   beforeEach(() => {
-    service = new PoolService(buildConfig());
+    service = buildService();
     provider = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
@@ -130,6 +157,20 @@ describe("PoolService", () => {
       const { functionName, args } = decodeInvocation(result.txXdr);
       expect(functionName).toBe("provide_capital");
       expect(args).toEqual([provider, BigInt(amount)]);
+      expect(result.estimatedFee).toBeDefined();
+      expect(BigInt(result.estimatedFee)).toBeGreaterThanOrEqual(100n);
+    });
+
+    it("appends a deposit event to the LP event ledger on success", async () => {
+      const amount = (10_000n * 10_000_000n).toString();
+
+      await service.provide({ provider, amount });
+
+      const events = service.getEventsForProvider(provider);
+      expect(events).toHaveLength(1);
+      expect(events[0].eventType).toBe("deposit");
+      expect(events[0].provider).toBe(provider);
+      expect(events[0].deltaUsdc).toBe(amount);
     });
 
     it("rejects a zero-amount deposit without contacting the network", async () => {
@@ -172,6 +213,18 @@ describe("PoolService", () => {
       const { functionName, args } = decodeInvocation(result.txXdr);
       expect(functionName).toBe("withdraw_capital");
       expect(args).toEqual([provider, BigInt(shares)]);
+    });
+
+    it("appends a withdrawal event with negative deltas to the LP event ledger on success", async () => {
+      const shares = (1_000n * 10_000_000n).toString();
+
+      await service.withdraw({ provider, shares });
+
+      const events = service.getEventsForProvider(provider);
+      expect(events).toHaveLength(1);
+      expect(events[0].eventType).toBe("withdrawal");
+      expect(events[0].deltaShares).toBe(`-${shares}`);
+      expect(events[0].deltaUsdc.startsWith("-")).toBe(true);
     });
 
     it("rejects a withdrawal that exceeds available (unlocked) pool capacity", async () => {
@@ -248,7 +301,7 @@ describe("PoolService", () => {
     });
 
     it("returns null without contacting the network when the pool contract isn't configured", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = buildService({ poolContractId: "" });
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
 
       expect(await unconfigured.lockupExpiresAt(provider)).toBeNull();
@@ -273,7 +326,7 @@ describe("PoolService", () => {
 
   describe("unconfigured pool contract", () => {
     it("rejects provide/withdraw with a clear error instead of calling a non-existent contract", async () => {
-      const unconfigured = new PoolService(buildConfig({ poolContractId: "" }));
+      const unconfigured = buildService({ poolContractId: "" });
       const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
       expect.assertions(3);
 
@@ -315,6 +368,69 @@ describe("PoolService", () => {
       const history = service.getPremiumHistory();
 
       expect(history[0].payouts).toBe((5_000 + 0.95 * 30_000).toFixed(0));
+    });
+  });
+
+  describe("LP event ledger (recordLpEvent / getEventsForProvider)", () => {
+    it("recordLpEvent appends an event and getEventsForProvider returns it", () => {
+      const event = service.recordLpEvent(provider, "deposit", "100000", "100000", "txhash1", 54321);
+
+      expect(event.id).toBe(1);
+      expect(event.provider).toBe(provider);
+      expect(event.eventType).toBe("deposit");
+      expect(event.deltaShares).toBe("100000");
+      expect(event.deltaUsdc).toBe("100000");
+      expect(event.txHash).toBe("txhash1");
+      expect(event.ledgerSeq).toBe(54321);
+      expect(event.recordedAt).toBeTruthy();
+
+      const events = service.getEventsForProvider(provider);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(event);
+    });
+
+    it("auto-increments ids across multiple events", () => {
+      service.recordLpEvent(provider, "deposit", "100000", "100000");
+      service.recordLpEvent(provider, "deposit", "200000", "200000");
+      service.recordLpEvent(provider, "withdrawal", "-50000", "-50000");
+
+      const events = service.getEventsForProvider(provider);
+      expect(events).toHaveLength(3);
+      // Returned newest-first (by id desc)
+      expect(events[0].id).toBe(3);
+      expect(events[1].id).toBe(2);
+      expect(events[2].id).toBe(1);
+    });
+
+    it("stores txHash and ledgerSeq as null when not provided", () => {
+      service.recordLpEvent(provider, "premium_accrual", "500", "0");
+
+      const events = service.getEventsForProvider(provider);
+      expect(events[0].txHash).toBeNull();
+      expect(events[0].ledgerSeq).toBeNull();
+    });
+
+    it("getEventsForProvider returns only events for the specified provider", () => {
+      const other = Keypair.random().publicKey();
+      service.recordLpEvent(provider, "deposit", "100", "100");
+      service.recordLpEvent(other, "deposit", "200", "200");
+
+      expect(service.getEventsForProvider(provider)).toHaveLength(1);
+      expect(service.getEventsForProvider(other)).toHaveLength(1);
+    });
+
+    it("returns an empty array for a provider with no events", () => {
+      expect(service.getEventsForProvider(provider)).toEqual([]);
+    });
+
+    it("multiple events across providers all accumulate independently", () => {
+      const p2 = Keypair.random().publicKey();
+      service.recordLpEvent(provider, "deposit", "1", "1");
+      service.recordLpEvent(provider, "deposit", "2", "2");
+      service.recordLpEvent(p2, "deposit", "3", "3");
+
+      expect(service.getEventsForProvider(provider)).toHaveLength(2);
+      expect(service.getEventsForProvider(p2)).toHaveLength(1);
     });
   });
 });

@@ -33,6 +33,30 @@ const appConfigSchema = z.object({
     defiLlamaProtocolSlug: z.string(),
     httpTimeoutMs: z.number().int().min(100).max(120_000),
   }),
+  throttle: z.object({
+    /**
+     * Named throttling tiers, each expressed as `{ limit, ttl }` where
+     * `limit` is the max number of requests allowed per `ttl` window
+     * (milliseconds). Consumed by `ThrottlerModule.forRootAsync` and
+     * referenced by name from `@Throttle({ ... })` route overrides.
+     */
+    tiers: z.object({
+      /** Upstream-proxying reads (e.g. GET /oracle/status). */
+      strict: z.object({ limit: z.number().int(), ttl: z.number().int() }),
+      /** Chain-writing posts (e.g. /tx/submit, /policies/buy). */
+      chainWrite: z.object({ limit: z.number().int(), ttl: z.number().int() }),
+      /** Ordinary database-backed reads. */
+      moderate: z.object({ limit: z.number().int(), ttl: z.number().int() }),
+      /** Static catalog routes (e.g. /quotes/coverage-types). */
+      generous: z.object({ limit: z.number().int(), ttl: z.number().int() }),
+    }),
+    /**
+     * Whether to trust `X-Forwarded-For` from a fronting proxy. Must be
+     * set deliberately (never implicitly) so IP-based limiting does not
+     * collapse every caller onto the load balancer's address.
+     */
+    trustProxy: z.boolean(),
+  }),
 });
 
 export type AppConfig = z.infer<typeof appConfigSchema>;

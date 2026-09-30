@@ -8,6 +8,9 @@ import { ClaimService } from "./claim.service";
  *
  * During graceful shutdown the scheduler stops starting new runs so that
  * in-flight settlements can drain within the configured grace period.
+ *
+ * Logs every scan outcome, including all-failed / empty-settlement scans,
+ * with counts by error classification.
  */
 @Injectable()
 export class ClaimScheduler implements OnApplicationShutdown {
@@ -28,10 +31,14 @@ export class ClaimScheduler implements OnApplicationShutdown {
       return;
     }
     try {
-      const processed = await this.claimService.processTriggered();
-      if (processed.length > 0) {
-        this.logger.log(`Auto-processed ${processed.length} claim(s)`);
-      }
+      const { settled, counts } = await this.claimService.processTriggeredWithStats();
+      this.logger.log(
+        `Claim scan complete: scanned=${counts.scanned} triggered=${counts.triggered} ` +
+          `settled=${counts.settled} deferred=${counts.deferred} ` +
+          `transient=${counts.failedTransient} permanent=${counts.failedPermanent} ` +
+          `indeterminate=${counts.failedIndeterminate} deadLettered=${counts.deadLettered}` +
+          (settled.length > 0 ? ` (auto-processed ${settled.length} claim(s))` : "")
+      );
     } catch (err) {
       this.logger.error("Claim processor error", err instanceof Error ? err.stack : String(err));
     }

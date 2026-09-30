@@ -1,5 +1,6 @@
-import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
+import { Controller, Get, NotFoundException, Param, Post, Body, Query } from "@nestjs/common";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+import { ListPoliciesDto } from "./dto/list-policies.dto";
 import { PolicyService } from "./policy.service";
 
 @Controller("api/v1/policies")
@@ -28,9 +29,52 @@ export class PolicyController {
     };
   }
 
+  /**
+   * Returns a paginated, filterable, sortable list of policies for a holder.
+   *
+   * Query params (all optional):
+   *   page        – 1-based page number (default 1)
+   *   limit       – results per page, 1–100 (default 20)
+   *   isActive    – "true" | "false" — filter by active status
+   *   coverageType – 0–4 — filter by coverage type
+   *   sortBy      – createdAt | expiresAt | coverageAmount | premium (default createdAt)
+   *   sortDir     – asc | desc (default desc)
+   */
   @Get("holder/:address")
-  findByHolder(@Param("address") address: string) {
-    return { policies: this.policyService.findByHolder(address) };
+  findByHolder(@Param("address") address: string, @Query() query: ListPoliciesDto) {
+    return this.policyService.findByHolder(address, query);
+  }
+
+  /**
+   * Structured, read-only preflight for a prospective purchase. Runs the
+   * same on-chain checks buy() performs (account funded, capacity,
+   * utilization, coverage bounds, duration, premium balance/trustline)
+   * concurrently and returns per-check results without ever building an
+   * XDR, so the frontend can surface actionable failures before the user
+   * signs. Registered ahead of the :id route so "preflight" isn't
+   * swallowed as a policy id.
+   */
+  @Post("preflight")
+  preflight(@Body() dto: BuyPolicyDto) {
+    return this.policyService.preflight(dto);
+  }
+
+  @Get(":id")
+  findById(@Param("id") id: string) {
+    const policy = this.policyService.findById(id);
+    if (!policy) throw new NotFoundException({ error: "Policy not found" });
+    return { policy };
+  }
+
+  @Post("buy")
+  buy(@Body() dto: BuyPolicyDto) {
+    return this.policyService.buy(dto);
+  }
+}
+
+  @Get("holder/:address")
+  findByHolder(@Param("address") address: string, @Query() query: ListPoliciesDto) {
+    return this.policyService.findByHolder(address, query);
   }
 
   @Get(":id")
