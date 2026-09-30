@@ -1,4 +1,5 @@
-import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
+import { Controller, Get, Header, NotFoundException, Param, Post, Body } from "@nestjs/common";
+import { STATIC_RESOURCE_CACHE_CONTROL } from "../common/http-cache";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 import { PolicyService } from "./policy.service";
 
@@ -7,6 +8,7 @@ export class PolicyController {
   constructor(private readonly policyService: PolicyService) {}
 
   @Get("types")
+  @Header("Cache-Control", STATIC_RESOURCE_CACHE_CONTROL)
   listTypes() {
     return { coverageTypes: this.policyService.listTypes() };
   }
