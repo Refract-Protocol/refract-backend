@@ -31,13 +31,13 @@ export class PolicyController {
   }
 
   @Get("holder/:address")
-  findByHolder(@Param("address") address: string) {
-    return { policies: this.policyService.findByHolder(address) };
+  async findByHolder(@Param("address") address: string) {
+    return { policies: await this.policyService.findByHolder(address) };
   }
 
   @Get(":id")
-  findById(@Param("id") id: string) {
-    const policy = this.policyService.findById(id);
+  async findById(@Param("id") id: string) {
+    const policy = await this.policyService.findById(id);
     if (!policy) throw new NotFoundException({ error: "Policy not found" });
     return { policy };
   }

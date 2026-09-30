@@ -22,6 +22,7 @@ import {
   codeToSoroban,
 } from "../common/coverage-type.map";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+import { PolicyRepository } from "./policy.repository";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = COVERAGE_TYPE_CODE.FlightDelay;
 
@@ -113,15 +114,14 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
 
 @Injectable()
 export class PolicyService {
-  // In-memory store — replaced by the Postgres-backed repository in a
-  // follow-up PR that wires the app onto src/db/schema.sql.
-  private readonly policies = new Map<string, StoredPolicy>();
-
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly policyRepository: PolicyRepository
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
@@ -263,18 +263,17 @@ export class PolicyService {
     );
   }
 
-  findByHolder(address: string): StoredPolicy[] {
-    return [...this.policies.values()].filter((p) => p.holder === address);
+  findByHolder(address: string): Promise<StoredPolicy[]> {
+    return this.policyRepository.findByHolder(address);
   }
 
-  findById(id: string): StoredPolicy | undefined {
-    return this.policies.get(id);
+  findById(id: string): Promise<StoredPolicy | undefined> {
+    return this.policyRepository.findById(id);
   }
 
   /** Active, unexpired policies — the pool ClaimService scans for triggers. */
-  listActive(): StoredPolicy[] {
-    const now = Math.floor(Date.now() / 1000);
-    return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
+  listActive(): Promise<StoredPolicy[]> {
+    return this.policyRepository.listActive();
   }
 
   /**
@@ -288,12 +287,8 @@ export class PolicyService {
   }
 
   /** Marks a policy inactive after a claim has been paid out. */
-  deactivate(id: string): void {
-    const policy = this.policies.get(id);
-    if (policy) {
-      policy.isActive = false;
-      this.policies.set(id, policy);
-    }
+  deactivate(id: string): Promise<void> {
+    return this.policyRepository.deactivate(id);
   }
 
   async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
@@ -362,7 +357,7 @@ export class PolicyService {
       triggerParams,
     };
 
-    this.policies.set(policyId, policy);
+    await this.policyRepository.insert(policy);
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
