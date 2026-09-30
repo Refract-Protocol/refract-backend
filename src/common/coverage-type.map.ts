@@ -115,6 +115,86 @@ export const COVERAGE_TYPE_TRIGGER_THRESHOLD: Record<CoverageTypeSoroban, number
   FlightDelay: 120,
 };
 
+// ─── Staged-rollout lifecycle (draft → live) ─────────────────────────────────
+
+/**
+ * Lifecycle status of a coverage type in the governance workflow.
+ *
+ *   - `draft` : staged by an admin, visible only via the admin-only preview
+ *               endpoint. MUST be invisible to every public-facing read
+ *               (catalog, QuoteService, PolicyService).
+ *   - `live`  : explicitly published by a distinctly-authorized admin action.
+ *               Only `live` coverage types may be quoted or purchased.
+ *
+ * The state machine is intentionally one-directional for this issue's scope:
+ * draft → live. A full multi-signature/voting mechanism is out of scope.
+ */
+export const COVERAGE_TYPE_STATUS = {
+  Draft: "draft",
+  Live: "live",
+} as const;
+
+export type CoverageTypeStatus = (typeof COVERAGE_TYPE_STATUS)[keyof typeof COVERAGE_TYPE_STATUS];
+
+/** All valid lifecycle statuses as a plain array — useful for validation. */
+export const COVERAGE_TYPE_STATUSES = Object.values(COVERAGE_TYPE_STATUS) as CoverageTypeStatus[];
+
+/**
+ * The only status a public-facing read (catalog, quote, buy) may ever observe.
+ * Centralised so QuoteService/PolicyService and catalog queries share one
+ * constant instead of hardcoding the literal 'live' in several places.
+ */
+export const PUBLIC_COVERAGE_TYPE_STATUS: CoverageTypeStatus = COVERAGE_TYPE_STATUS.Live;
+
+/**
+ * Type guard — returns true if `s` is a valid CoverageTypeStatus.
+ */
+export function isValidCoverageTypeStatus(s: string): s is CoverageTypeStatus {
+  return (COVERAGE_TYPE_STATUSES as string[]).includes(s);
+}
+
+/**
+ * Type guard — returns true only for the publicly-visible `live` status.
+ * Use this to gate any public catalog / quote / buy read path.
+ */
+export function isPubliclyVisibleCoverageTypeStatus(s: string): boolean {
+  return s === PUBLIC_COVERAGE_TYPE_STATUS;
+}
+
+/**
+ * Approval record attached to each coverage-type publish event.
+ * Captures who drafted, who published, and when — the basic auditable
+ * two-step (propose, then separately publish) governance trail.
+ */
+export interface CoverageTypeApprovalRecord {
+  /** Admin actor id that created the coverage type in `draft`. */
+  draftedBy: string;
+  /** ISO-8601 timestamp of the draft creation. */
+  draftedAt: string;
+  /** Admin actor id that performed the distinct publish transition. */
+  publishedBy: string;
+  /** ISO-8601 timestamp of the publish transition. */
+  publishedAt: string;
+}
+
+/**
+ * Build the approval record for a publish event. Kept as a pure helper so the
+ * transition logic and its audit trail stay consistent across call sites.
+ */
+export function buildCoverageTypeApprovalRecord(params: {
+  draftedBy: string;
+  draftedAt: string;
+  publishedBy: string;
+  publishedAt: string;
+}): CoverageTypeApprovalRecord {
+  return {
+    draftedBy: params.draftedBy,
+    draftedAt: params.draftedAt,
+    publishedBy: params.publishedBy,
+    publishedAt: params.publishedAt,
+  };
+}
+
 // ─── Lookup helpers ───────────────────────────────────────────────────────────
 
 /**
