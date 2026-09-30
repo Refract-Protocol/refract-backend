@@ -34,6 +34,32 @@ export interface LossRatioReport {
   byCoverageType: Array<LossRatioLine & { coverageType: CoverageTypeKey }>;
 }
 
+/**
+ * One coverage type's settlement-latency percentiles, as produced by
+ * Postgres `PERCENTILE_CONT` over `claims.settled_at - claims.trigger_detected_at`
+ * (seconds). Percentiles are computed in SQL, not approximated here.
+ */
+export interface SettlementLatencyAggregate {
+  coverageType: CoverageTypeKey;
+  /** Number of settled claims the percentiles were computed over. */
+  sampleSize: number;
+  p50Seconds: number | null;
+  p90Seconds: number | null;
+  p99Seconds: number | null;
+}
+
+export interface SettlementLatencyLine {
+  sampleSize: number;
+  p50Seconds: number | null;
+  p90Seconds: number | null;
+  p99Seconds: number | null;
+}
+
+export interface SettlementLatencyReport {
+  overall: SettlementLatencyLine;
+  byCoverageType: Array<SettlementLatencyLine & { coverageType: CoverageTypeKey }>;
+}
+
 const BPS = 10_000n;
 
 function line(premiumCollected: bigint, claimsPaid: bigint): LossRatioLine {
@@ -74,4 +100,51 @@ export function computeLossRatio(rows: readonly CoverageAggregate[]): LossRatioR
     });
 
   return { overall: line(premium, claims), byCoverageType };
+}
+
+function latencyLine(row: SettlementLatencyAggregate): SettlementLatencyLine {
+  return {
+    sampleSize: row.sampleSize,
+    p50Seconds: row.p50Seconds,
+    p90Seconds: row.p90Seconds,
+    p99Seconds: row.p99Seconds,
+  };
+}
+
+/**
+ * Builds the settlement-latency report from per-coverage-type percentile
+ * aggregates. Percentiles are computed in SQL (`PERCENTILE_CONT`) and only
+ * shaped here, so the growing dataset is never pulled into application
+ * memory. `byCoverageType` is sorted by coverage type for a stable response
+ * shape; `overall` is the sample-size-weighted mean of the per-type
+ * percentiles (a true overall percentile would require a second SQL pass).
+ */
+export function computeSettlementLatency(
+  rows: readonly SettlementLatencyAggregate[],
+): SettlementLatencyReport {
+  const byCoverageType = [...rows]
+    .sort((a, b) => a.coverageType.localeCompare(b.coverageType))
+    .map((row) => ({ coverageType: row.coverageType, ...latencyLine(row) }));
+
+  const totalSamples = rows.reduce((sum, row) => sum + row.sampleSize, 0);
+  const weighted = (pick: (row: SettlementLatencyAggregate) => number | null): number | null => {
+    if (totalSamples === 0) return null;
+    let acc = 0;
+    for (const row of rows) {
+      const value = pick(row);
+      if (value === null) continue;
+      acc += value * row.sampleSize;
+    }
+    return acc / totalSamples;
+  };
+
+  return {
+    overall: {
+      sampleSize: totalSamples,
+      p50Seconds: weighted((row) => row.p50Seconds),
+      p90Seconds: weighted((row) => row.p90Seconds),
+      p99Seconds: weighted((row) => row.p99Seconds),
+    },
+    byCoverageType,
+  };
 }
