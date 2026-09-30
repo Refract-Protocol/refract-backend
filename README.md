@@ -86,6 +86,10 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
 
+State-changing API attempts emit structured `security_audit` JSON lines to
+stdout; route those events to the deployment's log aggregation or SIEM system.
+See [`SECURITY.md`](./SECURITY.md) for the event fields and identity limitations.
+
 Endpoints with the `@AdminOnly()` guard require `X-API-Key: $ADMIN_API_KEY`.
 Set a strong, private `ADMIN_API_KEY` before enabling admin-only routes; if
 it is unset, those routes fail closed with `503`. The current API has no

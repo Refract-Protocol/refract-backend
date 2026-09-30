@@ -26,6 +26,8 @@ import { StellarModule } from "./stellar/stellar.module";
 import { RateLimitGuard } from "./common/rate-limit";
 import { AdminApiKeyGuard } from "./common/admin-auth";
 import { PoolContractInterfaceService } from "./stellar/pool-contract-interface.service";
+import { SecurityAuditInterceptor } from "./common/security-audit.interceptor";
+import { SecurityAuditLogger } from "./common/security-audit.logger";
 
 @Module({
   imports: [
@@ -110,8 +112,13 @@ import { PoolContractInterfaceService } from "./stellar/pool-contract-interface.
     EventsModule,
   ],
   providers: [
+    SecurityAuditLogger,
     { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: AdminApiKeyGuard },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: SecurityAuditInterceptor,
+    },
   ],
   providers: [PoolContractInterfaceService],
 })
