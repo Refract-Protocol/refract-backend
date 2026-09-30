@@ -1,5 +1,6 @@
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
+import { CacheService } from "../cache/cache.service";
 import { OracleService } from "./oracle.service";
 import { AppConfig } from "../config/configuration";
 
@@ -14,11 +15,27 @@ const oraclesConfig: AppConfig["oracles"] = {
   httpTimeoutMs: 5000,
 };
 
+/**
+ * Transparent cache stub: wrap() always calls the loader (cache miss),
+ * get() always returns null, set()/del() are no-ops.
+ * This keeps oracle unit tests fast and free of Redis.
+ */
+function buildMockCacheService(): jest.Mocked<CacheService> {
+  return {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+    del: jest.fn().mockResolvedValue(undefined),
+    wrap: jest.fn().mockImplementation((_key, _ttl, loader) => loader()),
+    onModuleInit: jest.fn(),
+    onModuleDestroy: jest.fn(),
+  } as unknown as jest.Mocked<CacheService>;
+}
+
 function buildService(): OracleService {
   const configService = {
     get: jest.fn().mockReturnValue(oraclesConfig),
   } as unknown as ConfigService<AppConfig, true>;
-  return new OracleService(configService);
+  return new OracleService(configService, buildMockCacheService());
 }
 
 describe("OracleService", () => {

@@ -2,12 +2,14 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Address, BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { decodeSorobanError } from "../common/soroban-error";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
 export interface SettlementResult {
   settled: boolean;
   txHash?: string;
   error?: string;
+  code?: string;
 }
 
 /**
@@ -92,15 +94,26 @@ export class ClaimSettlementService {
 
       const sendResult = await this.server.sendTransaction(preparedTx);
       if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
-        return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
+        return {
+          settled: false,
+          ...decodeSorobanError({
+            status: sendResult.status,
+            errorResult: sendResult.errorResult,
+            diagnosticEvents: sendResult.diagnosticEvents,
+          }),
+        };
       }
-
       const confirmation = await pollForConfirmation(this.server, sendResult.hash);
-      return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
+      return {
+        settled: confirmation.confirmed,
+        txHash: confirmation.txHash,
+        error: confirmation.error,
+        code: confirmation.code,
+      };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
-      return { settled: false, error: message };
+      const failure = decodeSorobanError(err);
+      this.logger.error(`Soroban settlement failed for policy ${policyId} (${failure.code})`);
+      return { settled: false, ...failure };
     }
   }
 }
