@@ -1,13 +1,28 @@
 import { Module, OnApplicationShutdown, OnModuleInit, Logger } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import configuration, { AppConfig } from './config/configuration';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ClaimsModule } from './claims/claims.module';
 import { OracleModule } from './oracle/oracle.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
+import { CacheModule } from './cache/cache.module';
+import { ClaimModule } from './claim/claim.module';
+import { DbModule } from './db/db.module';
+import { IdempotencyModule } from './common/idempotency.module';
+import { HealthModule } from './health/health.module';
+import { PolicyModule } from './policy/policy.module';
+import { PoolModule } from './pool/pool.module';
+import { QuoteModule } from './quote/quote.module';
+import { StellarModule } from './stellar/stellar.module';
+import { TxModule } from './tx/tx.module';
+import { AuthModule } from './auth/auth.module';
+import { ApiKeyGuard } from './auth/api-key.guard';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -20,7 +35,37 @@ export const isSandboxMode = (): boolean =>
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      load: [configuration],
+    }),
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<AppConfig, true>) => ({
+        throttlers: [
+          {
+            name: 'upstream',
+            ttl: config.get('throttle.upstream.ttl', { infer: true }),
+            limit: config.get('throttle.upstream.limit', { infer: true }),
+          },
+          {
+            name: 'chain',
+            ttl: config.get('throttle.chain.ttl', { infer: true }),
+            limit: config.get('throttle.chain.limit', { infer: true }),
+          },
+          {
+            name: 'default',
+            ttl: config.get('throttle.default.ttl', { infer: true }),
+            limit: config.get('throttle.default.limit', { infer: true }),
+          },
+          {
+            name: 'catalog',
+            ttl: config.get('throttle.catalog.ttl', { infer: true }),
+            limit: config.get('throttle.catalog.limit', { infer: true }),
+          },
+        ],
+      }),
+    }),
     ScheduleModule.forRoot(),
     // In sandbox mode we skip the real Postgres connection entirely so
     // `npm run dev` works right after `npm install` with no other setup.
@@ -35,12 +80,34 @@ export const isSandboxMode = (): boolean =>
           }),
         ]),
     DatabaseModule,
+    IdempotencyModule,
+    // CacheModule is @Global — imported once here, available everywhere.
+    CacheModule,
+    StellarModule,
+    DbModule,
+    HealthModule,
+    AuthModule,
+    QuoteModule,
+    PolicyModule,
+    PoolModule,
     RedisModule,
     ClaimsModule,
     OracleModule,
+    ClaimModule,
+    TxModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: ApiKeyGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(AppModule.name);
