@@ -20,6 +20,56 @@ export interface SettlementAttemptRecord {
 }
 
 /**
+ * A single entry in a dead-lettered claim's full attempt log, surfaced to
+ * admins so they can inspect the failure history before acting.
+ */
+export interface SettlementAttemptLogEntry {
+  attempt: number;
+  at: number;
+  error?: string;
+  classification: SettlementErrorClass;
+  /** Pending tx hash recorded for an indeterminate attempt, if any. */
+  pendingTxHash?: string;
+}
+
+/**
+ * A manual admin action taken against a dead-lettered claim. Every action is
+ * recorded so the admin audit log can trace manual retries/write-offs exactly
+ * like automated settlement attempts.
+ */
+export type DeadLetterAdminAction = "retry" | "write_off";
+
+export interface DeadLetterAdminActionRecord {
+  action: DeadLetterAdminAction;
+  policyId: string;
+  actor: string;
+  at: number;
+  /** Required for write-offs; the recorded reason the claim is unresolved. */
+  reason?: string;
+  /** Outcome of a manual retry, when applicable. */
+  outcome?: "succeeded" | "failed" | "rejected";
+  /** Error surfaced by a failed manual retry, when applicable. */
+  error?: string;
+}
+
+/**
+ * Builds the ordered attempt log for a dead-lettered claim from its recorded
+ * error history, so admins can inspect the full failure trail.
+ */
+export function buildAttemptLog(
+  record: SettlementAttemptRecord,
+): SettlementAttemptLogEntry[] {
+  return record.errorHistory.map((entry, index) => ({
+    attempt: index + 1,
+    at: entry.at,
+    error: entry.error,
+    classification: entry.classification,
+    pendingTxHash:
+      entry.classification === "indeterminate" ? record.pendingTxHash : undefined,
+  }));
+}
+
+/**
  * Classifies settlement failures so permanent errors dead-letter immediately
  * while transient ones consume the retry budget.
  */

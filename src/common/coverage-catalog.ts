@@ -22,6 +22,11 @@
  *   LiquidationShield/SmartContractRisk trigger on `oracle_value > 0` and
  *   never read trigger_threshold, so its value there is inert — kept
  *   non-zero only for consistency with the other entries.
+ * - maxPoolExposurePct: per-coverage-type aggregate exposure cap (issue #134),
+ *   expressed as a percentage of the pool's locked capital. Enforced at
+ *   buy() time against the sum of currently-active coverage in that type so
+ *   the pool cannot over-concentrate in a single risk category. Distinct from
+ *   the per-policy maxCoverage cap and the pool-global on-chain bounds.
  *
  * Staged rollout (issue #131):
  * - Every product carries a `status` of `draft` or `live`. Newly staged
@@ -31,6 +36,7 @@
  *   must filter to `live` products so a draft is never accidentally live.
  * - Each publish transition records an approval record (who drafted, who
  *   published, when) so the governance step is auditable.
+
  */
 export type CoverageType =
   | "StablecoinDepeg"
@@ -74,6 +80,12 @@ export interface CoverageProduct {
   maxDuration: number;
   icon: string;
   defaultTriggerThreshold: number;
+  /**
+   * Maximum aggregate active coverage for this type, as a percentage of the
+   * pool's locked capital (issue #134). Configurable via the coverage-type
+   * admin API; enforced at buy() time against the sum of active coverage.
+   */
+  maxPoolExposurePct: number;
   /** Staged-rollout lifecycle state; only `live` products are public. */
   status: CoverageStatus;
   /** Present once the product has been published; absent while `draft`. */
@@ -94,6 +106,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 30,
     icon: "🪙",
     defaultTriggerThreshold: 500,
+    maxPoolExposurePct: 35,
     status: "live",
   },
   MarketCrash: {
@@ -109,6 +122,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 60,
     icon: "📉",
     defaultTriggerThreshold: 3000,
+    maxPoolExposurePct: 35,
     status: "live",
   },
   LiquidationShield: {
@@ -124,6 +138,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 90,
     icon: "🛡️",
     defaultTriggerThreshold: 500,
+    maxPoolExposurePct: 35,
     status: "live",
   },
   SmartContractRisk: {
@@ -139,6 +154,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 180,
     icon: "🔐",
     defaultTriggerThreshold: 500,
+    maxPoolExposurePct: 30,
     status: "live",
   },
   FlightDelay: {
@@ -211,4 +227,32 @@ export function publishCoverageProduct(
       publishedAt,
     },
   };
+}
+
+/**
+ * Looks up a product by its canonical coverage-type id. Returns undefined for
+ * unknown ids so callers can raise their own domain error.
+ */
+export function coverageProductById(id: CoverageType): CoverageProduct | undefined {
+  return COVERAGE_CATALOG[id];
+}
+
+/**
+ * Computes the maximum aggregate active coverage allowed for a coverage type
+ * given the pool's currently locked capital (issue #134).
+ *
+ * The cap is a percentage of locked capital, so it scales with the pool's
+ * size: e.g. a 30% cap on SmartContractRisk permits at most 30% of locked
+ * capital to be simultaneously active in that type. Returns 0 when the pool
+ * has no locked capital, which correctly blocks any new exposure.
+ */
+export function maxPoolExposureForType(
+  id: CoverageType,
+  lockedCapital: number,
+): number {
+  const product = COVERAGE_CATALOG[id];
+  if (!product || lockedCapital <= 0) {
+    return 0;
+  }
+  return (lockedCapital * product.maxPoolExposurePct) / 100;
 }
