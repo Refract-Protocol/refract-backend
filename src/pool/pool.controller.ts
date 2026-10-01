@@ -19,8 +19,7 @@ export class PoolController {
   }
 
   /**
-   * Real on-chain read (unlike stats/user, still mocked pending the
-   * Postgres wiring) — lets the frontend show a withdrawal lockup
+   * Real on-chain read — lets the frontend show a withdrawal lockup
    * countdown before the caller ever attempts to submit one.
    */
   @Get("lockup/:address")
@@ -52,7 +51,8 @@ export class PoolController {
   }
 
   @Get("premium-history")
-  getPremiumHistory() {
-    return { history: this.poolService.getPremiumHistory() };
+  async getPremiumHistory() {
+    const history = await this.poolService.getPremiumHistory();
+    return { history };
   }
 }
