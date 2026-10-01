@@ -22,6 +22,15 @@
  *   LiquidationShield/SmartContractRisk trigger on `oracle_value > 0` and
  *   never read trigger_threshold, so its value there is inert — kept
  *   non-zero only for consistency with the other entries.
+ *
+ * Staged rollout (issue #131):
+ * - Every product carries a `status` of `draft` or `live`. Newly staged
+ *   products start as `draft` and are only visible to admins via the preview
+ *   endpoint; they become publicly quotable/buyable only after an explicit
+ *   publish transition. Public catalog reads (QuoteService, PolicyService)
+ *   must filter to `live` products so a draft is never accidentally live.
+ * - Each publish transition records an approval record (who drafted, who
+ *   published, when) so the governance step is auditable.
  */
 export type CoverageType =
   | "StablecoinDepeg"
@@ -29,6 +38,25 @@ export type CoverageType =
   | "LiquidationShield"
   | "SmartContractRisk"
   | "FlightDelay";
+
+/** Lifecycle state of a coverage product in the staged rollout workflow. */
+export type CoverageStatus = "draft" | "live";
+
+/**
+ * Auditable record of a coverage-type publish event. Captures who staged the
+ * draft and who performed the distinctly-authorized publish action, plus the
+ * timestamps of each transition.
+ */
+export interface CoverageApprovalRecord {
+  /** Admin actor that created the coverage type in `draft` state. */
+  draftedBy: string;
+  /** When the draft was created. */
+  draftedAt: string;
+  /** Admin actor that transitioned the draft to `live`. */
+  publishedBy: string;
+  /** When the publish transition occurred. */
+  publishedAt: string;
+}
 
 export interface CoverageProduct {
   /** Canonical string identifier, matching the on-chain enum variant name. */
@@ -46,6 +74,10 @@ export interface CoverageProduct {
   maxDuration: number;
   icon: string;
   defaultTriggerThreshold: number;
+  /** Staged-rollout lifecycle state; only `live` products are public. */
+  status: CoverageStatus;
+  /** Present once the product has been published; absent while `draft`. */
+  approval?: CoverageApprovalRecord;
 }
 
 export const COVERAGE_CATALOG = {
@@ -62,6 +94,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 30,
     icon: "🪙",
     defaultTriggerThreshold: 500,
+    status: "live",
   },
   MarketCrash: {
     id: "MarketCrash",
@@ -76,6 +109,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 60,
     icon: "📉",
     defaultTriggerThreshold: 3000,
+    status: "live",
   },
   LiquidationShield: {
     id: "LiquidationShield",
@@ -90,6 +124,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 90,
     icon: "🛡️",
     defaultTriggerThreshold: 500,
+    status: "live",
   },
   SmartContractRisk: {
     id: "SmartContractRisk",
@@ -104,6 +139,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 180,
     icon: "🔐",
     defaultTriggerThreshold: 500,
+    status: "live",
   },
   FlightDelay: {
     id: "FlightDelay",
@@ -118,6 +154,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 7,
     icon: "✈️",
     defaultTriggerThreshold: 120,
+    status: "live",
   },
 } as const satisfies Record<CoverageType, CoverageProduct>;
 
@@ -125,9 +162,53 @@ export const COVERAGE_CATALOG = {
 export const COVERAGE_PRODUCTS: readonly CoverageProduct[] = Object.values(COVERAGE_CATALOG);
 
 /**
+ * Public catalog: only `live` products. QuoteService/PolicyService and any
+ * other public-facing read must use this so a `draft` coverage type is fully
+ * invisible to quote/buy flows.
+ */
+export const LIVE_COVERAGE_PRODUCTS: readonly CoverageProduct[] = COVERAGE_PRODUCTS.filter(
+  (product) => product.status === "live",
+);
+
+/**
+ * Admin preview catalog: every product regardless of status, so admins can
+ * inspect staged drafts before publishing them.
+ */
+export const ALL_COVERAGE_PRODUCTS: readonly CoverageProduct[] = COVERAGE_PRODUCTS;
+
+/**
  * Looks up a product by its numeric on-chain index. Returns undefined for
  * out-of-range indices so callers can raise their own domain error.
+ *
+ * By default only `live` products are returned; pass `{ includeDrafts: true }`
+ * from admin-only preview paths to also resolve staged drafts.
  */
-export function coverageProductByIndex(index: number): CoverageProduct | undefined {
-  return COVERAGE_PRODUCTS.find((product) => product.onChainIndex === index);
+export function coverageProductByIndex(
+  index: number,
+  options: { includeDrafts?: boolean } = {},
+): CoverageProduct | undefined {
+  const source = options.includeDrafts ? ALL_COVERAGE_PRODUCTS : LIVE_COVERAGE_PRODUCTS;
+  return source.find((product) => product.onChainIndex === index);
+}
+
+/**
+ * Records a publish transition for a coverage product, returning a new product
+ * object with `status: "live"` and the attached approval record. The original
+ * product is not mutated, so callers can persist the returned value.
+ */
+export function publishCoverageProduct(
+  product: CoverageProduct,
+  publishedBy: string,
+  publishedAt: string = new Date().toISOString(),
+): CoverageProduct {
+  return {
+    ...product,
+    status: "live",
+    approval: {
+      draftedBy: product.approval?.draftedBy ?? "unknown",
+      draftedAt: product.approval?.draftedAt ?? publishedAt,
+      publishedBy,
+      publishedAt,
+    },
+  };
 }
