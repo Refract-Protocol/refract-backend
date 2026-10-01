@@ -1,52 +1,56 @@
-# Contributing to Refract Backend
+# Contributing
 
-Thanks for helping build Refract's off-chain services! This guide gets you from
-clone to merged PR.
-
-## Ground rules
-
-- Be respectful — see the [Code of Conduct](./CODE_OF_CONDUCT.md).
-- Open an issue to discuss anything non-trivial before you build it.
-- Keep the build green: lint, typecheck, and build must pass.
-- Report vulnerabilities privately per [`SECURITY.md`](./SECURITY.md).
+Thanks for your interest in contributing! This guide will help you get set up quickly.
 
 ## Getting set up
 
+### Sandbox mode (recommended first run)
+
+The fastest way to get the full API running locally is **sandbox mode**. It swaps every
+real backing service (Postgres repositories, Redis cache, and Soroban RPC calls) for
+lightweight in-memory/mocked equivalents, so you can run the app immediately after
+`npm install` with **no other setup** — no Postgres, no Redis, and no Soroban testnet
+configuration required.
+
 ```bash
-cp .env.example .env
 npm install
-npm run dev
+SANDBOX_MODE=true npm run dev
 ```
 
-Postgres and Redis are optional for most local work because the data layer is
-currently mocked; they become required as you wire real persistence.
-
-## Local gate (matches CI)
+Or set it in your `.env`:
 
 ```bash
-npm run lint
-npm run typecheck
-npm run build
+SANDBOX_MODE=true
 ```
 
-## Coding standards
+When sandbox mode is active the app prints a prominent startup banner so it is never
+mistaken for a real environment. Sandbox data lives entirely in memory and resets
+cleanly on every restart — nothing is persisted.
 
-- **TypeScript strict mode** is on; no `// @ts-ignore` without a comment explaining why.
-- Validate every request body with a **Zod** schema; never trust client input.
-- Money is handled as **BigInt** in 1e7 fixed-point — do not use `number` for on-chain amounts.
-- Log through the shared Winston `logger`, not `console.log`.
-- Prefix intentionally-unused variables with `_`.
+> **Sandbox mode is a local contributor-onboarding tool only.** It is explicitly
+disallowed outside local development: the app refuses to start in sandbox mode when
+`NODE_ENV=production`.
 
-## What we'd love help with
+### Running against real infrastructure
 
-- Replace the mocked oracle sources with real integrations (CoinGecko, Stellar
-  Horizon, DeFiLlama, AviationStack).
-- Implement Soroban transaction building/submission in the route `txXdr` stubs
-  and `ClaimProcessor.processPayout`.
-- Wire the Postgres layer (`src/db/schema.sql`) behind the in-memory stores.
-- Add integration tests (supertest) for the REST routes.
+For work that needs real persistence or live Soroban calls, provide the usual
+configuration instead of `SANDBOX_MODE`:
 
-## Commit & PR conventions
+- `DATABASE_URL` — Postgres connection string
+- `REDIS_URL` — Redis connection string
+- Soroban RPC configuration (see `.env.example`)
 
-- [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `test:`, `chore:`.
-- One logical change per PR; reference the issue it closes and fill in the template.
+With these set (and `SANDBOX_MODE` unset or `false`), the app uses the real backing
+services.
+
+## Development workflow
+
+1. Fork the repository and create a feature branch.
+2. Make your changes, keeping them focused and scoped.
+3. Run the test suite before opening a pull request.
+4. Open a pull request describing what you changed and why.
+
+## Questions
+
+If anything is unclear, open an issue or start a discussion — we're happy to help new
+contributors get started.

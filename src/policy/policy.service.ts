@@ -14,6 +14,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
@@ -67,7 +68,25 @@ export interface StoredPolicy {
 }
 
 const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
-const BASE_RATE_BPS = 300; // 3% annual
+
+/**
+ * Registry key for the governance-managed base premium rate (bps). The
+ * value is read from the protocol-parameters registry at runtime so
+ * governance can adjust it without a code deploy; the constant below is
+ * only the fallback used when the registry has no override yet.
+ */
+export const BASE_RATE_BPS_PARAM_KEY = "base_rate_bps";
+const DEFAULT_BASE_RATE_BPS = 300; // 3% annual
+
+/**
+ * Minimal read surface of the protocol-parameters registry. The concrete
+ * database-backed implementation lives in src/parameters/ and is injected
+ * here; keeping this structural type local avoids a hard import cycle
+ * while still letting the service read governance-managed values.
+ */
+export interface ProtocolParametersReader {
+  getNumber(key: string, fallback: number): number;
+}
 
 const COVERAGE_NAMES = [
   "Stablecoin Depeg",
@@ -145,11 +164,26 @@ export class PolicyService {
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly metricsService: MetricsService,
+    private readonly parameters?: ProtocolParametersReader
+  ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
+  }
+
+  /**
+   * Resolves the governance-managed base premium rate (bps) from the
+   * protocol-parameters registry, falling back to the historical constant
+   * when the registry isn't wired or has no override. Read at call time so
+   * a governance change is reflected in new quotes immediately, while
+   * already-issued policies keep the rate snapshotted at issuance.
+   */
+  private baseRateBps(): number {
+    return this.parameters?.getNumber(BASE_RATE_BPS_PARAM_KEY, DEFAULT_BASE_RATE_BPS) ?? DEFAULT_BASE_RATE_BPS;
   }
 
   /**
@@ -202,7 +236,9 @@ export class PolicyService {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
     }
     try {
-      const sourceAccount = await this.server.getAccount(holder);
+      const sourceAccount = await this.metricsService.observeSorobanRpc("get_account", () =>
+        this.server.getAccount(holder)
+      );
       const contract = new Contract(this.poolContractId);
       const operation = contract.call("buy_policy", new Address(holder).toScVal(), paramsScVal);
 
@@ -214,7 +250,9 @@ export class PolicyService {
         .setTimeout(30)
         .build();
 
-      const preparedTx = await this.server.prepareTransaction(builtTx);
+      const preparedTx = await this.metricsService.observeSorobanRpc("prepare_transaction", () =>
+        this.server.prepareTransaction(builtTx)
+      );
       return preparedTx.toXDR();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -238,24 +276,11 @@ export class PolicyService {
    * calls set_pool_config() — which the catalog alone can't see.
    */
   async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
-    if (!this.poolContractId) {
-      return null;
-    }
-    try {
-      // pool_config() is a stateless view with no caller-specific args, so
-      // the source account only needs to be well-formed for the tx
-      // envelope — it never touches the network, unlike getAccount().
-      const dummySource = new Account(Keypair.random().publicKey(), "0");
-      const contract = new Contract(this.poolContractId);
-      const tx = new TransactionBuilder(dummySource, {
-        fee: BASE_FEE,
-        networkPassphrase: this.networkPassphrase,
-      })
-        .addOperation(contract.call("pool_config"))
-        .setTimeout(30)
-        .build();
+    if (!this.poolCo
 
-      const sim = await this.server.simulateTransaction(tx);
+      const sim = await this.metricsService.observeSorobanRpc("simulate_transaction", () =>
+        this.server.simulateTransaction(tx)
+      );
       if (rpc.Api.isSimulationError(sim)) {
         throw new Error(sim.error);
       }
