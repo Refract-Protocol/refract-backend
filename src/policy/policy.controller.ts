@@ -1,15 +1,13 @@
-import { Controller, Get, Header, NotFoundException, Param, Post, Body, Query } from "@nestjs/common";
-import { STATIC_RESOURCE_CACHE_CONTROL } from "../common/http-cache";
-import { PageQueryDto, paginateDesc } from "../common/pagination";
+import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 import { PolicyService } from "./policy.service";
+import { SecurityAudit } from "../common/security-audit.interceptor";
 
 @Controller("api/v1/policies")
 export class PolicyController {
   constructor(private readonly policyService: PolicyService) {}
 
   @Get("types")
-  @Header("Cache-Control", STATIC_RESOURCE_CACHE_CONTROL)
   listTypes() {
     return { coverageTypes: this.policyService.listTypes() };
   }
@@ -31,27 +29,26 @@ export class PolicyController {
     };
   }
 
-  /** Newest first, keyset-paginated on (createdAt, id); `?limit=` defaults to 50. */
   @Get("holder/:address")
-  async findByHolder(@Param("address") address: string, @Query() query: PageQueryDto) {
-    const page = paginateDesc(
-      this.policyService.findByHolder(address),
-      (p) => ({ at: Date.parse(p.createdAt), id: p.id }),
-      query,
-      50
-    );
-    return { policies: page.items, nextCursor: page.nextCursor };
+  findByHolder(@Param("address") address: string) {
+    return { policies: this.policyService.findByHolder(address) };
   }
 
   @Get(":id")
-  async findById(@Param("id") id: string) {
-    const policy = await this.policyService.findById(id);
+  findById(@Param("id") id: string) {
+    const policy = this.policyService.findById(id);
     if (!policy) throw new NotFoundException({ error: "Policy not found" });
     return { policy };
   }
 
   @Post("buy")
+  @SecurityAudit("policy.buy")
   buy(@Body() dto: BuyPolicyDto) {
     return this.policyService.buy(dto);
+  }
+
+  @Post("buy/simulate")
+  simulateBuy(@Body() dto: BuyPolicyDto) {
+    return this.policyService.simulateBuy(dto);
   }
 }

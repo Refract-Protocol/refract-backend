@@ -4,7 +4,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { ScheduleModule } from "@nestjs/schedule";
-import configuration from "./config/configuration";
+import configuration, { AppConfig } from "./config/configuration";
 import { CacheModule } from "./cache/cache.module";
 import { ClaimModule } from "./claim/claim.module";
 import { DbModule } from "./db/db.module";
@@ -17,11 +17,8 @@ import { PoolModule } from "./pool/pool.module";
 import { QuoteModule } from "./quote/quote.module";
 import { StellarModule } from "./stellar/stellar.module";
 import { TxModule } from "./tx/tx.module";
-import { HealthModule } from "./health/health.module";
 import { AuthModule } from "./auth/auth.module";
 import { ApiKeyGuard } from "./auth/api-key.guard";
-import configuration, { AppConfig } from "./config/configuration";
-import { StellarModule } from "./stellar/stellar.module";
 
 @Module({
   imports: [
@@ -73,6 +70,13 @@ import { StellarModule } from "./stellar/stellar.module";
     StellarModule,
     DbModule,
     HealthModule,
+    AuthModule,
+    QuoteModule,
+    PolicyModule,
+    PoolModule,
+    OracleModule,
+    ClaimModule,
+    TxModule,
   ],
   providers: [
     {
@@ -83,27 +87,6 @@ import { StellarModule } from "./stellar/stellar.module";
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
-  ],
-    HealthModule,
-    AuthModule,
-    QuoteModule,
-    PolicyModule,
-    PoolModule,
-    OracleModule,
-    ClaimModule,
-    TxModule,
-    DbModule,
-    // CacheModule is @Global — imported once here, available everywhere.
-    CacheModule,
-    HealthModule,
-    AuthModule,
-    QuoteModule,
-    PolicyModule,
-    PoolModule,
-    OracleModule,
-    ClaimModule,
-    TxModule,
-    StellarModule,
   ],
 })
 export class AppModule {}

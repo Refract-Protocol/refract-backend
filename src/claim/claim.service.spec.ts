@@ -139,7 +139,7 @@ describe("ClaimService", () => {
         payout: "5000000000",
         settlementTxHash: "mock-tx-hash",
       });
-      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(policy.id, policy.holder, 5_000_000_000n);
+      expect(claimSettlementService.settleClaim).toHaveBeenCalledWith(policy.id);
       expect(policyService.deactivate).toHaveBeenCalledWith(policy.id);
     });
 
@@ -185,6 +185,38 @@ describe("ClaimService", () => {
       expect(results).toEqual([]);
       expect(policyService.deactivate).not.toHaveBeenCalled();
       expect(service.getStats().processedClaims).toBe(0);
+    });
+
+    it("moves a repeatedly failing triggered claim to dead letter and stops automatic retries", async () => {
+      const { policyService, oracleService, claimSettlementService } = buildServices();
+      const policy = buildPolicy({ coverageType: 0, coverageAmount: "5000000000" });
+      policyService.listActive.mockReturnValue([policy]);
+      oracleService.checkStablecoinDepeg.mockResolvedValue(buildReading({ value: 0.9, threshold: 0.95 }));
+      claimSettlementService.settleClaim.mockResolvedValue({ settled: false, error: "process_claim argument mismatch" });
+      const service = new ClaimService(policyService, oracleService, claimSettlementService);
+
+      await service.processTriggered();
+      await service.processTriggered();
+      await service.processTriggered();
+
+      expect(claimSettlementService.settleClaim).toHaveBeenCalledTimes(3);
+      expect(service.getDeadLetterClaims()).toEqual([
+        expect.objectContaining({
+          policyId: policy.id,
+          holder: policy.holder,
+          failureCount: 3,
+          lastError: "process_claim argument mismatch",
+          reason: "USDC price: $1.0000",
+        }),
+      ]);
+      expect(service.getStats().deadLetterClaims).toBe(1);
+      expect(service.getStats().settlementRetries).toBe(0);
+
+      await service.processTriggered();
+
+      expect(claimSettlementService.settleClaim).toHaveBeenCalledTimes(3);
+      expect(oracleService.checkStablecoinDepeg).toHaveBeenCalledTimes(3);
+      expect(policyService.deactivate).not.toHaveBeenCalled();
     });
 
     it("skips a stale oracle reading without triggering, even if the value would otherwise trigger", async () => {
