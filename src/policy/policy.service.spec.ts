@@ -12,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { MetricsService } from "../metrics/metrics.service";
 import { PolicyService } from "./policy.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
@@ -92,7 +93,7 @@ describe("PolicyService", () => {
   let holder: string;
 
   beforeEach(() => {
-    service = new PolicyService(buildConfig());
+    service = new PolicyService(buildConfig(), new MetricsService());
     holder = Keypair.random().publicKey();
     // prepareTransaction normally simulates against a live network and
     // fills in Soroban resource fees — that's SDK behavior, not this
