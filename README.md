@@ -56,6 +56,14 @@ stores policy purchases, capital deposits/withdrawals, and settled claims in
 `soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
 ledger for the first run; subsequent progress is checkpointed in Postgres.
 
+For an existing database, apply
+`src/db/migrations/002_oracle_trust_engine.sql` to add the oracle trust engine
+tables: `oracle_sources`, append-only `oracle_readings`, `oracle_decisions` with
+`oracle_decision_readings` linking each decision to the readings it used, and
+`oracle_source_health`. The migration is idempotent and transactional, so it is
+safe to re-run. Fresh installs get the same tables from `src/db/schema.sql`,
+which Compose mounts on first startup.
+
 The API listens on http://localhost:4001. PostgreSQL and Redis are also
 available on localhost ports 5432 and 6379. Compose uses the development-only
 Postgres password `refract_dev` unless `POSTGRES_PASSWORD` is set in the
