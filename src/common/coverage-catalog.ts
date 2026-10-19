@@ -174,6 +174,32 @@ export const COVERAGE_CATALOG = {
   },
 } as const satisfies Record<CoverageType, CoverageProduct>;
 
+/**
+ * Multi-source corroboration defaults per coverage type (issue #177). Each
+ * value can be overridden at deploy time via
+ * `ORACLE_CORROBORATION_<TYPE>_{MIN_SOURCES,TOLERANCE_BPS,MAX_AGE_MS}`, where
+ * <TYPE> is the snake_case coverage id (e.g. STABLECOIN_DEPEG).
+ *
+ * - minSources: distinct fresh sources that must agree before a value may be
+ *   published as payout-triggering.
+ * - toleranceBps: max deviation of a reading from the median, relative to the
+ *   median (denominator floored at 1 unit so zero-valued metrics still work).
+ * - maxReadingAgeMs: readings older than this are ignored.
+ */
+export interface CorroborationDefaults {
+  minSources: number;
+  toleranceBps: number;
+  maxReadingAgeMs: number;
+}
+
+export const COVERAGE_CORROBORATION_DEFAULTS: Record<CoverageType, CorroborationDefaults> = {
+  StablecoinDepeg: { minSources: 3, toleranceBps: 50, maxReadingAgeMs: 300_000 },
+  MarketCrash: { minSources: 3, toleranceBps: 200, maxReadingAgeMs: 300_000 },
+  LiquidationShield: { minSources: 3, toleranceBps: 200, maxReadingAgeMs: 300_000 },
+  SmartContractRisk: { minSources: 3, toleranceBps: 500, maxReadingAgeMs: 600_000 },
+  FlightDelay: { minSources: 3, toleranceBps: 1_000, maxReadingAgeMs: 900_000 },
+};
+
 /** List form of the catalog, in on-chain index order. */
 export const COVERAGE_PRODUCTS: readonly CoverageProduct[] = Object.values(COVERAGE_CATALOG);
 
