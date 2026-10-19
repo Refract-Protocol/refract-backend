@@ -256,3 +256,33 @@ export function maxPoolExposureForType(
   }
   return (lockedCapital * product.maxPoolExposurePct) / 100;
 }
+
+/**
+ * Declarative freshness policy for one payout-triggering feed (issue #186).
+ * Every coverage type must declare one; the ingestion guard in
+ * src/oracle/freshnessPolicy.ts rejects readings that violate it before they
+ * can take part in a consensus decision.
+ *
+ * - freshnessWindowSeconds: max age of a reading's source-observed timestamp
+ *   relative to ingestion time.
+ * - maxClockSkewSeconds: how far a source-observed timestamp may sit in the
+ *   future relative to ingestion time before it is rejected as future-dated.
+ * - heartbeatIntervalSeconds: max silence between readings from one source
+ *   before that source is considered down for this feed.
+ *
+ * Defaults are tuned per feed cadence and can be overridden per environment
+ * via ORACLE_FRESHNESS_<FEED>_<FIELD> env vars (see freshnessPolicy.ts).
+ */
+export interface FreshnessPolicy {
+  freshnessWindowSeconds: number;
+  maxClockSkewSeconds: number;
+  heartbeatIntervalSeconds: number;
+}
+
+export const FRESHNESS_POLICY: Record<CoverageType, FreshnessPolicy> = {
+  StablecoinDepeg: { freshnessWindowSeconds: 300, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 120 },
+  MarketCrash: { freshnessWindowSeconds: 900, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 300 },
+  LiquidationShield: { freshnessWindowSeconds: 300, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 120 },
+  SmartContractRisk: { freshnessWindowSeconds: 900, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 300 },
+  FlightDelay: { freshnessWindowSeconds: 1800, maxClockSkewSeconds: 60, heartbeatIntervalSeconds: 600 },
+};

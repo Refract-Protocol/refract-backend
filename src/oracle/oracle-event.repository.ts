@@ -43,9 +43,16 @@ export class OracleEventRepository {
 
     try {
       await this.db.query(
-        `INSERT INTO oracle_events (coverage_type, value, source, severity)
-         VALUES ($1, $2, $3, $4)`,
-        [coverageType, reading.value, this.extractSource(reading.message), reading.severity]
+        `INSERT INTO oracle_events (coverage_type, value, source, severity, usable, rejection_reason)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          coverageType,
+          reading.value,
+          this.extractSource(reading.message),
+          reading.severity,
+          reading.usable ?? true,
+          reading.rejectionReason ?? null,
+        ]
       );
     } catch (err) {
       this.logger.error(
@@ -71,9 +78,16 @@ export class OracleEventRepository {
           continue;
         }
         await client.query(
-          `INSERT INTO oracle_events (coverage_type, value, source, severity)
-           VALUES ($1, $2, $3, $4)`,
-          [coverageType, reading.value, this.extractSource(reading.message), reading.severity]
+          `INSERT INTO oracle_events (coverage_type, value, source, severity, usable, rejection_reason)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            coverageType,
+            reading.value,
+            this.extractSource(reading.message),
+            reading.severity,
+            reading.usable ?? true,
+            reading.rejectionReason ?? null,
+          ]
         );
       }
       await client.query("COMMIT");
