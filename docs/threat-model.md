@@ -102,7 +102,9 @@ reassessed against deployment exposure and on-chain contract controls.
 - [ ] **P1 — Harden oracle decision inputs.** Validate schema, numeric range,
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
-  mocked trigger sources before offering those coverages as live.
+  mocked trigger sources before offering those coverages as live. Secondary
+  price (Kraken) and TVL (Token Terminal) providers are documented in
+  [`oracle-sources.md`](./oracle-sources.md).
 - [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only

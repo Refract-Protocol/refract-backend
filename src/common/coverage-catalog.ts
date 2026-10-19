@@ -256,3 +256,16 @@ export function maxPoolExposureForType(
   }
   return (lockedCapital * product.maxPoolExposurePct) / 100;
 }
+
+/**
+ * Feed-to-source mapping (issue #204). Lists the independent providers that
+ * back each corroborated feed; adapters live in `src/oracle/sources/` and are
+ * registered in the source registry, not special-cased in the polling loop.
+ */
+export const COVERAGE_FEED_SOURCES: Partial<
+  Record<CoverageType, { feed: "price" | "tvl"; sources: string[] }>
+> = {
+  StablecoinDepeg: { feed: "price", sources: ["coingecko", "kraken"] },
+  MarketCrash: { feed: "price", sources: ["coingecko", "kraken"] },
+  SmartContractRisk: { feed: "tvl", sources: ["defillama", "tokenterminal"] },
+};
