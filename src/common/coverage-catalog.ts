@@ -125,6 +125,9 @@ export const COVERAGE_CATALOG = {
     maxPoolExposurePct: 35,
     status: "live",
   },
+  // Data provenance: NEXUS Protocol on-chain liquidation events, gated by
+  // confirmation depth in src/oracle/sources/liquidationShield.ts. No live
+  // NEXUS feed is wired yet, so this product produces no reading.
   LiquidationShield: {
     id: "LiquidationShield",
     onChainIndex: 2,

@@ -115,10 +115,12 @@ reads, and 60/minute for coverage catalogs.
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
 > `SmartContractRisk` now call real, keyless public APIs — CoinGecko
 > (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama
-> (protocol TVL). No API key is required for any of them. `LiquidationShield`
-> and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
-> liquidation events, and AviationStack (flight data) requires a paid key
-> this project doesn't have. See `src/oracle/oracle.service.ts` for details.
+> (protocol TVL). No API key is required for any of them. `FlightDelay` stays
+> mocked: AviationStack (flight data) requires a paid key this project doesn't
+> have. `LiquidationShield` has a confirmation-depth adapter
+> (`src/oracle/sources/liquidationShield.ts`) for NEXUS Protocol on-chain
+> liquidation events, but no live NEXUS feed is wired yet, so it produces no
+> reading. See `src/oracle/oracle.service.ts` for details.
 > **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
 > `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
 > are looked up on-chain). Policies start `pending` after `POST /buy`; once
