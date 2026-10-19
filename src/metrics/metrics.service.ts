@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { Counter, Histogram, Registry } from "@prometheus-io/client";
+import { Counter, Gauge, Histogram, Registry } from "@prometheus-io/client";
 import { NextFunction, Request, RequestHandler, Response } from "express";
 
 type Outcome = "success" | "failure";
@@ -47,6 +47,11 @@ export class MetricsService {
     labelNames: ["coverage_type", "outcome"],
     registers: [this.registry],
   });
+  private readonly oracleLeader = new Gauge({
+    name: "refract_oracle_leader",
+    help: "1 when this instance holds the oracle leader lease, 0 when it is a follower.",
+    registers: [this.registry],
+  });
   private readonly oracleCheckDuration = new Histogram<"coverage_type">({
     name: "refract_oracle_check_duration_seconds",
     help: "Oracle check duration in seconds.",
@@ -84,6 +89,10 @@ export class MetricsService {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  setOracleLeader(isLeader: boolean): void {
+    this.oracleLeader.set(isLeader ? 1 : 0);
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {
