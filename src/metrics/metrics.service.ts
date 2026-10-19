@@ -1,9 +1,16 @@
 import { Injectable } from "@nestjs/common";
-import { Counter, Histogram, Registry } from "@prometheus-io/client";
+import { Counter, Gauge, Histogram, Registry } from "@prometheus-io/client";
 import { NextFunction, Request, RequestHandler, Response } from "express";
 
 type Outcome = "success" | "failure";
 type OracleOutcome = Outcome | "mocked";
+
+/** Encoded as the numeric value of `oracle_breaker_state`. */
+export enum OracleBreakerState {
+  Closed = 0,
+  HalfOpen = 1,
+  Open = 2,
+}
 
 @Injectable()
 export class MetricsService {
@@ -54,6 +61,43 @@ export class MetricsService {
     buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
     registers: [this.registry],
   });
+  private readonly oracleSourceRequestDuration = new Histogram<"source" | "outcome">({
+    name: "oracle_source_request_duration_seconds",
+    help: "Oracle upstream source request duration in seconds, labeled by source and outcome.",
+    labelNames: ["source", "outcome"],
+    buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [this.registry],
+  });
+  private readonly oracleSourceFailures = new Counter<"source">({
+    name: "oracle_source_failures_total",
+    help: "Failed oracle upstream source requests, labeled by source.",
+    labelNames: ["source"],
+    registers: [this.registry],
+  });
+  private readonly oracleReadingAge = new Gauge<"coverage_type">({
+    name: "oracle_reading_age_seconds",
+    help: "Age in seconds of the most recent oracle reading, labeled by coverage type.",
+    labelNames: ["coverage_type"],
+    registers: [this.registry],
+  });
+  private readonly oracleSourceDispersion = new Gauge<"coverage_type">({
+    name: "oracle_source_dispersion",
+    help: "Relative spread across oracle sources for the latest reading, labeled by coverage type.",
+    labelNames: ["coverage_type"],
+    registers: [this.registry],
+  });
+  private readonly oracleQuorumFailures = new Counter<"coverage_type">({
+    name: "oracle_quorum_failures_total",
+    help: "Oracle readings withheld because too few sources agreed, labeled by coverage type.",
+    labelNames: ["coverage_type"],
+    registers: [this.registry],
+  });
+  private readonly oracleBreakerState = new Gauge<"coverage_type">({
+    name: "oracle_breaker_state",
+    help: "Oracle circuit breaker state per coverage type: 0=closed, 1=half-open, 2=open.",
+    labelNames: ["coverage_type"],
+    registers: [this.registry],
+  });
 
   readonly httpMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     if (req.path === "/metrics") {
@@ -84,6 +128,27 @@ export class MetricsService {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  recordOracleSourceRequest(source: string, outcome: Outcome, durationSeconds: number): void {
+    this.oracleSourceRequestDuration.labels({ source, outcome }).observe(durationSeconds);
+    if (outcome === "failure") this.oracleSourceFailures.labels({ source }).inc();
+  }
+
+  setOracleReadingAge(coverageType: string, ageSeconds: number): void {
+    this.oracleReadingAge.labels({ coverage_type: coverageType }).set(ageSeconds);
+  }
+
+  setOracleSourceDispersion(coverageType: string, dispersion: number): void {
+    this.oracleSourceDispersion.labels({ coverage_type: coverageType }).set(dispersion);
+  }
+
+  recordOracleQuorumFailure(coverageType: string): void {
+    this.oracleQuorumFailures.labels({ coverage_type: coverageType }).inc();
+  }
+
+  setOracleBreakerState(coverageType: string, state: OracleBreakerState): void {
+    this.oracleBreakerState.labels({ coverage_type: coverageType }).set(state);
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {
