@@ -28,3 +28,23 @@ CREATE INDEX IF NOT EXISTS idx_claims_coverage_settled
 -- Supports loss-ratio aggregation (payouts vs. premiums) per coverage type.
 CREATE INDEX IF NOT EXISTS idx_claims_coverage_status
     ON claims (coverage_type, status);
+
+-- Settlement state machine: one row per consensus decision (issue #198).
+-- A non-failed row also blocks a second decision for the same policy.
+CREATE TABLE IF NOT EXISTS claim_settlements (
+    decision_id  TEXT PRIMARY KEY,
+    policy_id    UUID NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    amount       NUMERIC(38, 18) NOT NULL CHECK (amount > 0),
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (
+        status IN ('pending', 'submitted', 'confirmed', 'failed')
+    ),
+    tx_hash      VARCHAR(64),
+    evidence     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_error   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_settlements_policy_open
+    ON claim_settlements (policy_id)
+    WHERE status IN ('pending', 'submitted', 'confirmed');

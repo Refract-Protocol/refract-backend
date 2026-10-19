@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Fixed-point encoding of OracleReading.value → i128 for RefractOracle.
  *
@@ -33,6 +35,16 @@ export function scaleOracleValue(coverageType: string, value: number): bigint {
     default:
       throw new Error(`Unknown coverageType for oracle scaling: ${coverageType}`);
   }
+}
+
+/**
+ * Stable identifier for one consensus decision (feed + policy + observation
+ * window). It deliberately excludes the producing node so every relayer that
+ * observes the same condition derives the same key, which is what makes
+ * duplicate or replayed decisions collide on the settlement unique index.
+ */
+export function buildDecisionId(feed: string, policyId: string, windowStart: number): string {
+  return createHash("sha256").update(`${feed}|${policyId}|${windowStart}`).digest("hex");
 }
 
 /** Stable u32 discriminant matching CoverageType declaration order in the pool. */
