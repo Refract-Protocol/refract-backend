@@ -103,6 +103,10 @@ reassessed against deployment exposure and on-chain contract controls.
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
   mocked trigger sources before offering those coverages as live.
+  Operator pause is available: `POST /api/v1/oracle/pause` and
+  `POST /api/v1/oracle/resume` (per coverage type or `global`), with
+  `GET /api/v1/oracle/status`. Every change is recorded in the append-only
+  `oracle_pause_audit` table. Corroboration and mocked-source replacement remain open.
 - [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only
