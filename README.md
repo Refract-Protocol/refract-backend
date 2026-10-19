@@ -56,6 +56,15 @@ stores policy purchases, capital deposits/withdrawals, and settled claims in
 `soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
 ledger for the first run; subsequent progress is checkpointed in Postgres.
 
+Horizon-derived oracle readings carry their source ledger sequence and hash and
+start `provisional`. They become `final` (and eligible for quorum) once the
+ledger is `HORIZON_FINALITY_DEPTH` ledgers behind the latest observed one
+(default 5; `HORIZON_FINALITY_POLICY=final_only` by default, or
+`allow_provisional`). A ledger whose hash changes is treated as a reorg:
+affected readings are marked `invalidated`, decisions built on them are marked
+`superseded`, the resume checkpoint rewinds, and every correction is appended
+to `oracle_evidence_ledger`. Apply `src/db/migrations/004_horizon_ledger_finality.sql`.
+
 The API listens on http://localhost:4001. PostgreSQL and Redis are also
 available on localhost ports 5432 and 6379. Compose uses the development-only
 Postgres password `refract_dev` unless `POSTGRES_PASSWORD` is set in the
