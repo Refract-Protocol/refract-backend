@@ -28,3 +28,37 @@ CREATE INDEX IF NOT EXISTS idx_claims_coverage_settled
 -- Supports loss-ratio aggregation (payouts vs. premiums) per coverage type.
 CREATE INDEX IF NOT EXISTS idx_claims_coverage_status
     ON claims (coverage_type, status);
+
+-- Per-source reliability state for oracle feeds. Updated in one batch per
+-- polling cycle; state transitions are computed by src/oracle/sourceHealth.ts.
+CREATE TABLE IF NOT EXISTS oracle_source_health (
+    feed                  TEXT NOT NULL,
+    source                TEXT NOT NULL,
+    state                 TEXT NOT NULL DEFAULT 'healthy'
+                          CHECK (state IN ('healthy', 'degraded', 'quarantined')),
+    consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+    consecutive_successes INTEGER NOT NULL DEFAULT 0,
+    -- Trailing-window rates, 0..1. Recomputed from the window each cycle.
+    error_rate            NUMERIC(5, 4) NOT NULL DEFAULT 0,
+    timeout_rate          NUMERIC(5, 4) NOT NULL DEFAULT 0,
+    divergence_rate       NUMERIC(5, 4) NOT NULL DEFAULT 0,
+    sample_count          INTEGER NOT NULL DEFAULT 0,
+    last_value            NUMERIC(38, 18),
+    last_success_at       TIMESTAMPTZ,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (feed, source)
+);
+
+-- Operator overrides (force quarantine / force clear). Append-only audit trail.
+CREATE TABLE IF NOT EXISTS oracle_source_health_overrides (
+    id          BIGSERIAL PRIMARY KEY,
+    feed        TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    action      TEXT NOT NULL CHECK (action IN ('force_quarantine', 'force_clear')),
+    actor       TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_oracle_source_health_overrides_feed_source
+    ON oracle_source_health_overrides (feed, source, created_at);
