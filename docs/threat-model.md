@@ -50,9 +50,11 @@ Security objectives:
 4. **Oracle and scheduled claim evaluation:** External oracle APIs and mocked
    oracle implementations -> `OracleService` -> `OracleScheduler` broadcasts
    readings and `ClaimScheduler` evaluates active in-memory policies every
-   five minutes. Trust boundary: external data providers and scheduler
-   execution to backend decision logic. Some live-source failures produce a
-   non-triggering degraded reading; two coverage sources remain mocked.
+   minute (`@Cron(CronExpression.EVERY_MINUTE)`). Trust boundary: external
+   data providers and scheduler execution to backend decision logic. Some
+   live-source failures produce a non-triggering degraded reading; two coverage
+   sources remain mocked. The hop-by-hop trust model is in
+   [`oracle-trust-architecture.md`](./oracle-trust-architecture.md).
 5. **Payout:** `ClaimService` -> `ClaimSettlementService` -> relayer key ->
    Soroban RPC -> pool contract -> confirmation polling -> local deactivation.
    Trust boundary: privileged backend relayer to public RPC and on-chain
@@ -65,7 +67,7 @@ Security objectives:
 | STRIDE | Lifecycle threats and impact | Existing controls and gaps |
 |---|---|---|
 | **Spoofing** | A caller can claim a holder address in the purchase DTO or use an unrelated valid signed transaction at the generic submit endpoint. A compromised oracle provider or endpoint could impersonate a trustworthy data source and influence automated decisions. | Contract `require_auth` and wallet signatures protect contract-level user actions; HTTPS, origin policy, and upstream authenticity/availability are deployment responsibilities. The API does not authenticate callers or verify the signer/operation against a purchase intent; CORS is not authentication. |
-| **Tampering** | A malicious client can alter transaction XDR, parameters, network, or destination before signing/submitting. Tampered, stale, malformed, or manipulated oracle responses could change a trigger decision. The local policy record can differ from the on-chain policy because it is created before user authorization/submission. | DTO validation and Soroban simulation constrain purchase input and contract execution; transaction signatures prevent edits after signing. There is no submit-time binding or post-confirmation reconciliation. Oracle checks use public APIs; provenance, freshness, independent corroboration, and response-shape bounds need strengthening. |
+| **Tampering** | A malicious client can alter transaction XDR, parameters, network, or destination before signing/submitting. Tampered, stale, malformed, or manipulated oracle responses could change a trigger decision. The local policy record can differ from the on-chain policy because it is created before user authorization/submission. | DTO validation and Soroban simulation constrain purchase input and contract execution; transaction signatures prevent edits after signing. There is no submit-time binding or post-confirmation reconciliation. Implemented: oracle checks use public APIs; readings older than 1800 s are non-triggering; timeouts yield a degraded, non-triggering reading that is never published on-chain. Not implemented: independent corroboration (every live feed is single-source), quorum, and response-shape or plausible-movement bounds. |
 | **Repudiation** | A buyer or operator may dispute a purchase, signature, submission, oracle decision, or payout because evidence is not durably correlated across the complete flow. In-memory policy/history disappears on restart. | Soroban transaction hashes are returned on confirmation and some operations are logged. Durable, tamper-evident audit records linking request, signed transaction hash, oracle observation, policy ID, and settlement result are absent. |
 | **Information Disclosure** | Public policy/claim endpoints may disclose holder addresses, purchase details, or claim history. Signed XDR and verbose exception messages may expose transaction or infrastructure details if logged or returned. A leaked relayer secret enables privileged contract actions. | No secret is intentionally returned by these transaction endpoints, Helmet is enabled, and the relayer key is configuration-driven. The claim history endpoints have no authorization, response minimization, retention policy, or access control; deployment secret management and log redaction are not enforced in code. |
 | **Denial of Service** | Repeated purchase requests can cause account lookups/simulation; the generic submit route can trigger RPC submission and up to roughly 30 seconds of polling per request. Public endpoints have no rate/concurrency limits. Oracle/RPC outages can stall scheduled runs; retries can accumulate load. | Request DTO validation, RPC timeouts where configured, and error handling provide limited protection. Request body, transaction size/complexity, rate, concurrency, and per-caller budgets are not explicitly bounded here. Scheduler run overlap and distributed coordination are not guarded. |
@@ -99,11 +101,20 @@ reassessed against deployment exposure and on-chain contract controls.
   allowed network, source, contract, operation, time bounds and size before
   relay. Apply request-size limits, rate limits, concurrency limits, and
   bounded confirmation work.
-- [ ] **P1 — Harden oracle decision inputs.** Validate schema, numeric range,
-  timestamp/freshness, source identity and plausible movement; add independent
-  corroboration or an operator pause for payout-triggering values. Replace
-  mocked trigger sources before offering those coverages as live.
-- [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
+- [ ] **P1 — Harden oracle decision inputs.** *Partially mitigated:* freshness
+  (1800 s staleness limit in `ClaimService`), fail-safe degraded readings that
+  are never published, and a single evidence write per reading to
+  `oracle_events`. *Remaining:* schema, numeric range, source identity, and
+  plausible-movement validation; independent corroboration and quorum
+  (PLANNED); an operator pause or circuit breaker for payout-triggering values
+  (PLANNED; the manual pause is documented in the runbooks). `LiquidationShield`
+  and `FlightDelay` remain mocked and must not be offered as live. See
+  [`oracle-trust-architecture.md`](./oracle-trust-architecture.md) and
+  [`runbooks/oracle-incidents.md`](./runbooks/oracle-incidents.md).
+- [ ] **P1 — Make lifecycle evidence durable.** *Partially mitigated:*
+  `oracle_events`, `claims`, and `relayer_transaction_audit` exist, but oracle
+  writes are best-effort and partitions are dropped after the retention window,
+  so the ledger is not tamper-evident or permanent. Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only
   audit records with retention and alerting.

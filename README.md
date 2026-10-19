@@ -19,16 +19,19 @@ REST + WebSocket API the web app consumes. See also `refract-contracts` and
 
 ```
 src/
-├── index.ts                 # Express + WebSocket server, service loop
-├── services/
-│   ├── oracleMonitor.ts     # polls data sources (depeg, crash, TVL, flight)
-│   └── claimProcessor.ts    # scans policies, settles triggered claims
-├── routes/
-│   ├── quotes.ts            # POST /quote, GET /coverage-types
-│   ├── policies.ts          # policy CRUD + buy-tx builder
-│   └── pool.ts              # pool stats, provide/withdraw
+├── oracle/                  # OracleScheduler, OracleService (data sources), publisher, oracle_events repository
+├── claim/                   # ClaimScheduler, ClaimService (scan + evaluate), ClaimSettlementService, ops controller
+├── policy/                  # policy purchase and lifecycle
+├── pool/                    # pool stats, LP provide/withdraw
+├── quote/                   # premium quoting and coverage types
+├── tx/                      # signed-XDR submission
+├── stellar/                 # Soroban RPC, contract interface, event indexer
 └── db/schema.sql            # PostgreSQL schema
 ```
+
+Some files under `src/` are empty or missing in parts of the tree; see the
+snapshot caveat in
+[`docs/oracle-trust-architecture.md`](./docs/oracle-trust-architecture.md).
 
 ## Quick start
 
@@ -170,6 +173,13 @@ reads, and 60/minute for coverage catalogs.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## Documentation
+
+- [Oracle trust architecture](./docs/oracle-trust-architecture.md) — the path from source polling to on-chain publication, source inventory, corroboration status, evidence ledger, and operator authority.
+- [Oracle incident runbooks](./docs/runbooks/oracle-incidents.md) — stale feeds, divergence, fail-safes, suspect sources, and restoring operation after a pause.
+- [Threat model](./docs/threat-model.md) — transaction lifecycle STRIDE assessment and prioritized follow-ups.
+- [Security policy](./SECURITY.md) — vulnerability reporting and HTTP security configuration.
 
 ## License
 
