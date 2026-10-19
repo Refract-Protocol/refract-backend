@@ -99,6 +99,11 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `GET` | `/api/v1/claims/dead-letter` | Triggered claims withheld after repeated failed settlement |
 | `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
+| `GET` | `/api/v1/admin/feeds` | Admin: latest version of every oracle feed definition |
+| `GET` | `/api/v1/admin/feeds/:feedKey` | Admin: latest version of one feed |
+| `GET` | `/api/v1/admin/feeds/:feedKey/versions` | Admin: full version history with previous definitions |
+| `POST` | `/api/v1/admin/feeds` | Admin: create a feed (version 1) |
+| `PATCH` | `/api/v1/admin/feeds/:feedKey` | Admin: update a feed; requires `expectedVersion` |
 
 State-changing API attempts emit structured `security_audit` JSON lines to
 stdout; route those events to the deployment's log aggregation or SIEM system.
@@ -106,8 +111,17 @@ See [`SECURITY.md`](./SECURITY.md) for the event fields and identity limitations
 
 Endpoints with the `@AdminOnly()` guard require `X-API-Key: $ADMIN_API_KEY`.
 Set a strong, private `ADMIN_API_KEY` before enabling admin-only routes; if
-it is unset, those routes fail closed with `503`. The current API has no
-admin CRUD, dead-letter review, or contract-override routes. API request
+it is unset, those routes fail closed with `503`. The admin feed routes also
+require an `x-admin-actor` header on mutations; it is recorded in the audit
+trail but is self-reported, because the shared admin key identifies no one.
+Feed definitions are append-only versions in `oracle_feed_definitions`
+(migration `004_oracle_feed_definitions.sql`). A PATCH must carry the version
+it was based on (`expectedVersion`), or it is rejected with `409`. An enabled
+feed whose non-quarantined source weight cannot reach `quorumThreshold` is
+rejected with `400`. The monitor reads the latest definitions from an
+in-process cache that reloads every `FEED_DEFINITIONS_RELOAD_MS` (default
+`15000`), so a change takes effect within one interval on every instance. The
+API has no dead-letter review or contract-override routes. API request
 limits are applied per client IP and endpoint: 30/minute for quotes,
 10/minute for policy buys, LP actions, oracle status, and on-chain coverage
 reads, and 60/minute for coverage catalogs.
