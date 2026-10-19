@@ -116,9 +116,12 @@ reads, and 60/minute for coverage catalogs.
 > `SmartContractRisk` now call real, keyless public APIs — CoinGecko
 > (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama
 > (protocol TVL). No API key is required for any of them. `LiquidationShield`
-> and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
-> liquidation events, and AviationStack (flight data) requires a paid key
-> this project doesn't have. See `src/oracle/oracle.service.ts` for details.
+> stays mocked: there's no public API for NEXUS Protocol liquidation events.
+> `FlightDelay` has a live provider adapter in `src/oracle/sources/flightDelay.ts`
+> (AviationStack free tier, selected with `FLIGHT_DELAY_PROVIDER=aviationstack`
+> and `AVIATIONSTACK_API_KEY`), but the oracle refresh does not call it yet in
+> this checkout, so no FlightDelay readings are produced until it is wired in.
+> See `src/oracle/oracle.service.ts` for details.
 > **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
 > `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
 > are looked up on-chain). Policies start `pending` after `POST /buy`; once
