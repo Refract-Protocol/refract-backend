@@ -1,7 +1,14 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
+import { coverageProductByIndex } from "../common/coverage-catalog";
+import {
+  meetsTrustPolicy,
+  OraclePolicyMap,
+  ORACLE_TRUST_POLICIES,
+  resolveOraclePolicies,
+} from "../oracle/oracle-trust-policy";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
@@ -36,7 +43,9 @@ export class ClaimService {
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
+    private readonly oracleEventRepository: OracleEventRepository,
+    // Defaults to all-`single_source` (today's behaviour) when no provider is wired.
+    @Optional() @Inject(ORACLE_TRUST_POLICIES) private readonly oraclePolicies: OraclePolicyMap = resolveOraclePolicies({})
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -52,6 +61,19 @@ export class ClaimService {
         const oracle = await this.fetchOracleData(policy);
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         if (result.triggered) {
+          // Only one reader exists per coverage today, so corroborated and
+          // decentralized policies cannot reach quorum and fail closed here.
+          const coverage = coverageProductByIndex(policy.coverageType, { includeDrafts: true });
+          if (!coverage) {
+            throw new Error(`Unknown coverageType ${policy.coverageType}`);
+          }
+          const trust = this.oraclePolicies[coverage.id];
+          if (!meetsTrustPolicy(trust, [])) {
+            this.logger.error(
+              `Refusing payout for policy ${policy.id}: trust mode ${trust.mode} requires quorum ${trust.quorumMin}, not met`
+            );
+            continue;
+          }
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.

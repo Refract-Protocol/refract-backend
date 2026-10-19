@@ -161,6 +161,22 @@ reads, and 60/minute for coverage catalogs.
 > Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
 > `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
 >
+> **Oracle trust modes** are set per coverage type with
+> `ORACLE_TRUST_MODE_<COVERAGE>` (`single_source` by default, `corroborated`,
+> or `decentralized`), with sources in `ORACLE_SOURCES_<COVERAGE>` and the
+> quorum in `ORACLE_QUORUM_MIN`. `src/oracle/oracle-trust-policy.ts` validates
+> them at startup (`src/main.ts`) and refuses to boot on unknown coverage
+> types, unknown modes, or a non-default mode whose sources cannot meet the
+> quorum. `ClaimService` refuses to pay out when a coverage's mode is not
+> satisfied. Only one reader exists per coverage today, so `corroborated` and
+> `decentralized` fail closed and never pay out until multi-source readers
+> land.
+>
+> Staged rollout: keep every coverage on `single_source` until its sources
+> are live, move one coverage at a time to `corroborated`, watch refusal logs
+> (`Refusing payout ... quorum ... not met`), and only then consider
+> `decentralized`. Roll back by unsetting the variable and redeploying.
+>
 > **Confirmation polling** uses configurable exponential backoff + jitter
 > (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
 >

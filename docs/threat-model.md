@@ -103,6 +103,17 @@ reassessed against deployment exposure and on-chain contract controls.
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
   mocked trigger sources before offering those coverages as live.
+  - *Trust-mode status (per coverage, `ORACLE_TRUST_MODE_<COVERAGE>`):*
+    - `single_source` (default): satisfied only by the existing pause
+      fallback; no independent corroboration.
+    - `corroborated`: config validated at startup and enforced in
+      `ClaimService` (fail closed). Not yet satisfiable: there is one reader
+      per coverage, so no payout can occur until multi-source readers exist.
+    - `decentralized`: config requires registered provider identities at
+      startup and enforces quorum (fail closed). Not satisfiable yet: no
+      third-party submission path exists.
+  - Mocked sources (`LiquidationShield`, `FlightDelay`) remain open regardless
+    of mode.
 - [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only

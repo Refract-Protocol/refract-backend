@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { resolveOraclePolicies } from './oracle/oracle-trust-policy';
 
 /**
  * Hard upper bound on how long we wait for in-flight work (HTTP requests,
@@ -13,6 +14,9 @@ const SHUTDOWN_GRACE_PERIOD_MS = Number(
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
+  // Fail fast on an invalid or unsatisfiable oracle trust-mode configuration
+  // before any module starts; the thrown error is logged by the catch below.
+  resolveOraclePolicies(process.env);
   const app: INestApplication = await NestFactory.create(AppModule);
 
   // Let Nest propagate shutdown signals to every provider that implements
