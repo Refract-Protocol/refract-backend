@@ -16,8 +16,28 @@ CREATE TABLE IF NOT EXISTS claims (
     -- Legacy field retained for backwards compatibility; set after settlement.
     processed_at      TIMESTAMPTZ,
     payout_amount     NUMERIC(38, 18),
+    -- Degraded-mode reason code when status = 'blocked_degraded' (issue #195).
+    block_reason      TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Per-feed degraded-mode state (issue #195). Fail-closed: only 'healthy' allows
+-- publishing or settlement. See docs/threat-model.md section 4A.
+CREATE TABLE IF NOT EXISTS oracle_feed_state (
+    coverage_type         SMALLINT    PRIMARY KEY CHECK (coverage_type BETWEEN 0 AND 4),
+    health                TEXT        NOT NULL DEFAULT 'healthy'
+                                      CHECK (health IN ('healthy', 'degraded', 'paused')),
+    reason                TEXT        CHECK (reason IN (
+                                        'quorum_shortfall',
+                                        'no_fresh_sources',
+                                        'sources_divergent',
+                                        'consensus_unavailable'
+                                      )),
+    consecutive_failures  INTEGER     NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+    entered_at            TIMESTAMPTZ,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (health = 'healthy' OR reason IS NOT NULL)
 );
 
 -- Supports percentile (PERCENTILE_CONT) latency queries grouped by coverage type.
