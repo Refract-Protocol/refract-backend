@@ -54,6 +54,31 @@ export class MetricsService {
     buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
     registers: [this.registry],
   });
+  private readonly providerProbes = new Counter<"source" | "outcome">({
+    name: "refract_provider_probes_total",
+    help: "Synthetic canary probes completed per data provider, labeled by outcome.",
+    labelNames: ["source", "outcome"],
+    registers: [this.registry],
+  });
+  private readonly providerProbeDuration = new Histogram<"source">({
+    name: "refract_provider_probe_duration_seconds",
+    help: "Synthetic canary probe duration in seconds per data provider.",
+    labelNames: ["source"],
+    buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [this.registry],
+  });
+  private readonly providerFrozenPayloads = new Counter<"source">({
+    name: "refract_provider_frozen_payload_detections_total",
+    help: "Canary probes that received an identical payload repeatedly, per data provider.",
+    labelNames: ["source"],
+    registers: [this.registry],
+  });
+  private readonly providerSchemaDrift = new Counter<"source" | "kind">({
+    name: "refract_provider_schema_drift_detections_total",
+    help: "Canary probes that detected schema, parse, or scale drift, per data provider and drift kind.",
+    labelNames: ["source", "kind"],
+    registers: [this.registry],
+  });
 
   readonly httpMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     if (req.path === "/metrics") {
@@ -84,6 +109,19 @@ export class MetricsService {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  recordProviderProbe(source: string, outcome: Outcome, durationSeconds: number): void {
+    this.providerProbes.labels({ source, outcome }).inc();
+    this.providerProbeDuration.labels({ source }).observe(durationSeconds);
+  }
+
+  recordProviderFrozenPayload(source: string): void {
+    this.providerFrozenPayloads.labels({ source }).inc();
+  }
+
+  recordProviderSchemaDrift(source: string, kind: string): void {
+    this.providerSchemaDrift.labels({ source, kind }).inc();
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {
