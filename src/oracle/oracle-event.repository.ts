@@ -2,6 +2,9 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Pool } from "pg";
 import { PG_POOL } from "../db/db.module";
 import { OracleReading } from "./oracle-reading";
+import { ReadingAdmissionGate, SourceClockOffset, readingDigest } from "./oracle-timestamp";
+
+type InsertParams = [string, number, string, string, Date, string];
 
 /**
  * Persists oracle readings to the `oracle_events` table defined in
@@ -12,10 +15,16 @@ import { OracleReading } from "./oracle-reading";
  * The coverage_type column is an enum in Postgres, matching the five
  * values in schema.sql. We map OracleReading.coverageType (PascalCase) to
  * the snake_case enum values the DB expects.
+ *
+ * Every reading passes through ReadingAdmissionGate before it is written.
+ * Rejected readings are logged with a reason code and never persisted.
+ * Replays (same source + observation time + payload digest) are dropped by
+ * the oracle_reading_receipts primary key in the same statement as the insert.
  */
 @Injectable()
 export class OracleEventRepository {
   private readonly logger = new Logger(OracleEventRepository.name);
+  private readonly admission = new ReadingAdmissionGate();
 
   // Normalise OracleService's PascalCase coverageType names to the
   // schema's snake_case coverage_type enum values.
@@ -27,6 +36,19 @@ export class OracleEventRepository {
     FlightDelay: "flight_delay",
   };
 
+  // Receipt insert and event insert are one statement, so a replay can never
+  // leave an event row without its receipt (or vice versa). The event row is
+  // written only when the receipt insert actually inserted.
+  private static readonly INSERT_SQL = `
+    WITH receipt AS (
+      INSERT INTO oracle_reading_receipts (source, observed_at, payload_digest)
+      VALUES ($3::varchar, $5::timestamptz, $6::char(64))
+      ON CONFLICT DO NOTHING
+      RETURNING 1
+    )
+    INSERT INTO oracle_events (coverage_type, value, source, severity, observed_at, payload_digest)
+    SELECT $1::coverage_type, $2::numeric, $3::varchar, $4::varchar, $5::timestamptz, $6::char(64) FROM receipt`;
+
   constructor(@Inject(PG_POOL) private readonly db: Pool) {}
 
   /**
@@ -35,18 +57,14 @@ export class OracleEventRepository {
    * oracle broadcast or claim-evaluation paths that call this.
    */
   async record(reading: OracleReading): Promise<void> {
-    const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
-    if (!coverageType) {
-      this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
-      return;
-    }
+    const params = this.admitForInsert(reading);
+    if (!params) return;
 
     try {
-      await this.db.query(
-        `INSERT INTO oracle_events (coverage_type, value, source, severity)
-         VALUES ($1, $2, $3, $4)`,
-        [coverageType, reading.value, this.extractSource(reading.message), reading.severity]
-      );
+      const result = await this.db.query(OracleEventRepository.INSERT_SQL, params);
+      if (result.rowCount === 0) {
+        this.logger.debug(`Discarded replayed oracle reading from ${params[2]} for ${reading.coverageType}`);
+      }
     } catch (err) {
       this.logger.error(
         `Failed to persist oracle event for ${reading.coverageType}`,
@@ -65,16 +83,9 @@ export class OracleEventRepository {
     try {
       await client.query("BEGIN");
       for (const reading of readings) {
-        const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
-        if (!coverageType) {
-          this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
-          continue;
-        }
-        await client.query(
-          `INSERT INTO oracle_events (coverage_type, value, source, severity)
-           VALUES ($1, $2, $3, $4)`,
-          [coverageType, reading.value, this.extractSource(reading.message), reading.severity]
-        );
+        const params = this.admitForInsert(reading);
+        if (!params) continue;
+        await client.query(OracleEventRepository.INSERT_SQL, params);
       }
       await client.query("COMMIT");
     } catch (err) {
@@ -86,6 +97,32 @@ export class OracleEventRepository {
     } finally {
       client.release();
     }
+  }
+
+  /** Per-source clock offset (receipt − observation), for operators to spot skewed providers. */
+  getClockOffsets(): SourceClockOffset[] {
+    return this.admission.clockOffsets();
+  }
+
+  /**
+   * Maps and admits a reading. Returns the insert parameters, or undefined when
+   * the reading must not be persisted (unknown coverage type or rejected timestamp).
+   */
+  private admitForInsert(reading: OracleReading): InsertParams | undefined {
+    const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
+    if (!coverageType) {
+      this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
+      return undefined;
+    }
+
+    const source = this.extractSource(reading.message);
+    const admission = this.admission.admit(source, reading.observedAt);
+    if (!admission.accepted) {
+      this.logger.warn(`Rejected oracle reading ${reading.coverageType} from ${source}: ${admission.reason}`);
+      return undefined;
+    }
+
+    return [coverageType, reading.value, source, reading.severity, admission.observedAt, readingDigest(reading)];
   }
 
   /**
