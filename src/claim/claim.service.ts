@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { OracleControlService } from "../oracle/control";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
@@ -36,7 +37,8 @@ export class ClaimService {
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
+    private readonly oracleEventRepository: OracleEventRepository,
+    private readonly oracleControl: OracleControlService
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -52,6 +54,13 @@ export class ClaimService {
         const oracle = await this.fetchOracleData(policy);
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         if (result.triggered) {
+          // Operator pause: the reading was already polled and logged above, but
+          // no payout is attempted. Checked per policy so a pause issued mid-scan
+          // stops the remaining payouts in this run.
+          if (await this.oracleControl.isPaused(policy.coverageType)) {
+            this.logger.warn(`Settlement skipped for policy ${policy.id}: oracle paused by operator`);
+            continue;
+          }
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.
