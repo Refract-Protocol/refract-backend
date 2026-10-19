@@ -1,3 +1,36 @@
+import type { CoverageType } from "../common/coverage-catalog";
+
+/** Whether a source reads real market data or returns simulated values. */
+export type OracleSourceKind = "live" | "mocked";
+
+/**
+ * Trust a source has earned, ordered weakest to strongest. Index order is the
+ * ranking used by the coverage source guard (issue #203).
+ */
+export const ORACLE_TRUST_MODES = ["mocked", "single-source", "corroborated"] as const;
+export type OracleTrustMode = (typeof ORACLE_TRUST_MODES)[number];
+
+/** Capability metadata for the source backing one coverage type. */
+export interface OracleSourceCapability {
+  /** Human-readable source name, used in guard error messages. */
+  name: string;
+  kind: OracleSourceKind;
+  trustMode: OracleTrustMode;
+}
+
+/**
+ * Source capability per coverage type. Must stay in step with the sources
+ * actually wired into OracleService; `kind` and `trustMode` are checked against
+ * each product's declared requirements in coverage-catalog.ts at startup.
+ */
+export const ORACLE_SOURCE_CAPABILITIES: Record<CoverageType, OracleSourceCapability> = {
+  StablecoinDepeg: { name: "coingecko-horizon", kind: "live", trustMode: "single-source" },
+  MarketCrash: { name: "live-market-feed", kind: "live", trustMode: "single-source" },
+  LiquidationShield: { name: "nexus-liquidation-mock", kind: "mocked", trustMode: "mocked" },
+  SmartContractRisk: { name: "defillama-tvl", kind: "live", trustMode: "single-source" },
+  FlightDelay: { name: "aviationstack-mock", kind: "mocked", trustMode: "mocked" },
+};
+
 /**
  * Fixed-point encoding of OracleReading.value → i128 for RefractOracle.
  *

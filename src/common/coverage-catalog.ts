@@ -1,3 +1,5 @@
+import type { OracleSourceKind, OracleTrustMode } from "../oracle/oracle-encoding";
+
 /**
  * Single source of truth for the five coverage products offered by Refract.
  *
@@ -90,6 +92,16 @@ export interface CoverageProduct {
   status: CoverageStatus;
   /** Present once the product has been published; absent while `draft`. */
   approval?: CoverageApprovalRecord;
+  /**
+   * Declared kind of the trigger source. A `live` product must be backed by a
+   * source whose wired capability is also `live` (issue #203).
+   */
+  sourceKind: OracleSourceKind;
+  /**
+   * Weakest trust mode the backing source may have. Startup fails when the
+   * wired source ranks below it (issue #203).
+   */
+  minTrustMode: OracleTrustMode;
 }
 
 export const COVERAGE_CATALOG = {
@@ -108,6 +120,8 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 500,
     maxPoolExposurePct: 35,
     status: "live",
+    sourceKind: "live",
+    minTrustMode: "single-source",
   },
   MarketCrash: {
     id: "MarketCrash",
@@ -124,6 +138,8 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 3000,
     maxPoolExposurePct: 35,
     status: "live",
+    sourceKind: "live",
+    minTrustMode: "single-source",
   },
   LiquidationShield: {
     id: "LiquidationShield",
@@ -140,6 +156,8 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 500,
     maxPoolExposurePct: 35,
     status: "live",
+    sourceKind: "mocked",
+    minTrustMode: "mocked",
   },
   SmartContractRisk: {
     id: "SmartContractRisk",
@@ -156,6 +174,8 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 500,
     maxPoolExposurePct: 30,
     status: "live",
+    sourceKind: "live",
+    minTrustMode: "single-source",
   },
   FlightDelay: {
     id: "FlightDelay",
@@ -171,6 +191,8 @@ export const COVERAGE_CATALOG = {
     icon: "✈️",
     defaultTriggerThreshold: 120,
     status: "live",
+    sourceKind: "mocked",
+    minTrustMode: "mocked",
   },
 } as const satisfies Record<CoverageType, CoverageProduct>;
 
