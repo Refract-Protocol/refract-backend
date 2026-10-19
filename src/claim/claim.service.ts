@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { EvidenceStore } from "../oracle/evidenceStore";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
@@ -36,7 +37,8 @@ export class ClaimService {
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
+    private readonly oracleEventRepository: OracleEventRepository,
+    private readonly evidenceStore: EvidenceStore
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -49,13 +51,13 @@ export class ClaimService {
     for (const policy of activePolicies) {
       try {
         const fetchedAt = Math.floor(Date.now() / 1000);
-        const oracle = await this.fetchOracleData(policy);
+        const { reading: oracle, readingId } = await this.fetchOracleData(policy);
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         if (result.triggered) {
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result);
+          const settledResult = await this.processPayout(policy, result, oracle, readingId);
           if (settledResult) settled.push(settledResult);
         }
       } catch (err) {
@@ -66,7 +68,7 @@ export class ClaimService {
     return settled;
   }
 
-  private async fetchOracleData(policy: StoredPolicy): Promise<OracleReading> {
+  private async fetchOracleData(policy: StoredPolicy): Promise<{ reading: OracleReading; readingId: string | null }> {
     let reading: OracleReading;
     switch (policy.coverageType) {
       case 0:
@@ -95,8 +97,9 @@ export class ClaimService {
     // Persist every claim-evaluation reading — fire-and-forget so a DB
     // hiccup never disrupts the evaluation path.
     void this.oracleEventRepository.record(reading);
+    const readingId = this.evidenceStore.recordReading({ reading, observedAt: new Date() });
 
-    return reading;
+    return { reading, readingId };
   }
 
   private evaluatePolicy(policy: StoredPolicy, oracle: OracleReading, fetchedAt: number): ClaimResult {
@@ -130,12 +133,31 @@ export class ClaimService {
   }
 
   /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */
-  private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<ClaimResult | undefined> {
+  private async processPayout(
+    policy: StoredPolicy,
+    result: ClaimResult,
+    oracle: OracleReading,
+    readingId: string | null
+  ): Promise<ClaimResult | undefined> {
     this.logger.warn(
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
 
+    // Decision must be durable before the payout is submitted: if this
+    // throws, settleClaim is never called and no payout exists without a record.
+    const decisionId = await this.evidenceStore.recordDecision({
+      readingIds: readingId ? [readingId] : [],
+      chosenValue: oracle.value,
+      rule: policy.coverageType === 4 ? "flight_delay: value > threshold" : "threshold: value < threshold",
+      policyId: policy.id,
+      payoutAmount: result.payout,
+    });
+
     const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
+    await this.evidenceStore.attachSettlement(decisionId, {
+      status: settlement.settled ? "confirmed" : "unconfirmed",
+      txHash: settlement.txHash,
+    });
     if (!settlement.settled) {
       this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
       return undefined;

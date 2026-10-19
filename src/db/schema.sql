@@ -28,3 +28,29 @@ CREATE INDEX IF NOT EXISTS idx_claims_coverage_settled
 -- Supports loss-ratio aggregation (payouts vs. premiums) per coverage type.
 CREATE INDEX IF NOT EXISTS idx_claims_coverage_status
     ON claims (coverage_type, status);
+
+-- Oracle evidence ledger (issue #176). Append-only guards (triggers) are
+-- installed by src/db/migrations/004_oracle_evidence.sql.
+CREATE TABLE IF NOT EXISTS oracle_evidence (
+    id               UUID           PRIMARY KEY,
+    source           VARCHAR(40)    NOT NULL,
+    coverage_type    TEXT           NOT NULL,
+    normalized_value NUMERIC(20, 6) NOT NULL,
+    raw_payload      TEXT           NOT NULL,
+    observed_at      TIMESTAMPTZ    NOT NULL,
+    ingested_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oracle_decisions (
+    id                 UUID            PRIMARY KEY,
+    reading_ids        UUID[]          NOT NULL,
+    chosen_value       NUMERIC(20, 6)  NOT NULL,
+    rule               TEXT            NOT NULL,
+    policy_id          TEXT            NOT NULL,
+    payout_amount      NUMERIC(38, 18) NOT NULL,
+    decided_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    settlement_status  TEXT            NOT NULL DEFAULT 'pending'
+                         CHECK (settlement_status IN ('pending', 'confirmed', 'unconfirmed')),
+    settlement_tx_hash TEXT,
+    settled_at         TIMESTAMPTZ
+);
