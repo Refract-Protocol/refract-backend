@@ -28,3 +28,23 @@ CREATE INDEX IF NOT EXISTS idx_claims_coverage_settled
 -- Supports loss-ratio aggregation (payouts vs. premiums) per coverage type.
 CREATE INDEX IF NOT EXISTS idx_claims_coverage_status
     ON claims (coverage_type, status);
+
+-- Durable pending-decisions queue for batched oracle publishing
+-- (persist-then-publish). Full definition and indexes:
+-- src/db/migrations/004_oracle_publish_queue.sql
+CREATE TABLE IF NOT EXISTS oracle_publish_queue (
+    id              BIGSERIAL      PRIMARY KEY,
+    decision_key    TEXT           NOT NULL UNIQUE,
+    feed            TEXT           NOT NULL,
+    value_scaled    NUMERIC(40, 0) NOT NULL,
+    priority        SMALLINT       NOT NULL DEFAULT 0,
+    status          TEXT           NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'inflight', 'published', 'failed')),
+    attempts        INTEGER        NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ    NOT NULL DEFAULT now(),
+    last_error      TEXT,
+    tx_hash         TEXT,
+    ledger          BIGINT,
+    created_at      TIMESTAMPTZ    NOT NULL DEFAULT now(),
+    published_at    TIMESTAMPTZ
+);

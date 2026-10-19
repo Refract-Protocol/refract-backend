@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { Counter, Histogram, Registry } from "@prometheus-io/client";
+import { Counter, Gauge, Histogram, Registry } from "@prometheus-io/client";
 import { NextFunction, Request, RequestHandler, Response } from "express";
 
 type Outcome = "success" | "failure";
@@ -55,6 +55,29 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  private readonly oraclePublishQueueDepth = new Gauge<"priority">({
+    name: "refract_oracle_publish_queue_depth",
+    help: "Oracle decisions waiting to be published on-chain, by priority.",
+    labelNames: ["priority"],
+    registers: [this.registry],
+  });
+  private readonly oraclePublishBackpressure = new Gauge({
+    name: "refract_oracle_publish_backpressure",
+    help: "1 when oracle publishing backpressure is active (low-priority polling reduced).",
+    registers: [this.registry],
+  });
+  private readonly oraclePublishRpcLatency = new Gauge({
+    name: "refract_oracle_publish_rpc_latency_seconds",
+    help: "Smoothed Soroban RPC submission latency observed by the oracle publisher.",
+    registers: [this.registry],
+  });
+  private readonly oraclePublishDecisions = new Counter<"outcome">({
+    name: "refract_oracle_publish_decisions_total",
+    help: "Oracle decisions by publish outcome (published, retried, split, failed).",
+    labelNames: ["outcome"],
+    registers: [this.registry],
+  });
+
   readonly httpMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     if (req.path === "/metrics") {
       next();
@@ -84,6 +107,22 @@ export class MetricsService {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  recordOraclePublishState(state: {
+    depthHigh: number;
+    depthLow: number;
+    backpressure: boolean;
+    rpcLatencySeconds: number;
+  }): void {
+    this.oraclePublishQueueDepth.labels({ priority: "high" }).set(state.depthHigh);
+    this.oraclePublishQueueDepth.labels({ priority: "low" }).set(state.depthLow);
+    this.oraclePublishBackpressure.set(state.backpressure ? 1 : 0);
+    this.oraclePublishRpcLatency.set(state.rpcLatencySeconds);
+  }
+
+  recordOraclePublishDecisions(outcome: "published" | "retried" | "split" | "failed", count: number): void {
+    this.oraclePublishDecisions.labels({ outcome }).inc(count);
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {
