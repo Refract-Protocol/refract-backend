@@ -79,6 +79,28 @@ remain in Docker volumes; `docker compose down -v` removes them.
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint over `src/` |
 
+## Operator CLI
+
+`scripts/operator-cli.ts` inspects feeds and applies audited overrides without
+hand-written SQL. It needs only `DATABASE_URL` (apply
+`migrations/002_operator_controls.sql` first). Read-only commands work while the
+service is down.
+
+```bash
+npx ts-node scripts/operator-cli.ts feeds
+npx ts-node scripts/operator-cli.ts readings market_crash --limit 30
+npx ts-node scripts/operator-cli.ts decisions
+npx ts-node scripts/operator-cli.ts pause market_crash --reason "CoinGecko spike" --operator alice --dry-run
+npx ts-node scripts/operator-cli.ts pause market_crash --reason "CoinGecko spike" --operator alice --yes
+npx ts-node scripts/operator-cli.ts quarantine CoinGecko --reason "bad prices" --operator alice --yes
+npx ts-node scripts/operator-cli.ts audit
+```
+
+Mutating commands require `--reason` and an operator identity (`--operator` or
+`OPERATOR_ID`). `pause` and `quarantine` also require `--yes` (or `--dry-run`).
+Each mutation writes its state change and a row in `operator_audit_log` in one
+transaction, then prints the before/after state. Any failure exits non-zero.
+
 ## API surface
 
 Interactive OpenAPI documentation and the generated JSON document are served
