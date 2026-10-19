@@ -50,3 +50,41 @@ export function coverageTypeToU32(coverageType: string): number {
   }
   return id;
 }
+
+/**
+ * Canonical bytes every quorum submitter signs for one oracle decision.
+ * Length-prefixed fields so they cannot bleed into each other:
+ * "refract-oracle-v1" | contractId | coverageType u32 BE | value i128 BE | decisionId.
+ */
+export function buildPublishPayload(
+  oracleContractId: string,
+  coverageType: string,
+  value: number,
+  decisionId: string
+): Buffer {
+  const scaled = scaleOracleValue(coverageType, value);
+  const valueBytes = Buffer.alloc(16);
+  valueBytes.writeBigUInt64BE(BigInt.asUintN(64, scaled >> 64n), 0);
+  valueBytes.writeBigUInt64BE(BigInt.asUintN(64, scaled), 8);
+  const typeBytes = Buffer.alloc(4);
+  typeBytes.writeUInt32BE(coverageTypeToU32(coverageType));
+  const part = (input: Buffer | string): Buffer => {
+    const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf8");
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(bytes.length);
+    return Buffer.concat([len, bytes]);
+  };
+  return Buffer.concat([
+    part("refract-oracle-v1"),
+    part(oracleContractId),
+    part(typeBytes),
+    part(valueBytes),
+    part(decisionId),
+  ]);
+}
+
+/** Deterministic id: same feed + scaled value + observation bucket yields the same id, so retries dedupe. */
+export function oracleDecisionId(coverageType: string, value: number, observedAtMs: number, bucketMs = 60_000): string {
+  const bucket = Math.floor(observedAtMs / bucketMs);
+  return [coverageType, scaleOracleValue(coverageType, value).toString(), bucket].join(":");
+}
