@@ -56,7 +56,8 @@ those feeds settle exactly as before.
 2. Inspect one hold. Check `gaps`, `escalation`, `decisionId` and
    `currentDecisionId`:
    `GET /api/v1/ops/consensus/holds/:holdId`
-3. Check the decision's contributing readings in the evidence ledger.
+3. Reconstruct what the system knew at the decision time. See
+   [Point-in-time reconstruction](#point-in-time-reconstruction-issue-271).
 4. Record a disposition. `actor` and `note` are required and are written to
    the audit log:
 
@@ -73,3 +74,56 @@ those feeds settle exactly as before.
 
 `POST /api/v1/ops/consensus/holds/reevaluate` forces a re-evaluation pass
 without waiting for the scheduler.
+
+## Point-in-time reconstruction (issue #271)
+
+This answers "what did the system know and believe about feed F at moment T",
+built only from the persisted ledger. It never uses live config, caches or
+provider calls.
+
+```http
+GET /api/v1/ops/consensus/feeds/:feedId/state?at=2026-10-21T14:00:03.002Z
+GET /api/v1/ops/consensus/feeds/:feedId/state?ledger=51234501
+```
+
+```sh
+npm run oracle:ops -- reconstruct --feed StablecoinDepeg --at 2026-10-21T14:00:03.002Z \
+  --ledger-file "$EVIDENCE_LEDGER_PATH"
+```
+
+Both `operator` and `auditor` tokens may call it. The API and the CLI run the
+same function and the same canonical serialiser, so their output is
+byte-identical.
+
+How T is resolved:
+
+- `at`: only events recorded at or before T are visible. Config rows apply
+  only once their `effectiveFrom` has passed. Ledger timestamps are strictly
+  increasing, so T is an exact cut through the ledger.
+- `ledger=L`: T is the time the last event stamped with ledger ≤ L was
+  recorded. Events stamped with a later ledger are excluded.
+
+The response contains:
+
+| Field                  | Meaning                                                           |
+|------------------------|-------------------------------------------------------------------|
+| `quorumPolicy`         | The policy version in force at T                                  |
+| `sources`              | Per-source version, status, eligibility and reason at T           |
+| `contributingReadings` | Values, payload hashes and signature status as known at T         |
+| `decision`             | Consensus recomputed from that evidence, or `no_decision` with a reason |
+| `recordedDecision`     | The decision the system had recorded and was acting on at T       |
+| `consistency`          | `matches_recorded` or `differs_from_recorded` when a decision was recorded at exactly T; `no_decision_recorded_at_t` otherwise |
+
+The output does not change as the ledger grows. It also does not change
+after raw payload bodies are purged, because hashes and values live in the
+ledger.
+
+Possible `no_decision` reasons:
+
+- `no_quorum_policy`: T is before the feed existed.
+- `no_sources_registered_at_t`
+- `quorum_not_met: …` and `weight_not_met: …`
+- `no_evidence_at_or_before_ledger_L`
+
+`npm run oracle:ops -- holds --status escalated` prints the hold queue from
+the same ledger file.

@@ -16,7 +16,8 @@
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
     "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
-    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts"
+    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts",
+    "oracle:ops": "ts-node scripts/oracle-ops.ts"
   },
   "jest": {
     "moduleFileExtensions": ["js", "json", "ts"],
