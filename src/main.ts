@@ -13,7 +13,10 @@ const SHUTDOWN_GRACE_PERIOD_MS = Number(
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
-  const app: INestApplication = await NestFactory.create(AppModule);
+  // rawBody keeps the unparsed request bytes on req.rawBody so signed oracle
+  // webhooks (OracleWebhookController) can verify their HMAC over the exact
+  // bytes the provider sent.
+  const app: INestApplication = await NestFactory.create(AppModule, { rawBody: true });
 
   // Let Nest propagate shutdown signals to every provider that implements
   // onApplicationShutdown / beforeApplicationShutdown (schedulers, DB pool,
