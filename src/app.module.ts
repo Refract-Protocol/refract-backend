@@ -27,6 +27,8 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { OracleSandboxModule } from './oracle/sandbox/oracle-sandbox.module';
+import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -116,6 +118,8 @@ export const isSandboxMode = (): boolean =>
     TxModule,
     SecurityReportsModule,
     DigestModule,
+    // Provider sandbox API (signed readings → corroboration, never on-chain).
+    ...(isOracleSandboxEnabled() ? [OracleSandboxModule] : []),
   ],
   controllers: [AppController],
   providers: [
