@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { Counter, Histogram, Registry } from "@prometheus-io/client";
+import { Counter, Gauge, Histogram, Registry } from "@prometheus-io/client";
 import { NextFunction, Request, RequestHandler, Response } from "express";
 
 type Outcome = "success" | "failure";
@@ -68,6 +68,22 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  private readonly oracleEvidencePending = new Gauge({
+    name: "refract_oracle_evidence_pending",
+    help: "Oracle evidence records accepted locally but not yet stored in Postgres.",
+    registers: [this.registry],
+  });
+  private readonly oracleEvidenceLost = new Gauge({
+    name: "refract_oracle_evidence_lost_total",
+    help: "Oracle evidence records that could not be made durable since process start (each is recorded as a gap).",
+    registers: [this.registry],
+  });
+  private readonly oracleEvidenceComplete = new Gauge({
+    name: "refract_oracle_evidence_complete",
+    help: "1 when the oracle evidence trail has no unrecorded gap, 0 otherwise.",
+    registers: [this.registry],
+  });
+
   readonly httpMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     if (req.path === "/metrics") {
       next();
@@ -105,6 +121,12 @@ export class MetricsService {
 
   recordOracleSourceQuarantine(source: string, metric: string): void {
     this.oracleSourceQuarantines.labels({ source, metric }).inc();
+  }
+
+  setOracleEvidenceStatus(pending: number, lostTotal: number, complete: boolean): void {
+    this.oracleEvidencePending.set(pending);
+    this.oracleEvidenceLost.set(lostTotal);
+    this.oracleEvidenceComplete.set(complete ? 1 : 0);
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {

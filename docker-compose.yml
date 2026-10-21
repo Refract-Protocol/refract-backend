@@ -51,6 +51,11 @@ services:
       DEFILLAMA_BASE_URL: ${DEFILLAMA_BASE_URL:-https://api.llama.fi}
       DEFILLAMA_PROTOCOL_SLUG: ${DEFILLAMA_PROTOCOL_SLUG:-aave}
       ORACLE_HTTP_TIMEOUT_MS: ${ORACLE_HTTP_TIMEOUT_MS:-5000}
+      ORACLE_EVIDENCE_SPOOL_DIR: /var/lib/refract/oracle-evidence
+    volumes:
+      # Write-ahead spool for oracle evidence; must survive container restarts
+      # so readings taken during a Postgres outage are replayed, not lost.
+      - oracle-evidence:/var/lib/refract/oracle-evidence
     ports:
       - "4001:4001"
     depends_on:
@@ -68,3 +73,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  oracle-evidence:

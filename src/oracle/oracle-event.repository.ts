@@ -1,103 +1,62 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
-import { Pool } from "pg";
-import { PG_POOL } from "../db/db.module";
-import { OracleReading } from "./oracle-reading";
+import { Injectable } from "@nestjs/common";
+import { DbService } from "../db/db.service";
+import { EVIDENCE_COVERAGE_TYPES, EvidenceRecord, EvidenceStore, isGap } from "./evidence/evidence-record";
 
 /**
- * Persists oracle readings to the `oracle_events` table defined in
- * src/db/schema.sql. Writes are fire-and-forget via a micro-task queue so
- * they never block the caller (OracleScheduler's broadcast loop or
- * ClaimService's evaluation path).
+ * Postgres system of record for the oracle evidence trail (`oracle_events`
+ * plus `oracle_evidence_gaps`, see src/db/migrations/004_oracle_evidence_sequence.sql).
  *
- * The coverage_type column is an enum in Postgres, matching the five
- * values in schema.sql. We map OracleReading.coverageType (PascalCase) to
- * the snake_case enum values the DB expects.
+ * Callers do not write here directly: OracleEvidenceBuffer spools records
+ * locally first and calls `persist` in seq order. `persist` therefore
+ * throws on failure (so the buffer keeps the batch and retries) and is
+ * idempotent per seq (so a replay after a crash is harmless).
  */
 @Injectable()
-export class OracleEventRepository {
-  private readonly logger = new Logger(OracleEventRepository.name);
+export class OracleEventRepository implements EvidenceStore {
+  constructor(private readonly db: DbService) {}
 
-  // Normalise OracleService's PascalCase coverageType names to the
-  // schema's snake_case coverage_type enum values.
-  private static readonly COVERAGE_TYPE_MAP: Record<string, string> = {
-    StablecoinDepeg: "stablecoin_depeg",
-    MarketCrash: "market_crash",
-    LiquidationShield: "liquidation_shield",
-    SmartContractRisk: "smart_contract_risk",
-    FlightDelay: "flight_delay",
-  };
-
-  constructor(@Inject(PG_POOL) private readonly db: Pool) {}
-
-  /**
-   * Persists one oracle reading. The call is fire-and-forget: errors are
-   * logged but never re-thrown so a DB hiccup can never disrupt the
-   * oracle broadcast or claim-evaluation paths that call this.
-   */
-  async record(reading: OracleReading): Promise<void> {
-    const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
-    if (!coverageType) {
-      this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
-      return;
-    }
-
-    try {
-      await this.db.query(
-        `INSERT INTO oracle_events (coverage_type, value, source, severity)
-         VALUES ($1, $2, $3, $4)`,
-        [coverageType, reading.value, this.extractSource(reading.message), reading.severity]
-      );
-    } catch (err) {
-      this.logger.error(
-        `Failed to persist oracle event for ${reading.coverageType}`,
-        err instanceof Error ? err.message : String(err)
-      );
-    }
-  }
-
-  /**
-   * Batch-records multiple readings in a single transaction.
-   * Also fire-and-forget.
-   */
-  async recordBatch(readings: OracleReading[]): Promise<void> {
-    if (readings.length === 0) return;
-    const client = await this.db.connect();
-    try {
+  async persist(records: EvidenceRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    await this.db.withClient(async (client) => {
       await client.query("BEGIN");
-      for (const reading of readings) {
-        const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
-        if (!coverageType) {
-          this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
-          continue;
+      try {
+        for (const record of records) {
+          if (isGap(record)) {
+            await client.query(
+              `INSERT INTO oracle_evidence_gaps (seq, first_seq, last_seq, lost_count, opened_at, closed_at, reason)
+               VALUES ($1, $2, $3, $4, to_timestamp($5 / 1000.0), to_timestamp($6 / 1000.0), $7)
+               ON CONFLICT (seq) DO NOTHING`,
+              [record.seq, record.firstSeq, record.lastSeq, record.lostCount, record.openedAt, record.closedAt, record.reason.slice(0, 500)],
+            );
+            continue;
+          }
+          const coverageType = EVIDENCE_COVERAGE_TYPES[record.coverageType];
+          if (!coverageType) {
+            // Rejected at append time; reaching here means a corrupted spool
+            // entry. Fail loudly instead of silently skipping evidence.
+            throw new Error(`seq ${record.seq}: unknown coverageType "${record.coverageType}"`);
+          }
+          await client.query(
+            `INSERT INTO oracle_events (seq, kind, coverage_type, value, source, severity, payload, recorded_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8 / 1000.0))
+             ON CONFLICT (seq, recorded_at) DO NOTHING`,
+            [
+              record.seq,
+              record.kind,
+              coverageType,
+              record.value,
+              record.source.slice(0, 40),
+              record.severity,
+              JSON.stringify(record.payload),
+              record.recordedAt,
+            ],
+          );
         }
-        await client.query(
-          `INSERT INTO oracle_events (coverage_type, value, source, severity)
-           VALUES ($1, $2, $3, $4)`,
-          [coverageType, reading.value, this.extractSource(reading.message), reading.severity]
-        );
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw err;
       }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
-      this.logger.error(
-        "Failed to persist oracle event batch",
-        err instanceof Error ? err.message : String(err)
-      );
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Extracts a short source tag from the oracle message suffix, e.g.
-   * "[CoinGecko]" → "CoinGecko", "[DeFiLlama]" → "DeFiLlama".
-   * Falls back to "unknown" so the NOT NULL column is always populated.
-   */
-  private extractSource(message: string): string {
-    const match = /\[([^\]]+)\]/.exec(message);
-    if (!match) return "unknown";
-    // Strip extra context from compound tags like
-    // "[CoinGecko; Horizon testnet ledger #123 @ ...]"
-    return match[1].split(";")[0].trim().substring(0, 40);
+    });
   }
 }

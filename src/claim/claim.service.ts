@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { OracleEventRepository } from "../oracle/oracle-event.repository";
+import { OracleEvidenceBuffer } from "../oracle/evidence/oracle-evidence-buffer";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
@@ -36,7 +36,7 @@ export class ClaimService {
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
+    private readonly evidence: OracleEvidenceBuffer
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -92,9 +92,9 @@ export class ClaimService {
         throw new Error(`Unknown coverageType ${policy.coverageType}`);
     }
 
-    // Persist every claim-evaluation reading — fire-and-forget so a DB
-    // hiccup never disrupts the evaluation path.
-    void this.oracleEventRepository.record(reading);
+    // Spool every claim-evaluation reading locally; it reaches Postgres in
+    // order once the database is reachable.
+    await this.evidence.recordReadings([reading]);
 
     return reading;
   }

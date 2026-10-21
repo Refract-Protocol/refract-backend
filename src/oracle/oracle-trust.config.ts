@@ -13,6 +13,10 @@ export interface OracleTrustConfig {
   quarantineAfterFailures: number;
   /** How long a quarantined source is skipped before it is probed again. */
   quarantineMs: number;
+  /** Directory for the local write-ahead evidence spool. Mount a persistent volume here in production. */
+  evidenceSpoolDir: string;
+  /** Hard cap on spool size; beyond it evidence is recorded as a gap and settlement fails closed. */
+  evidenceSpoolMaxBytes: number;
 }
 
 function intEnv(env: NodeJS.ProcessEnv, key: string, fallback: number, min = 0): number {
@@ -39,6 +43,8 @@ export function loadOracleTrustConfig(env: NodeJS.ProcessEnv = process.env): Ora
     defiLlamaProtocolSlug: strEnv(env, "DEFILLAMA_PROTOCOL_SLUG", "aave"),
     quarantineAfterFailures: intEnv(env, "ORACLE_QUARANTINE_AFTER_FAILURES", 3, 1),
     quarantineMs: intEnv(env, "ORACLE_QUARANTINE_MS", 5 * 60_000, 0),
+    evidenceSpoolDir: strEnv(env, "ORACLE_EVIDENCE_SPOOL_DIR", ".data/oracle-evidence"),
+    evidenceSpoolMaxBytes: intEnv(env, "ORACLE_EVIDENCE_SPOOL_MAX_BYTES", 256 * 1024 * 1024, 1024),
   };
 }
 

@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { OracleService } from './oracle.service';
+import { OracleEvidenceBuffer } from './evidence/oracle-evidence-buffer';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
 import { ProtocolParameterKey } from '../parameters/protocol-parameter-key.enum';
 
@@ -15,6 +16,7 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly oracleService: OracleService,
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly protocolParameters: ProtocolParametersService,
+    private readonly evidence: OracleEvidenceBuffer,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -42,7 +44,10 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
 
   private async refresh(): Promise<void> {
     try {
-      await this.oracleService.refreshPrices();
+      const readings = await this.oracleService.refreshPrices();
+      // Local, fsync'd append only — never waits on Postgres, so a DB
+      // outage cannot stall polling or drop readings.
+      await this.evidence.recordReadings(readings);
     } catch (error) {
       this.logger.error('Oracle refresh failed', error as Error);
     }

@@ -25,6 +25,10 @@ COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_m
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json ./
 
+# Oracle evidence spool. Created here so a named volume mounted on it
+# inherits node ownership.
+RUN mkdir -p /var/lib/refract/oracle-evidence && chown node:node /var/lib/refract/oracle-evidence
+
 USER node
 EXPOSE 4001
 

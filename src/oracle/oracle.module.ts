@@ -8,6 +8,9 @@ import {
   OracleObservabilitySink,
   OracleSourceRegistry,
 } from "./adapters/source-registry";
+import { EVIDENCE_STORE, EvidenceStore } from "./evidence/evidence-record";
+import { EvidenceSpool } from "./evidence/evidence-spool";
+import { OracleEvidenceBuffer } from "./evidence/oracle-evidence-buffer";
 import { OracleEventRepository } from "./oracle-event.repository";
 import { OracleGateway } from "./oracle.gateway";
 import { OracleScheduler } from "./oracle.scheduler";
@@ -42,9 +45,22 @@ import { loadOracleTrustConfig, ORACLE_TRUST_CONFIG, OracleTrustConfig } from ".
     },
     OracleService,
     OracleEventRepository,
+    { provide: EVIDENCE_STORE, useExisting: OracleEventRepository },
+    {
+      provide: OracleEvidenceBuffer,
+      inject: [ORACLE_TRUST_CONFIG, EVIDENCE_STORE, { token: MetricsService, optional: true }],
+      useFactory: (config: OracleTrustConfig, store: EvidenceStore, metrics?: MetricsService) =>
+        new OracleEvidenceBuffer(new EvidenceSpool(config.evidenceSpoolDir, config.evidenceSpoolMaxBytes), store, {
+          batchSize: 500,
+          baseBackoffMs: 1_000,
+          maxBackoffMs: 60_000,
+          compactEveryBatches: 20,
+          onStatus: (s) => metrics?.setOracleEvidenceStatus(s.pending, s.lostTotal, s.complete),
+        }),
+    },
     OracleGateway,
     OracleScheduler,
   ],
-  exports: [ORACLE_TRUST_CONFIG, OracleSourceRegistry, OracleService, OracleEventRepository, OracleGateway],
+  exports: [ORACLE_TRUST_CONFIG, OracleSourceRegistry, OracleService, OracleEvidenceBuffer, OracleGateway],
 })
 export class OracleModule {}
