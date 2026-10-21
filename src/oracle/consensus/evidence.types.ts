@@ -226,6 +226,40 @@ export interface IndependencePenaltyClearedEvent extends BaseEvent {
   informativeSamples: number;
 }
 
+/** Raw payload body deleted (license purge). The hash and every reference stay. */
+export interface PayloadPurgedEvent extends BaseEvent {
+  kind: "payload_purged";
+  hash: string;
+  sourceId: string;
+  offboardingId: string;
+  reason: string;
+}
+
+export interface OffboardingStartedEvent extends BaseEvent {
+  kind: "offboarding_started";
+  offboardingId: string;
+  sourceId: string;
+  actor: string;
+  reason: string;
+  purgeScope: string[];
+  retained: { hash: string; reason: string }[];
+}
+
+export interface CredentialRevokedEvent extends BaseEvent {
+  kind: "credential_revoked";
+  offboardingId: string;
+  sourceId: string;
+  credentialRef: string;
+}
+
+export interface OffboardingCompletedEvent extends BaseEvent {
+  kind: "offboarding_completed";
+  offboardingId: string;
+  sourceId: string;
+  purged: number;
+  retained: number;
+}
+
 /** Operator-facing audit trail entry. */
 export interface AuditEvent extends BaseEvent {
   kind: "audit";
@@ -250,6 +284,10 @@ export type EvidenceEvent =
   | HoldSettledEvent
   | IndependencePenaltyEvent
   | IndependencePenaltyClearedEvent
+  | PayloadPurgedEvent
+  | OffboardingStartedEvent
+  | CredentialRevokedEvent
+  | OffboardingCompletedEvent
   | AuditEvent;
 
 /** An event before the ledger assigns `seq` / `recordedAt`. */

@@ -20,6 +20,7 @@ import { ConsensusRoleGuard, ConsensusRoles } from "./consensus-role.guard";
 import { ConsensusService } from "./consensus.service";
 import {
   HoldDispositionDto,
+  OffboardSourceDto,
   RecordReadingDto,
   RegisterSourceDto,
   SetQuorumPolicyDto,
@@ -27,6 +28,7 @@ import {
 } from "./dto/consensus.dto";
 import { EvidenceLedger } from "./evidence-ledger";
 import { MirrorDetectionService } from "./mirror-detection";
+import { OffboardingService } from "./offboarding";
 import { parseReconstructionQuery, reconstructConsensusState, serializeReconstruction } from "./reconstruction";
 
 const HOLD_STATUSES: HoldStatus[] = ["payout_held", "released", "escalated", "approved", "denied", "settled"];
@@ -45,7 +47,27 @@ export class ConsensusController {
     private readonly holds: ClaimHoldService,
     @Inject(EVIDENCE_LEDGER) private readonly ledger: EvidenceLedger,
     private readonly mirrors: MirrorDetectionService,
+    private readonly offboarding: OffboardingService,
   ) {}
+
+  /**
+   * Offboards a source (issue #274): retire, revoke credentials, purge
+   * licence-restricted payload bodies, and keep the evidence. Pass
+   * `dryRun: true` to get the exact plan without changing anything.
+   */
+  @Post("sources/:sourceId/offboard")
+  @HttpCode(200)
+  offboard(@Param("sourceId") sourceId: string, @Body() dto: OffboardSourceDto) {
+    return this.offboarding.offboard(sourceId, dto);
+  }
+
+  /** Verifies a stored payload by hash: still held, matches its hash, or purged (when and why). */
+  @Get("payloads/:hash")
+  @ConsensusRoles("operator", "auditor")
+  payloadStatus(@Param("hash") hash: string) {
+    if (!/^[0-9a-f]{64}$/.test(hash)) throw new BadRequestException("hash must be sha256 hex");
+    return this.offboarding.payloadStatus(hash);
+  }
 
   /** Sources, declared provenance, and suspected mirror pairs with evidence (issue #273). */
   @Get("trust-status")

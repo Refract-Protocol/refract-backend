@@ -5,15 +5,18 @@ import { CONSENSUS_CONFIG, ConsensusConfig, EVIDENCE_LEDGER, loadConsensusConfig
 import { ConsensusController } from "./consensus.controller";
 import { ConsensusRoleGuard } from "./consensus-role.guard";
 import { ConsensusService } from "./consensus.service";
+import { createCredentialStore, SOURCE_CREDENTIAL_STORE } from "./credential-store";
 import { EvidenceLedger, PayloadStore } from "./evidence-ledger";
 import { loadMirrorDetectionConfig } from "./fingerprint";
 import { MIRROR_CONFIG, MirrorDetectionService } from "./mirror-detection";
+import { OffboardingService } from "./offboarding";
 
 @Module({
   controllers: [ConsensusController],
   providers: [
     { provide: CONSENSUS_CONFIG, useFactory: () => loadConsensusConfig() },
     { provide: MIRROR_CONFIG, useFactory: () => loadMirrorDetectionConfig() },
+    { provide: SOURCE_CREDENTIAL_STORE, useFactory: () => createCredentialStore() },
     {
       provide: EVIDENCE_LEDGER,
       inject: [CONSENSUS_CONFIG],
@@ -29,7 +32,8 @@ import { MIRROR_CONFIG, MirrorDetectionService } from "./mirror-detection";
     ClaimHoldService,
     ClaimHoldScheduler,
     MirrorDetectionService,
+    OffboardingService,
   ],
-  exports: [ConsensusService, ClaimHoldService, MirrorDetectionService, EVIDENCE_LEDGER, PAYLOAD_STORE, CONSENSUS_CONFIG],
+  exports: [ConsensusService, ClaimHoldService, MirrorDetectionService, OffboardingService, EVIDENCE_LEDGER, PAYLOAD_STORE, CONSENSUS_CONFIG],
 })
 export class ConsensusModule {}

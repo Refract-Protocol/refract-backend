@@ -1,5 +1,6 @@
 import { Type } from "class-transformer";
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -57,4 +58,11 @@ export class HoldDispositionDto {
   @IsString() @IsNotEmpty() @MaxLength(120) actor!: string;
   @IsString() @IsNotEmpty() @MaxLength(2000) note!: string;
   @IsOptional() @IsInt() @Min(1) extendMs?: number;
+}
+
+export class OffboardSourceDto {
+  @IsString() @IsNotEmpty() @MaxLength(120) actor!: string;
+  @IsString() @IsNotEmpty() @MaxLength(2000) reason!: string;
+  @IsOptional() @IsBoolean() dryRun?: boolean;
+  @IsOptional() @IsBoolean() acknowledgeQuorumLoss?: boolean;
 }

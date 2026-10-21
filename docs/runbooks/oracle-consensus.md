@@ -198,3 +198,81 @@ replays detection over the whole ledger and writes nothing:
 ```sh
 npm run oracle:ops -- mirror-backtest --ledger-file "$EVIDENCE_LEDGER_PATH"
 ```
+
+## Provider offboarding (issue #274)
+
+Removing a source is a state transition, never a delete. It has four stages:
+
+1. **Retire.** Append a new source version with status `retired`. From then
+   on the source is ineligible for consensus, and new readings from it are
+   rejected with `409`.
+2. **Revoke credentials.** Delete the stored secret behind `credentialRef`.
+   Settings:
+   - `SOURCE_CREDENTIALS_BACKEND=aws-secrets-manager` uses AWS Secrets
+     Manager. The recovery window comes from
+     `SOURCE_CREDENTIALS_RECOVERY_WINDOW_DAYS` (default 7).
+   - Otherwise an in-memory store is used.
+   - Secrets never enter the ledger. Only the reference does.
+3. **Purge.** Delete raw payload bodies older than the licence's
+   `retentionDays`. Every hash, normalised value, reading and decision
+   reference stays in the ledger.
+4. **Record.** `offboarding_started`, `credential_revoked`, `payload_purged`
+   and `offboarding_completed` events are written, plus audit entries with
+   the actor, the reason and the purge scope.
+
+Retention rules, in priority order:
+
+| Retained because            | Meaning                                                               |
+|-----------------------------|-----------------------------------------------------------------------|
+| `open_dispute`              | The body backs a decision behind an open payout hold                  |
+| `shared_with_active_source` | A non-retired source references the same body                        |
+| `within_license_retention`  | Still inside the licence window. Purged automatically after `purgeAfter` by the retention sweep (`OFFBOARDING_RETENTION_SWEEP_INTERVAL_MS`, default 1 h) |
+
+### Procedure
+
+1. **Dry run.** Attach the output to the change ticket.
+
+   ```sh
+   npm run oracle:ops -- offboard-plan --source acme --ledger-file "$EVIDENCE_LEDGER_PATH"
+   # or: POST /api/v1/ops/consensus/sources/acme/offboard {"actor":"…","reason":"…","dryRun":true}
+   ```
+
+2. **Legal checkpoint: retention.** Confirm the licence's `retentionDays`
+   matches the signed contract. Confirm that nothing in `payloads.purge` is
+   needed for litigation or a regulator request. If something is, stop. Do
+   not purge until legal has cleared it.
+3. **Legal checkpoint: disputes.** Review `openDisputes`. Their payloads are
+   retained automatically, but legal should know that the provider's data is
+   still held, and why.
+4. **Quorum.** If `quorum.dropsBelowQuorum` is true, the call is refused with
+   `409`. Onboard a replacement first, or re-run with
+   `"acknowledgeQuorumLoss": true`. The feed will then return `no_decision`
+   until quorum is restored, and any triggered claims will hold.
+5. **Execute.**
+
+   ```http
+   POST /api/v1/ops/consensus/sources/acme/offboard
+   { "actor": "jane@ops", "reason": "contract ended 2026-10-31; ticket OPS-123" }
+   ```
+
+   If a step fails, for example a secrets backend outage or a disk error, the
+   call returns `409` with "Re-run to resume". Re-running is safe. Finished
+   steps are skipped, and the run resumes under the same `offboardingId`.
+6. **Manual step.** Revoke the API key in the provider's own portal. This
+   cannot be automated. Record that you did it in the ticket.
+7. **Verify.**
+   - Reconstruct a past decision the source contributed to (see
+     [Point-in-time reconstruction](#point-in-time-reconstruction-issue-271)).
+     The output must be unchanged.
+   - `GET /api/v1/ops/consensus/payloads/:hash` shows each purged hash with
+     its purge time and reason, and the readings that still reference it.
+
+### Re-onboarding
+
+Register the same `sourceId` again with `POST /sources`. This appends a new
+version with a later `effectiveFrom` and a new `credentialRef`. Use
+`warmupMs` so the source's first readings are treated as immature evidence.
+
+Each historical instant resolves to exactly one version: before retirement,
+during retirement, or after re-onboarding. Reconstruction always shows which
+configuration applied.

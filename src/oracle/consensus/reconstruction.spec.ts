@@ -251,6 +251,31 @@ describe("reconstruction API and CLI", () => {
       .expect(403);
   });
 
+  it("exposes trust-status, payload verification and offboarding dry runs with RBAC", async () => {
+    const server = app.getHttpServer();
+    const status = await request(server).get("/api/v1/ops/consensus/trust-status").set("Authorization", "Bearer audit-1").expect(200);
+    expect(status.body.feeds[0].feedId).toBe(FEED);
+
+    const hash = h.ledger.events().find((e) => e.kind === "payload_stored")!;
+    await request(server)
+      .get(`/api/v1/ops/consensus/payloads/${(hash as { hash: string }).hash}`)
+      .set("Authorization", "Bearer audit-1")
+      .expect(200)
+      .expect((res) => expect(res.body.available).toBe(true));
+
+    const body = { actor: "ops", reason: "contract ended", dryRun: true };
+    await request(server).post("/api/v1/ops/consensus/sources/kraken/offboard").set("Authorization", "Bearer audit-1").send(body).expect(403);
+    const before = h.ledger.events().length;
+    const dry = await request(server).post("/api/v1/ops/consensus/sources/kraken/offboard").set("Authorization", "Bearer ops-token").send(body).expect(200);
+    expect(dry.body).toMatchObject({ dryRun: true, plan: { sourceId: "kraken", quorum: { dropsBelowQuorum: true, minSources: 2 } } });
+    expect(h.ledger.events()).toHaveLength(before);
+    await request(server)
+      .post("/api/v1/ops/consensus/sources/kraken/offboard")
+      .set("Authorization", "Bearer ops-token")
+      .send({ reason: "missing actor" })
+      .expect(400);
+  });
+
   it("rejects malformed queries with 400", async () => {
     await request(app.getHttpServer())
       .get(`/api/v1/ops/consensus/feeds/${FEED}/state?at=tomorrow`)

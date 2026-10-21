@@ -5,6 +5,7 @@ import { EvidenceLedger } from "./evidence-ledger";
 import { EvidenceEvent } from "./evidence.types";
 import { loadMirrorDetectionConfig } from "./fingerprint";
 import { governedFeeds, planMirrorActions } from "./mirror-detection";
+import { planOffboarding } from "./offboarding";
 import { parseReconstructionQuery, reconstructConsensusState, serializeReconstruction } from "./reconstruction";
 
 export interface CliResult {
@@ -32,6 +33,10 @@ Commands (all read-only; they read the persisted evidence ledger):
       Replays mirror detection across the whole history with the current
       MIRROR_* thresholds and reports every pair that would be penalised.
       Writes nothing.
+  offboard-plan --source <id> [--at <ISO-8601>]
+      Dry run of offboarding a source: what would be retired, revoked,
+      purged and retained, as of now (or --at). Same plan as
+      POST /api/v1/ops/consensus/sources/:id/offboard with dryRun.
 
 Common options:
   --ledger-file <path>   Evidence ledger JSONL (default: $EVIDENCE_LEDGER_PATH)
@@ -83,6 +88,14 @@ export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): Cl
     if (command === "mirror-backtest") {
       const events = loadLedgerEvents(flags, deps);
       return { exitCode: 0, stdout: `${canonicalJson(mirrorBacktest(events, flags, deps.env))}\n`, stderr: "" };
+    }
+
+    if (command === "offboard-plan") {
+      if (!flags.source) throw new Error("--source is required");
+      const events = loadLedgerEvents(flags, deps);
+      const at = flags.at ? Date.parse(flags.at) : Date.now();
+      if (Number.isNaN(at)) throw new Error(`--at is not an ISO-8601 timestamp: ${flags.at}`);
+      return { exitCode: 0, stdout: `${canonicalJson(planOffboarding(events, flags.source, at))}\n`, stderr: "" };
     }
 
     return { exitCode: 1, stdout: "", stderr: `unknown command: ${command}\n\n${USAGE}` };

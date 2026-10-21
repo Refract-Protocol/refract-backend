@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { canonicalJson, sha256Hex } from "./canonical";
 import { computeConsensus, ConsensusResult } from "./consensus.engine";
 import { EVIDENCE_LEDGER, PAYLOAD_STORE } from "./consensus.config";
@@ -70,6 +70,11 @@ export class ConsensusService {
     @Inject(PAYLOAD_STORE) private readonly payloads: PayloadStore,
   ) {}
 
+  /**
+   * Registers a source or records a new version of it. Re-onboarding a
+   * retired source is just a new version with a later `effectiveFrom`, so
+   * every historical instant still maps to exactly one configuration.
+   */
   registerSource(input: RegisterSourceInput): SourceVersionEvent {
     if (!input.sourceId || !input.providerId || !input.feedId) {
       throw new BadRequestException("sourceId, providerId and feedId are required");
@@ -132,6 +137,9 @@ export class ConsensusService {
     const source = sourceVersionAt(this.ledger.events(), input.sourceId, Number.POSITIVE_INFINITY);
     if (!source || source.feedId !== input.feedId) {
       throw new BadRequestException(`unknown source ${input.sourceId} for feed ${input.feedId}`);
+    }
+    if (source.status === "retired") {
+      throw new ConflictException(`source ${input.sourceId} is retired; readings are no longer ingested`);
     }
 
     let hash: string | null = null;
