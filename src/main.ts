@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { assertOracleConfigAtStartup } from './oracle/config/oracle-config.startup';
 
 /**
  * Hard upper bound on how long we wait for in-flight work (HTTP requests,
@@ -13,6 +14,14 @@ const SHUTDOWN_GRACE_PERIOD_MS = Number(
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
+
+  // Reject impossible or unsafe oracle feed/quorum configs before any module
+  // starts polling, publishing, or settling claims.
+  assertOracleConfigAtStartup(process.env, {
+    log: (message) => logger.log(message),
+    warn: (message) => logger.warn(message),
+  });
+
   const app: INestApplication = await NestFactory.create(AppModule);
 
   // Let Nest propagate shutdown signals to every provider that implements

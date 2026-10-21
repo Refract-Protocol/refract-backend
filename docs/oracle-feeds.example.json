@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "defaults": {
+    "trustMode": "median_quorum",
+    "pollIntervalMs": 60000,
+    "freshnessWindowMs": 300000,
+    "maxDeviationBps": 100,
+    "publish": { "mode": "on_change", "minIntervalMs": 300000 }
+  },
+  "feeds": [
+    {
+      "id": "stablecoin-depeg",
+      "coverageType": "StablecoinDepeg",
+      "quorum": { "minSources": 2, "maxDeviationBps": 50 },
+      "sources": [
+        { "id": "coingecko-usdc", "adapter": "coingecko", "operator": "coingecko", "params": { "coinId": "usd-coin" } },
+        { "id": "horizon-usdc-xlm", "adapter": "horizon", "operator": "stellar-dex", "params": { "pair": "USDC/XLM" } },
+        { "id": "defillama-usdc", "adapter": "defillama", "operator": "defillama", "params": { "coinId": "usd-coin" } }
+      ]
+    },
+    {
+      "id": "market-crash",
+      "coverageType": "MarketCrash",
+      "quorum": { "minSources": 2 },
+      "sources": [
+        { "id": "coingecko-xlm", "adapter": "coingecko", "operator": "coingecko", "params": { "coinId": "stellar" } },
+        { "id": "horizon-xlm-usdc", "adapter": "horizon", "operator": "stellar-dex", "params": { "pair": "XLM/USDC" } },
+        { "id": "defillama-xlm", "adapter": "defillama", "operator": "defillama", "params": { "coinId": "stellar" } }
+      ]
+    },
+    {
+      "id": "smart-contract-risk",
+      "coverageType": "SmartContractRisk",
+      "trustMode": "single_source",
+      "pollIntervalMs": 300000,
+      "freshnessWindowMs": 900000,
+      "sources": [
+        { "id": "defillama-tvl", "adapter": "defillama", "params": { "protocolSlug": "aave" } }
+      ]
+    },
+    {
+      "id": "liquidation-shield",
+      "coverageType": "LiquidationShield",
+      "trustMode": "single_source",
+      "settlesClaims": false,
+      "sources": [{ "id": "mock-liquidations", "adapter": "mock" }]
+    },
+    {
+      "id": "flight-delay",
+      "coverageType": "FlightDelay",
+      "trustMode": "single_source",
+      "settlesClaims": false,
+      "sources": [{ "id": "mock-flights", "adapter": "mock" }]
+    }
+  ]
+}

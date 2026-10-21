@@ -194,6 +194,40 @@ reads, and 60/minute for coverage catalogs.
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+### Oracle feed config validation
+
+Oracle feeds, their sources, and their quorum policy are defined in JSON
+(`ORACLE_FEEDS_FILE` or `ORACLE_FEEDS_JSON`; see
+[`docs/oracle-feeds.example.json`](./docs/oracle-feeds.example.json)). The
+config is validated in `main.ts` before the Nest app is created, so a bad
+config stops the process before anything polls, publishes, or settles. The
+same rules run as a standalone lint for CI:
+
+```bash
+npx ts-node scripts/oracle-config-lint.ts --file oracle-feeds.json --network mainnet [--strict] [--json]
+# compiled image: node dist/oracle/config/oracle-config-lint.cli.js --help
+# exit codes: 0 valid, 1 invalid, 2 usage error or malformed file
+```
+
+Errors (startup refuses to continue):
+
+| Code | Meaning |
+|---|---|
+| `QUORUM_EXCEEDS_INDEPENDENT_SOURCES` | `quorum.minSources` is greater than the number of enabled sources with distinct `operator`s, so quorum can never be reached |
+| `FRESHNESS_SHORTER_THAN_POLL` | `freshnessWindowMs` < `pollIntervalMs`, so every reading is stale before the next poll |
+| `MISSING_TRUST_MODE` / `UNKNOWN_TRUST_MODE` | No valid `trustMode` on the feed or in `defaults` |
+| `QUORUM_MODE_WITHOUT_QUORUM` | `median_quorum` / `weighted_quorum` with `minSources` < 2 |
+| `TRUST_MODE_QUORUM_CONFLICT` | `single_source` with `minSources` > 1 |
+| `SINGLE_SOURCE_ON_MAINNET` / `MOCK_SOURCE_ON_MAINNET` | A claim-settling feed on mainnet that trusts one source or uses synthetic data |
+| `MISSING_SOURCE_WEIGHT` / `OPERATOR_CONTROLS_QUORUM` | `weighted_quorum` without positive weights, or one operator holding more than half the weight |
+| `NO_FEEDS`, `NO_ENABLED_SOURCES`, `DUPLICATE_FEED_ID`, `DUPLICATE_SOURCE_ID`, `UNKNOWN_ADAPTER`, `UNKNOWN_COVERAGE_TYPE`, `POLL_INTERVAL_TOO_SHORT`, `DEVIATION_OUT_OF_RANGE` | Structural mistakes |
+
+Warnings (logged, or fatal with `ORACLE_CONFIG_STRICT=true` / `--strict`):
+`SINGLE_SOURCE`, `SHARED_OPERATOR`, `NO_QUORUM_HEADROOM`, `MINORITY_QUORUM`,
+`FRESHNESS_WINDOW_TIGHT`, `PUBLISH_INTERVAL_EXCEEDS_FRESHNESS`,
+`UNUSED_SOURCES`. Unknown keys in the file are rejected, so a typo such as
+`freshnesWindowMs` fails instead of silently falling back to a default.
+
 ### Bootstrapping new oracle sources
 
 A newly onboarded feed or source adapter has no history, so deviation checks
