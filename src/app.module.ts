@@ -27,6 +27,7 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { OraclePipelineModule } from './oracle/shutdown/oracle-pipeline.module';
 import { OracleSandboxModule } from './oracle/sandbox/oracle-sandbox.module';
 import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
 
@@ -113,6 +114,8 @@ export const isSandboxMode = (): boolean =>
     PoolModule,
     RedisModule,
     ClaimsModule,
+    // Global: in-flight tracking, leader lock, and bounded shutdown drain.
+    OraclePipelineModule,
     OracleModule,
     ClaimModule,
     TxModule,

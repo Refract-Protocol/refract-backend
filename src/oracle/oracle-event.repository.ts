@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { Pool } from "pg";
 import { PG_POOL } from "../db/db.module";
 import { OracleReading } from "./oracle-reading";
+import { OraclePipelineLifecycle } from "./shutdown/oracle-pipeline-lifecycle.service";
 
 /**
  * Persists oracle readings to the `oracle_events` table defined in
@@ -27,7 +28,19 @@ export class OracleEventRepository {
     FlightDelay: "flight_delay",
   };
 
-  constructor(@Inject(PG_POOL) private readonly db: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly db: Pool,
+    @Optional() private readonly lifecycle?: OraclePipelineLifecycle,
+  ) {}
+
+  /**
+   * Evidence writes are tracked so a graceful shutdown waits for them
+   * before the Postgres pool closes. Callers that don't await still get a
+   * complete row instead of a half-written one.
+   */
+  private tracked(work: () => Promise<void>, id: string): Promise<void> {
+    return this.lifecycle ? this.lifecycle.track("evidence", work, id) : work();
+  }
 
   /**
    * Persists one oracle reading. The call is fire-and-forget: errors are
@@ -35,6 +48,10 @@ export class OracleEventRepository {
    * oracle broadcast or claim-evaluation paths that call this.
    */
   async record(reading: OracleReading): Promise<void> {
+    return this.tracked(() => this.recordNow(reading), `oracle_event:${reading.coverageType}`);
+  }
+
+  private async recordNow(reading: OracleReading): Promise<void> {
     const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
     if (!coverageType) {
       this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
@@ -60,6 +77,10 @@ export class OracleEventRepository {
    * Also fire-and-forget.
    */
   async recordBatch(readings: OracleReading[]): Promise<void> {
+    return this.tracked(() => this.recordBatchNow(readings), `oracle_event_batch:${readings.length}`);
+  }
+
+  private async recordBatchNow(readings: OracleReading[]): Promise<void> {
     if (readings.length === 0) return;
     const client = await this.db.connect();
     try {
