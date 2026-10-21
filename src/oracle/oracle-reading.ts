@@ -1,3 +1,5 @@
+import { SourceObservation } from "./adapters/source-adapter";
+
 export type Severity = "low" | "medium" | "high" | "triggered";
 
 export interface OracleReading {
@@ -12,4 +14,8 @@ export interface OracleReading {
    * OraclePublisherService must never publish degraded readings on-chain.
    */
   degraded?: boolean;
+  /** Source IDs that contributed to `value`, e.g. ["coingecko"]. */
+  sources?: string[];
+  /** Canonicalized observations (with HTTP evidence) behind this reading. */
+  observations?: SourceObservation[];
 }

@@ -55,6 +55,19 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  private readonly oracleSourceObservations = new Counter<"source" | "metric" | "outcome">({
+    name: "refract_oracle_source_observations_total",
+    help: "Per-source oracle observations, labeled by source, metric and outcome (ok, fetch_error, invalid, stale, quarantined).",
+    labelNames: ["source", "metric", "outcome"],
+    registers: [this.registry],
+  });
+  private readonly oracleSourceQuarantines = new Counter<"source" | "metric">({
+    name: "refract_oracle_source_quarantines_total",
+    help: "Times an oracle source was quarantined for a metric.",
+    labelNames: ["source", "metric"],
+    registers: [this.registry],
+  });
+
   readonly httpMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     if (req.path === "/metrics") {
       next();
@@ -84,6 +97,14 @@ export class MetricsService {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  recordOracleSourceObservation(source: string, metric: string, outcome: string): void {
+    this.oracleSourceObservations.labels({ source, metric, outcome }).inc();
+  }
+
+  recordOracleSourceQuarantine(source: string, metric: string): void {
+    this.oracleSourceQuarantines.labels({ source, metric }).inc();
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {
