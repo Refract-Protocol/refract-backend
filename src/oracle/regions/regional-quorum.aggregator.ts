@@ -26,6 +26,7 @@ export interface TrustTransition {
 }
 
 export type TrustListener = (t: TrustTransition) => void | Promise<void>;
+export type VerdictListener = (v: QuorumVerdict) => void | Promise<void>;
 
 const ERROR_KINDS: ReadonlySet<string> = new Set<FetchErrorKind>(["timeout", "dns", "tls", "connection", "http_4xx", "http_5xx", "invalid_response"]);
 const MAX_REPORT_BYTES = 64 * 1024;
@@ -50,6 +51,7 @@ export class RegionalQuorumAggregator {
   private readonly observations = new Map<string, Map<string, RegionalObservation>>();
   private readonly lastTrust = new Map<string, FeedTrustState>();
   private readonly listeners: TrustListener[] = [];
+  private readonly verdictListeners: VerdictListener[] = [];
 
   constructor(
     private readonly config: QuorumConfig = DEFAULT_QUORUM_CONFIG,
@@ -69,6 +71,11 @@ export class RegionalQuorumAggregator {
 
   onTrustTransition(listener: TrustListener): void {
     this.listeners.push(listener);
+  }
+
+  /** Called with every verdict evaluate() computes, e.g. to keep a history of trusted values. */
+  onVerdict(listener: VerdictListener): void {
+    this.verdictListeners.push(listener);
   }
 
   /** Records an observation that has already been authenticated. Older-than-latest reports are dropped. */
@@ -131,6 +138,7 @@ export class RegionalQuorumAggregator {
   /** Current verdict for a feed. Notifies listeners when the trust state changes. */
   async evaluate(feedId: string, now: number): Promise<QuorumVerdict> {
     const verdict = this.peek(feedId, now);
+    for (const l of this.verdictListeners) await l(verdict);
     const from = this.lastTrust.get(feedId) ?? null;
     if (from !== verdict.trust) {
       this.lastTrust.set(feedId, verdict.trust);

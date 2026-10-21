@@ -29,6 +29,7 @@ import { SecurityReportsModule } from './security-reports/security-reports.modul
 import { DigestModule } from './digest/digest.module';
 import { OracleIngestionModule } from './oracle/sources/oracle-ingestion.module';
 import { OracleRegionsModule } from './oracle/regions/oracle-regions.module';
+import { ReevaluationModule } from './claim/reevaluation/reevaluation.module';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -120,6 +121,7 @@ export const isSandboxMode = (): boolean =>
     DigestModule,
     OracleIngestionModule,
     OracleRegionsModule,
+    ReevaluationModule,
   ],
   controllers: [AppController],
   providers: [
