@@ -28,6 +28,7 @@ import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
 import { OraclePipelineModule } from './oracle/shutdown/oracle-pipeline.module';
+import { ProviderEndpointsModule } from './oracle/endpoints/provider-endpoints.module';
 import { OracleSandboxModule } from './oracle/sandbox/oracle-sandbox.module';
 import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
 
@@ -116,6 +117,8 @@ export const isSandboxMode = (): boolean =>
     ClaimsModule,
     // Global: in-flight tracking, leader lock, and bounded shutdown drain.
     OraclePipelineModule,
+    // Global: per-adapter endpoint lists with health-based failover.
+    ProviderEndpointsModule,
     OracleModule,
     ClaimModule,
     TxModule,
