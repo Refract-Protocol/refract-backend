@@ -1,12 +1,12 @@
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
-  OnModuleDestroy,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { Server, WebSocket } from 'ws';
+import { OracleReading } from './oracle-reading';
 
 @WebSocketGateway({ path: '/oracle' })
 export class OracleGateway
@@ -15,7 +15,7 @@ export class OracleGateway
   private readonly logger = new Logger(OracleGateway.name);
 
   @WebSocketServer()
-  server: Server;
+  server!: Server;
 
   handleConnection(client: WebSocket): void {
     this.logger.log('Oracle WebSocket client connected');
@@ -24,8 +24,20 @@ export class OracleGateway
     });
   }
 
-  handleDisconnect(client: WebSocket): void {
+  handleDisconnect(_client: WebSocket): void {
     this.logger.log('Oracle WebSocket client disconnected');
+  }
+
+  broadcastAlert(reading: OracleReading): void {
+    if (!this.server) {
+      return;
+    }
+    const message = JSON.stringify({ event: 'oracle_alert', data: reading });
+    for (const client of this.server.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    }
   }
 
   /**

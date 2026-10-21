@@ -1,67 +1,84 @@
+import { OracleGateway } from "./oracle.gateway";
+import { OraclePublisherService } from "./oracle-publisher.service";
+import { OracleReading } from "./oracle-reading";
 import { OracleScheduler } from "./oracle.scheduler";
 import { OracleService } from "./oracle.service";
-import { OracleGateway } from "./oracle.gateway";
-import { OracleReading } from "./oracle-reading";
 
-function buildReading(overrides: Partial<OracleReading> = {}): OracleReading {
+function reading(
+  coverageType: string,
+  value: number,
+  threshold: number,
+  severity: OracleReading["severity"] = "low",
+): OracleReading {
   return {
-    coverageType: "StablecoinDepeg",
+    coverageType,
     type: "oracle_update",
-    value: 1.0,
-    threshold: 0.95,
-    severity: "low",
-    message: "USDC price: $1.0000",
-    ...overrides,
+    value,
+    threshold,
+    severity,
+    message: "test feed",
   };
 }
 
-function buildServices() {
-  const oracleService = { checkAll: jest.fn() } as unknown as jest.Mocked<OracleService>;
-  const oracleGateway = { broadcastAlert: jest.fn() } as unknown as jest.Mocked<OracleGateway>;
-  const oraclePublisher = { maybePublish: jest.fn().mockResolvedValue(null) } as unknown as jest.Mocked<
-    import("./oracle-publisher.service").OraclePublisherService
-  >;
-  return { oracleService, oracleGateway, oraclePublisher };
-}
-
 describe("OracleScheduler", () => {
-  describe("pollOracles", () => {
-    it("broadcasts readings above 'low' severity and skips low ones", async () => {
-      const { oracleService, oracleGateway, oraclePublisher } = buildServices();
-      const low = buildReading({ coverageType: "StablecoinDepeg", severity: "low" });
-      const high = buildReading({ coverageType: "MarketCrash", severity: "high" });
-      const triggered = buildReading({ coverageType: "SmartContractRisk", severity: "triggered" });
-      oracleService.checkAll.mockResolvedValue([low, high, triggered]);
-      const scheduler = new OracleScheduler(oracleService, oracleGateway, oraclePublisher);
+  let scheduler: OracleScheduler;
+  let oracleService: jest.Mocked<OracleService>;
+  let oracleGateway: jest.Mocked<OracleGateway>;
+  let oraclePublisher: jest.Mocked<OraclePublisherService>;
 
-      await scheduler.pollOracles();
+  beforeEach(() => {
+    jest.useFakeTimers();
+    oracleService = {
+      checkStablecoinDepeg: jest.fn().mockResolvedValue(reading("StablecoinDepeg", 0.97, 0.95)),
+      checkMarketCrash: jest.fn().mockResolvedValue(reading("MarketCrash", -5, -30)),
+      checkLiquidationShield: jest.fn().mockResolvedValue(reading("LiquidationShield", 0.92, 0.85)),
+      checkSmartContractRisk: jest.fn().mockResolvedValue(reading("SmartContractRisk", -2, -50)),
+      checkFlightDelay: jest.fn().mockResolvedValue(reading("FlightDelay", 0, 120)),
+      getQuotaPressure: jest.fn().mockReturnValue(0),
+    } as unknown as jest.Mocked<OracleService>;
+    oracleGateway = { broadcastAlert: jest.fn() } as unknown as jest.Mocked<OracleGateway>;
+    oraclePublisher = { maybePublish: jest.fn().mockResolvedValue(null) } as unknown as jest.Mocked<OraclePublisherService>;
+    scheduler = new OracleScheduler(oracleService, oracleGateway, oraclePublisher);
+  });
 
-      expect(oracleGateway.broadcastAlert).toHaveBeenCalledTimes(2);
-      expect(oracleGateway.broadcastAlert).toHaveBeenCalledWith(high);
-      expect(oracleGateway.broadcastAlert).toHaveBeenCalledWith(triggered);
-      expect(oracleGateway.broadcastAlert).not.toHaveBeenCalledWith(low);
-      expect(oraclePublisher.maybePublish).toHaveBeenCalledTimes(3);
-    });
+  afterEach(() => {
+    scheduler.onModuleDestroy();
+    jest.useRealTimers();
+  });
 
-    it("does not broadcast anything when every reading is 'low' severity", async () => {
-      const { oracleService, oracleGateway, oraclePublisher } = buildServices();
-      oracleService.checkAll.mockResolvedValue([buildReading({ severity: "low" })]);
-      const scheduler = new OracleScheduler(oracleService, oracleGateway, oraclePublisher);
+  it("polls each source independently and accelerates feeds near a trigger", async () => {
+    scheduler.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
 
-      await scheduler.pollOracles();
+    expect(oracleService.checkStablecoinDepeg).toHaveBeenCalledTimes(1);
+    expect(oracleService.checkMarketCrash).toHaveBeenCalledTimes(1);
+    expect(oracleService.checkLiquidationShield).toHaveBeenCalledTimes(1);
+    expect(oracleService.checkSmartContractRisk).toHaveBeenCalledTimes(1);
+    expect(oracleService.checkFlightDelay).toHaveBeenCalledTimes(1);
 
-      expect(oracleGateway.broadcastAlert).not.toHaveBeenCalled();
-      expect(oraclePublisher.maybePublish).toHaveBeenCalledTimes(1);
-    });
+    await jest.advanceTimersByTimeAsync(15_000);
 
-    it("catches and logs an error from checkAll() instead of throwing", async () => {
-      const { oracleService, oracleGateway, oraclePublisher } = buildServices();
-      oracleService.checkAll.mockRejectedValue(new Error("all sources down"));
-      const scheduler = new OracleScheduler(oracleService, oracleGateway, oraclePublisher);
+    expect(oracleService.checkStablecoinDepeg).toHaveBeenCalledTimes(2);
+    expect(oracleService.checkMarketCrash).toHaveBeenCalledTimes(1);
+  });
 
-      await expect(scheduler.pollOracles()).resolves.toBeUndefined();
-      expect(oracleGateway.broadcastAlert).not.toHaveBeenCalled();
-      expect(oraclePublisher.maybePublish).not.toHaveBeenCalled();
-    });
+  it("broadcasts trigger alerts and publishes readings", async () => {
+    oracleService.checkMarketCrash.mockResolvedValueOnce(reading("MarketCrash", -35, -30, "triggered"));
+    scheduler.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(oracleGateway.broadcastAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ coverageType: "MarketCrash", severity: "triggered" }),
+    );
+    expect(oraclePublisher.maybePublish).toHaveBeenCalledTimes(5);
+  });
+
+  it("stops scheduling after module shutdown", async () => {
+    scheduler.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+    scheduler.onModuleDestroy();
+    await jest.advanceTimersByTimeAsync(300_000);
+
+    expect(oracleService.checkStablecoinDepeg).toHaveBeenCalledTimes(1);
   });
 });

@@ -14,6 +14,12 @@ import {
 } from "./provider-response-schemas";
 
 const CACHE_KEY_CHECK_ALL = "oracle:checkAll";
+const COVERAGE_PROVIDER: Record<string, string> = {
+  StablecoinDepeg: "coingecko",
+  SmartContractRisk: "defillama",
+  LiquidationShield: "mock",
+  FlightDelay: "mock",
+};
 
 /**
  * OracleService aggregates real-world data for Refract trigger conditions.
@@ -61,6 +67,7 @@ export class OracleService {
   private readonly horizonUrl: string;
   private readonly defiLlamaBaseUrl: string;
   private readonly defiLlamaProtocolSlug: string;
+  private readonly quotaPressure = new Map<string, number>();
 
   constructor(
     private readonly configService: ConfigService<AppConfig, true>,
@@ -114,13 +121,14 @@ export class OracleService {
   async checkStablecoinDepeg(): Promise<OracleReading> {
     const threshold = 0.95; // 5% depeg
     try {
-      const { data } = await axios.get<string>(
+      const { data, headers } = await axios.get<string>(
         `${this.coingeckoBaseUrl}/simple/price`,
         {
           ...this.requestConfig(),
           params: { ids: "usd-coin", vs_currencies: "usd" },
         }
       );
+      this.recordQuotaPressure("coingecko", headers);
       const response = parseProviderResponse("CoinGecko", data, CoinGeckoStablecoinV1);
       const usdcPrice = response["usd-coin"].usd;
       const deviation = (1 - usdcPrice) * 100;
@@ -164,8 +172,12 @@ export class OracleService {
             params: { order: "desc", limit: 1 },
           }
         )
-        .then(({ data }) => parseProviderResponse("Horizon", data, HorizonLedgerV1))
+        .then(({ data, headers }) => {
+          this.recordQuotaPressure("horizon", headers);
+          return parseProviderResponse("Horizon", data, HorizonLedgerV1);
+        })
         .catch((err: unknown) => {
+          this.recordFailureQuotaPressure("horizon", err);
           this.logger.warn(
             "Horizon ledger context unavailable",
             err instanceof Error ? err.message : String(err),
@@ -174,6 +186,7 @@ export class OracleService {
         });
 
       const [priceRes, ledgerRes] = await Promise.all([priceRequest, ledgerRequest]);
+      this.recordQuotaPressure("coingecko", priceRes.headers);
       const market = parseProviderResponse("CoinGecko", priceRes.data, CoinGeckoMarketV1);
       const change24h = market.stellar.usd_24h_change;
       const ledger = ledgerRes?._embedded.records[0];
@@ -204,10 +217,11 @@ export class OracleService {
   async checkSmartContractRisk(): Promise<OracleReading> {
     const threshold = -50; // 50% TVL drop in 24h triggers
     try {
-      const { data } = await axios.get<string>(
+      const { data, headers } = await axios.get<string>(
         `${this.defiLlamaBaseUrl}/protocol/${this.defiLlamaProtocolSlug}`,
         this.requestConfig()
       );
+      this.recordQuotaPressure("defillama", headers);
       const response = parseProviderResponse("DeFiLlama", data, DefiLlamaProtocolV1);
       const points = response.tvl;
 
@@ -286,6 +300,7 @@ export class OracleService {
    * never itself cause a false claim trigger.
    */
   private degraded(coverageType: string, threshold: number, source: string, err: unknown): OracleReading {
+    this.recordFailureQuotaPressure(source.toLowerCase(), err);
     this.logger.error(
       `${source} request failed for ${coverageType} check`,
       err instanceof Error ? err.message : String(err)
@@ -308,5 +323,69 @@ export class OracleService {
       maxContentLength: MAX_ORACLE_RESPONSE_BYTES,
       transformResponse: [(body: unknown) => body],
     };
+  }
+
+  getQuotaPressure(coverageType: string): number {
+    if (coverageType === "MarketCrash") {
+      return Math.max(this.quotaPressure.get("coingecko") ?? 0, this.quotaPressure.get("horizon") ?? 0);
+    }
+    const provider = COVERAGE_PROVIDER[coverageType];
+    return provider ? this.quotaPressure.get(provider) ?? 0 : 0;
+  }
+
+  private recordQuotaPressure(provider: string, headers: unknown, isRateLimited = false): void {
+    if (typeof headers !== "object" || headers === null) {
+      this.decreaseQuotaPressure(provider, isRateLimited);
+      return;
+    }
+    const remaining = this.readHeader(headers, "x-ratelimit-remaining") ?? this.readHeader(headers, "ratelimit-remaining");
+    const limit = this.readHeader(headers, "x-ratelimit-limit") ?? this.readHeader(headers, "ratelimit-limit");
+    const retryAfter = Number(this.readHeader(headers, "retry-after") ?? 0);
+    const remainingNumber = Number(remaining);
+    const limitNumber = Number(limit);
+
+    if (isRateLimited || retryAfter > 0) {
+      this.quotaPressure.set(provider, 1);
+    } else if (Number.isFinite(remainingNumber) && Number.isFinite(limitNumber) && limitNumber > 0) {
+      this.quotaPressure.set(provider, Math.max(0, Math.min(1, 1 - remainingNumber / limitNumber)));
+    } else {
+      this.decreaseQuotaPressure(provider, false);
+    }
+  }
+
+  private decreaseQuotaPressure(provider: string, isRateLimited: boolean): void {
+    if (isRateLimited) {
+      this.quotaPressure.set(provider, 1);
+      return;
+    }
+    this.quotaPressure.set(provider, Math.max(0, (this.quotaPressure.get(provider) ?? 0) - 0.25));
+  }
+
+  private recordFailureQuotaPressure(provider: string, error: unknown): void {
+    if (typeof error !== "object" || error === null || !("response" in error)) {
+      return;
+    }
+    const response = error.response;
+    if (typeof response !== "object" || response === null) {
+      return;
+    }
+    const status = "status" in response ? Number(response.status) : undefined;
+    const headers = "headers" in response ? response.headers : undefined;
+    if (headers && typeof headers === "object") {
+      this.recordQuotaPressure(provider, headers, status === 429);
+    } else if (status === 429) {
+      this.quotaPressure.set(provider, 1);
+    }
+  }
+
+  private readHeader(headers: object, name: string): string | undefined {
+    const value = Reflect.get(headers, name) ?? Reflect.get(headers, name.toUpperCase());
+    if (typeof value === "string" || typeof value === "number") {
+      return String(value);
+    }
+    if (typeof value === "object" && value !== null && "toString" in value) {
+      return String(value);
+    }
+    return undefined;
   }
 }

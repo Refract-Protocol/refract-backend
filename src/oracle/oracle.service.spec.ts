@@ -243,6 +243,29 @@ describe("OracleService", () => {
     });
   });
 
+  describe("provider quota pressure", () => {
+    it("tracks provider-reported remaining quota", async () => {
+      mockedAxios.get.mockResolvedValueOnce({
+        data: JSON.stringify({ "usd-coin": { usd: 1 } }),
+        headers: { "x-ratelimit-remaining": "2", "x-ratelimit-limit": "10" },
+      });
+
+      await service.checkStablecoinDepeg();
+
+      expect(service.getQuotaPressure("StablecoinDepeg")).toBe(0.8);
+    });
+
+    it("treats an upstream 429 as full quota pressure", async () => {
+      mockedAxios.get.mockRejectedValueOnce({
+        response: { status: 429, headers: { "retry-after": "30" } },
+      });
+
+      await service.checkStablecoinDepeg();
+
+      expect(service.getQuotaPressure("StablecoinDepeg")).toBe(1);
+    });
+  });
+
   describe("checkAll", () => {
     it("aggregates the three real checks", async () => {
       mockedAxios.get
