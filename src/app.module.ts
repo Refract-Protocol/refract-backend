@@ -28,6 +28,7 @@ import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
 import { OracleIngestionModule } from './oracle/sources/oracle-ingestion.module';
+import { OracleRegionsModule } from './oracle/regions/oracle-regions.module';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -118,6 +119,7 @@ export const isSandboxMode = (): boolean =>
     SecurityReportsModule,
     DigestModule,
     OracleIngestionModule,
+    OracleRegionsModule,
   ],
   controllers: [AppController],
   providers: [
