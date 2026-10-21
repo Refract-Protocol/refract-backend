@@ -1,4 +1,5 @@
 import { Global, Module } from "@nestjs/common";
+import { PoolContractInterfaceService } from "./pool-contract-interface.service";
 import { SorobanRpcService } from "./soroban-rpc.service";
 
 /**
@@ -7,7 +8,7 @@ import { SorobanRpcService } from "./soroban-rpc.service";
  */
 @Global()
 @Module({
-  providers: [SorobanRpcService],
-  exports: [SorobanRpcService],
+  providers: [SorobanRpcService, PoolContractInterfaceService],
+  exports: [SorobanRpcService, PoolContractInterfaceService],
 })
 export class StellarModule {}
