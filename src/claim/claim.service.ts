@@ -5,6 +5,12 @@ import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
+import {
+  TriggerDirection,
+  TriggerStabilityEvaluator,
+  defaultTriggerConfig,
+  triggerOverridesFromEnv,
+} from "./trigger/trigger-stability";
 
 const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
 
@@ -31,13 +37,32 @@ export class ClaimService {
   // PolicyService's in-memory store; replaced together once the
   // Postgres-backed repository lands.
   private readonly history: ClaimResult[] = [];
+  // Debounces each policy's threshold check (hysteresis, minimum dwell,
+  // flap damping) so a value hovering around the threshold can't toggle
+  // the coverage condition on every scan. Keyed by policy id.
+  private readonly triggerOverrides = triggerOverridesFromEnv(process.env);
+  private readonly policyCoverageTypes = new Map<string, number>();
+  private readonly triggerEvaluator = new TriggerStabilityEvaluator((policyId) =>
+    defaultTriggerConfig(this.policyCoverageTypes.get(policyId) ?? -1, this.triggerOverrides)
+  );
 
   constructor(
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
     private readonly oracleEventRepository: OracleEventRepository
-  ) {}
+  ) {
+    this.triggerEvaluator.onTransition((e) => {
+      const line =
+        `Trigger ${e.kind} policy=${e.key} ${e.from} -> ${e.to} value=${e.evidence.value} ` +
+        `threshold=${e.evidence.threshold} band=${e.evidence.hysteresis} penalty=${Math.round(e.evidence.penalty)} ` +
+        `flips=${e.evidence.flips}: ${e.evidence.reason}`;
+      // Suppressed changes are an alerting signal (a feed sitting on a payout boundary), not routine.
+      if (e.kind === "suppressed") this.logger.warn(line);
+      else this.logger.log(line);
+    });
+  }
+
 
   async processTriggered(): Promise<ClaimResult[]> {
     const activePolicies = this.policyService.listActive();
@@ -105,16 +130,22 @@ export class ClaimService {
       return this.buildResult(policy, false, `Oracle data stale (${staleness}s old)`);
     }
 
-    let triggered: boolean;
-    switch (policy.coverageType) {
-      case 4: // FlightDelay: triggers when the delay exceeds the threshold
-        triggered = oracle.value > oracle.threshold;
-        break;
-      default: // StablecoinDepeg, MarketCrash, LiquidationShield, SmartContractRisk: trigger below threshold
-        triggered = oracle.value < oracle.threshold;
-    }
+    // FlightDelay triggers when the delay exceeds the threshold; every other
+    // coverage type triggers below it.
+    const direction: TriggerDirection = policy.coverageType === 4 ? "above" : "below";
+    this.policyCoverageTypes.set(policy.id, policy.coverageType);
+    const decision = this.triggerEvaluator.evaluate(policy.id, {
+      value: oracle.value,
+      threshold: oracle.threshold,
+      direction,
+      observedAt: fetchedAt * 1000,
+    });
 
-    return this.buildResult(policy, triggered, oracle.message);
+    const result = this.buildResult(policy, decision.triggered, `${oracle.message} [trigger: ${decision.reason}]`);
+    if (decision.triggered && decision.confirmedAt !== null) {
+      result.triggerDetectedAt = decision.confirmedAt;
+    }
+    return result;
   }
 
   private buildResult(policy: StoredPolicy, triggered: boolean, reason: string): ClaimResult {
@@ -143,6 +174,8 @@ export class ClaimService {
 
     this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
     this.policyService.deactivate(policy.id);
+    this.triggerEvaluator.forget(policy.id);
+    this.policyCoverageTypes.delete(policy.id);
     this.processedCount++;
     this.payoutTotal += BigInt(result.payout);
     const settledResult = { ...result, settlementTxHash: settlement.txHash };

@@ -1,3 +1,9 @@
+// These tests exercise single-scan trigger/payout plumbing, so turn off the
+// trigger dwell (covered in trigger/trigger-stability.spec.ts). Must be set
+// before ClaimService is constructed.
+process.env.TRIGGER_MIN_DWELL_SECONDS = "0";
+process.env.TRIGGER_MIN_CONFIRMATIONS = "1";
+
 import { ClaimService } from "./claim.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
 import { OracleService } from "../oracle/oracle.service";
