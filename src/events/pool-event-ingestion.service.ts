@@ -183,7 +183,8 @@ export class PoolEventIngestionService implements OnModuleDestroy {
           ...(checkpoint.cursor
             ? { cursor: checkpoint.cursor }
             : { startLedger: Number(checkpoint.next_start_ledger) }),
-        })
+        }),
+        "events"
       );
 
       for (const event of response.events) {

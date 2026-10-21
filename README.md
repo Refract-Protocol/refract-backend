@@ -48,6 +48,29 @@ when a pool contract ID is configured, validates the live pool WASM contract
 spec at startup. Startup fails with the specific interface mismatch if the
 deployed contract differs from the backend's assumed interface.
 
+### Soroban RPC endpoint pool
+
+Set `SOROBAN_RPC_URLS` (comma-separated, in preference order) alongside
+`SOROBAN_RPC_URL` to run against several RPC providers. All reads, event
+polling, and oracle publish submissions share one health-checked pool
+(`SorobanRpcPoolService`):
+
+- A background `getHealth` probe runs every `SOROBAN_RPC_HEALTH_INTERVAL_MS`.
+  An endpoint that reports a non-healthy status or fails the probe is marked
+  `unhealthy`. One that trails the most advanced endpoint by more than
+  `SOROBAN_RPC_MAX_LEDGER_LAG` ledgers is marked `lagging`.
+- `SOROBAN_RPC_FAILURE_THRESHOLD` consecutive transient call failures also mark
+  an endpoint `unhealthy`. It is skipped for `SOROBAN_RPC_COOLDOWN_MS`, then
+  retried.
+- Calls go to healthy endpoints first, then unknown, then lagging. Unhealthy
+  endpoints are tried last rather than dropped, so a fully degraded pool still
+  makes progress instead of stalling.
+- Event polling stays on the endpoint that served the previous page while it is
+  healthy, because paging cursors are only valid on the node that issued them.
+- Re-sending a signed oracle publish to another endpoint after a transport
+  error is safe: the hash and sequence number are the same, so it applies at
+  most once.
+
 For an existing database, apply
 `src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
 checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,

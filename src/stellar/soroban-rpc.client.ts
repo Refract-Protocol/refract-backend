@@ -1,83 +1,43 @@
 import { rpc } from "@stellar/stellar-sdk";
+import {
+  EndpointHealthSnapshot,
+  RpcEndpointPool,
+  RpcEndpointPoolOptions,
+  RpcPurpose,
+} from "./rpc-endpoint-pool";
 
-const MAX_ATTEMPTS = 3;
-const BASE_RETRY_DELAY_MS = 250;
-const MAX_RETRY_DELAY_MS = 2_000;
-
-function isTransientRpcError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-
-  const details = error as { code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown };
-  const status = Number(details.status ?? details.statusCode);
-  if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
-
-  if (
-    typeof details.code === "string" &&
-    [
-      "ECONNRESET",
-      "ECONNREFUSED",
-      "EHOSTUNREACH",
-      "ENETUNREACH",
-      "ETIMEDOUT",
-      "EAI_AGAIN",
-      "UND_ERR_CONNECT_TIMEOUT",
-      "UND_ERR_SOCKET",
-    ].includes(details.code)
-  ) {
-    return true;
-  }
-
-  return (
-    typeof details.message === "string" &&
-    /\b(timeout|timed out|network|connection reset|connection refused|fetch failed|temporarily unavailable|rate limit|too many requests|bad gateway|service unavailable|gateway timeout|408|425|429|500|502|503|504)\b/i.test(
-      details.message
-    )
-  );
-}
-
-function wait(delayMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
-}
+export { isTransientRpcError } from "./rpc-endpoint-pool";
 
 /**
- * Wraps all Soroban RPC calls with bounded retries and endpoint failover.
- * Only transport/server-throttling failures are retried; contract and
- * request errors are returned immediately.
+ * Wraps all Soroban RPC calls with bounded retries and health-aware endpoint
+ * selection. Only transport/server-throttling failures are retried; contract
+ * and request errors are returned immediately.
+ *
+ * Backed by {@link RpcEndpointPool}: pass several URLs to remove the
+ * single-provider dependency. Call `start()` to enable background health
+ * probing; without it the pool still rotates away from endpoints that fail
+ * calls.
  */
 export class SorobanRpcClient {
-  private readonly servers: rpc.Server[];
-  private activeServerIndex = 0;
+  readonly pool: RpcEndpointPool<rpc.Server>;
 
-  constructor(urls: string[]) {
-    const uniqueUrls = [...new Set(urls.map((url) => url.trim()).filter(Boolean))];
-    if (uniqueUrls.length === 0) {
-      throw new Error("At least one Soroban RPC URL must be configured");
-    }
-    this.servers = uniqueUrls.map((url) => new rpc.Server(url));
+  constructor(urls: string[], options: RpcEndpointPoolOptions<rpc.Server> = {}) {
+    this.pool = new RpcEndpointPool<rpc.Server>(urls, options);
   }
 
-  async call<T>(operation: (server: rpc.Server) => Promise<T>): Promise<T> {
-    let lastError: unknown;
+  call<T>(operation: (server: rpc.Server) => Promise<T>, purpose: RpcPurpose = "read"): Promise<T> {
+    return this.pool.call(operation, purpose);
+  }
 
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      for (let offset = 0; offset < this.servers.length; offset++) {
-        const serverIndex = (this.activeServerIndex + offset) % this.servers.length;
-        try {
-          const result = await operation(this.servers[serverIndex]);
-          this.activeServerIndex = serverIndex;
-          return result;
-        } catch (error) {
-          if (!isTransientRpcError(error)) throw error;
-          lastError = error;
-        }
-      }
+  start(): void {
+    this.pool.start();
+  }
 
-      if (attempt < MAX_ATTEMPTS - 1) {
-        const delay = Math.min(BASE_RETRY_DELAY_MS * 2 ** attempt, MAX_RETRY_DELAY_MS);
-        await wait(delay);
-      }
-    }
+  stop(): void {
+    this.pool.stop();
+  }
 
-    throw lastError;
+  health(): EndpointHealthSnapshot[] {
+    return this.pool.snapshot();
   }
 }
