@@ -1,6 +1,12 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
+import {
+  assertNetworkConsistency,
+  NetworkConsistencyError,
+  verifyNetworkLive,
+} from './config/network-consistency';
+import { assertOracleSandboxSafety } from './oracle/sandbox/oracle-sandbox.config';
 import { OraclePipelineLifecycle } from './oracle/shutdown/oracle-pipeline-lifecycle.service';
 
 /**
@@ -14,6 +20,7 @@ const SHUTDOWN_GRACE_PERIOD_MS = Number(
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
+  await assertDeploymentConfig(logger);
   const app: INestApplication = await NestFactory.create(AppModule);
 
   // Signals are handled below, not with app.enableShutdownHooks(). Using
@@ -85,6 +92,32 @@ async function bootstrap(): Promise<void> {
 
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
+}
+
+/**
+ * Runs before any module starts, so a misconfigured deployment never opens a
+ * connection or publishes anything.
+ *  - Every network-specific value must belong to the one selected network.
+ *  - With STELLAR_VALIDATE_ONCHAIN=true, the RPC and Horizon endpoints must
+ *    also report that network's passphrase.
+ *  - A provider sandbox deployment must not hold a relayer key.
+ */
+async function assertDeploymentConfig(logger: Logger): Promise<void> {
+  assertOracleSandboxSafety();
+  const report = assertNetworkConsistency(process.env);
+  report.warnings.forEach((w) => logger.warn(w));
+  const resolved = report.resolved!;
+  logger.log(`Stellar network: ${resolved.network}`);
+
+  if ((process.env.STELLAR_VALIDATE_ONCHAIN ?? '').trim().toLowerCase() === 'true') {
+    const live = await verifyNetworkLive(resolved, {
+      timeoutMs: Number(process.env.STELLAR_VALIDATE_TIMEOUT_MS ?? 5_000),
+    });
+    live.unreachable.forEach((w) => logger.warn(w));
+    if (live.mismatches.length > 0) {
+      throw new NetworkConsistencyError(live.mismatches);
+    }
+  }
 }
 
 bootstrap().catch((err) => {

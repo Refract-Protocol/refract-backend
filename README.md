@@ -48,6 +48,37 @@ when a pool contract ID is configured, validates the live pool WASM contract
 spec at startup. Startup fails with the specific interface mismatch if the
 deployed contract differs from the backend's assumed interface.
 
+Before any module starts, the backend checks that the environment targets
+exactly one network and lists every problem at once:
+
+- `STELLAR_NETWORK` must be `testnet`, `futurenet` or `mainnet` (`public` is
+  an alias for `mainnet`).
+- No `*_TESTNET` / `*_FUTURENET` / `*_MAINNET` value may be set for any
+  network other than the selected one. This covers `SOROBAN_RPC_URL`,
+  `STELLAR_HORIZON_URL`, `STELLAR_NETWORK_PASSPHRASE`, and
+  `REFRACT_{POOL,ORACLE,POLICY}_CONTRACT_ID`. A suffixed and an unsuffixed
+  value for the same setting must match.
+- The passphrase must match the network. RPC and Horizon URLs must not point
+  at another network, and mainnet requires https.
+- Contract IDs must be valid and must not repeat across roles.
+- With `STELLAR_VALIDATE_ONCHAIN=true`, RPC `getNetwork` and Horizon `/` must
+  report the expected passphrase.
+
+Missing payout pieces (oracle ID, pool ID, relayer key) only produce a
+warning, so read-only setups still boot. Run the same check before deploying:
+
+```bash
+npx ts-node scripts/check-network-config.ts --live
+```
+
+Example failure:
+
+```
+Stellar network configuration is inconsistent:
+  - REFRACT_ORACLE_CONTRACT_ID_MAINNET is set for mainnet but STELLAR_NETWORK=testnet; remove it so only one network is configured
+  - STELLAR_NETWORK_PASSPHRASE is the mainnet passphrase but STELLAR_NETWORK=testnet (expected "Test SDF Network ; September 2015")
+```
+
 For an existing database, apply
 `src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
 checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
