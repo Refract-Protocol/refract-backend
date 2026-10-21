@@ -6,11 +6,14 @@ import { ConsensusController } from "./consensus.controller";
 import { ConsensusRoleGuard } from "./consensus-role.guard";
 import { ConsensusService } from "./consensus.service";
 import { EvidenceLedger, PayloadStore } from "./evidence-ledger";
+import { loadMirrorDetectionConfig } from "./fingerprint";
+import { MIRROR_CONFIG, MirrorDetectionService } from "./mirror-detection";
 
 @Module({
   controllers: [ConsensusController],
   providers: [
     { provide: CONSENSUS_CONFIG, useFactory: () => loadConsensusConfig() },
+    { provide: MIRROR_CONFIG, useFactory: () => loadMirrorDetectionConfig() },
     {
       provide: EVIDENCE_LEDGER,
       inject: [CONSENSUS_CONFIG],
@@ -25,7 +28,8 @@ import { EvidenceLedger, PayloadStore } from "./evidence-ledger";
     ConsensusService,
     ClaimHoldService,
     ClaimHoldScheduler,
+    MirrorDetectionService,
   ],
-  exports: [ConsensusService, ClaimHoldService, EVIDENCE_LEDGER, PAYLOAD_STORE, CONSENSUS_CONFIG],
+  exports: [ConsensusService, ClaimHoldService, MirrorDetectionService, EVIDENCE_LEDGER, PAYLOAD_STORE, CONSENSUS_CONFIG],
 })
 export class ConsensusModule {}

@@ -3,6 +3,8 @@ import { canonicalJson } from "./canonical";
 import { foldHolds, HoldStatus } from "./claim-hold.service";
 import { EvidenceLedger } from "./evidence-ledger";
 import { EvidenceEvent } from "./evidence.types";
+import { loadMirrorDetectionConfig } from "./fingerprint";
+import { governedFeeds, planMirrorActions } from "./mirror-detection";
 import { parseReconstructionQuery, reconstructConsensusState, serializeReconstruction } from "./reconstruction";
 
 export interface CliResult {
@@ -26,6 +28,10 @@ Commands (all read-only; they read the persisted evidence ledger):
       GET /api/v1/ops/consensus/feeds/:feedId/state).
   holds [--status <status>]
       Payout-hold queue (e.g. --status escalated).
+  mirror-backtest [--feed <id>] [--step-ms <ms>]
+      Replays mirror detection across the whole history with the current
+      MIRROR_* thresholds and reports every pair that would be penalised.
+      Writes nothing.
 
 Common options:
   --ledger-file <path>   Evidence ledger JSONL (default: $EVIDENCE_LEDGER_PATH)
@@ -74,8 +80,52 @@ export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): Cl
       return { exitCode: 0, stdout: `${canonicalJson({ holds })}\n`, stderr: "" };
     }
 
+    if (command === "mirror-backtest") {
+      const events = loadLedgerEvents(flags, deps);
+      return { exitCode: 0, stdout: `${canonicalJson(mirrorBacktest(events, flags, deps.env))}\n`, stderr: "" };
+    }
+
     return { exitCode: 1, stdout: "", stderr: `unknown command: ${command}\n\n${USAGE}` };
   } catch (err) {
     return { exitCode: 1, stdout: "", stderr: `error: ${err instanceof Error ? err.message : String(err)}\n` };
   }
+}
+
+/**
+ * Sweeps detection over history in `step` increments (default: half a
+ * window). For each pair it reports the strongest evidence seen and whether
+ * it would ever have been penalised under the current thresholds.
+ */
+export function mirrorBacktest(events: EvidenceEvent[], flags: Record<string, string>, env: NodeJS.ProcessEnv) {
+  const cfg = loadMirrorDetectionConfig(env);
+  const step = flags["step-ms"] ? Number(flags["step-ms"]) : Math.max(1, Math.floor(cfg.windowMs / 2));
+  if (!(step > 0)) throw new Error("--step-ms must be a positive number");
+  const feeds = flags.feed ? [flags.feed] : governedFeeds(events);
+  return {
+    thresholds: cfg,
+    feeds: feeds.map((feedId) => {
+      const times = events.flatMap((e) => (e.kind === "reading" && e.feedId === feedId ? [Math.max(e.recordedAt, e.observedAt)] : []));
+      const pairs = new Map<string, { sourceA: string; sourceB: string; wouldPenalise: boolean; firstFlaggedAt: string | null; maxMatchRatio: number; maxInformativeSamples: number }>();
+      if (times.length) {
+        const first = Math.min(...times);
+        const last = Math.max(...times);
+        for (let t = Math.min(first + step, last); ; t = Math.min(t + step, last)) {
+          for (const a of planMirrorActions(events, feedId, t, cfg).analyses) {
+            const key = `${a.sourceA}|${a.sourceB}`;
+            const p = pairs.get(key) ?? { sourceA: a.sourceA, sourceB: a.sourceB, wouldPenalise: false, firstFlaggedAt: null, maxMatchRatio: 0, maxInformativeSamples: 0 };
+            p.maxMatchRatio = Math.max(p.maxMatchRatio, a.matchRatio);
+            p.maxInformativeSamples = Math.max(p.maxInformativeSamples, a.informativeSamples);
+            if (a.mirrored && !p.wouldPenalise) {
+              p.wouldPenalise = true;
+              p.firstFlaggedAt = new Date(t).toISOString();
+            }
+            pairs.set(key, p);
+          }
+          if (t >= last) break;
+        }
+      }
+      const list = [...pairs.values()].sort((x, y) => `${x.sourceA}|${x.sourceB}`.localeCompare(`${y.sourceA}|${y.sourceB}`));
+      return { feedId, readings: times.length, pairs: list, wouldPenalise: list.filter((p) => p.wouldPenalise).length };
+    }),
+  };
 }

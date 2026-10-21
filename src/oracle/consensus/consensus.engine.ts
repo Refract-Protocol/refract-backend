@@ -19,6 +19,17 @@ export interface SourceEligibility {
   weight: number;
   effectiveWeight: number;
   readingId: string | null;
+  /** False when shadowed by a heavier source it is suspected of mirroring. */
+  independent: boolean;
+  /** The source this one is a suspected mirror of, if penalised. */
+  mirrorOf: string | null;
+}
+
+/** Active independence penalty between two sources (see fingerprint.ts). */
+export interface PairPenalty {
+  sourceA: string;
+  sourceB: string;
+  factor: number;
 }
 
 export interface ConsensusInput {
@@ -27,6 +38,7 @@ export interface ConsensusInput {
   policy: QuorumPolicyEvent | null;
   sources: SourceState[];
   readings: ReadingState[];
+  penalties?: PairPenalty[];
 }
 
 export interface ConsensusResult {
@@ -93,25 +105,34 @@ export function computeConsensus(input: ConsensusInput): ConsensusResult {
         weight: s.weight,
         effectiveWeight: s.weight,
         readingId: reading.readingId,
+        independent: true,
+        mirrorOf: null,
       };
     });
 
+  applyPenalties(eligibility, input.penalties ?? []);
+
   const eligible = eligibility.filter((e) => e.eligible);
+  const independentCount = eligible.filter((e) => e.independent).length;
   const contributing: ContributingReading[] = eligible.map((e) => ({
     readingId: e.readingId as string,
     sourceId: e.sourceId,
     value: (latestBySource.get(e.sourceId) as ReadingState).value,
     effectiveWeight: e.effectiveWeight,
+    independent: e.independent,
   }));
   const totalWeight = contributing.reduce((sum, c) => sum + c.effectiveWeight, 0);
 
-  if (eligible.length < policy.minSources) {
+  if (independentCount < policy.minSources) {
+    const mirrored = eligible.length - independentCount;
     return {
       ...base,
       outcome: "no_decision",
       value: null,
       triggered: false,
-      reason: `quorum_not_met: ${eligible.length} eligible source(s), policy requires ${policy.minSources}`,
+      reason:
+        `quorum_not_met: ${independentCount} independent eligible source(s)` +
+        `${mirrored ? ` (+${mirrored} suspected mirror)` : ""}, policy requires ${policy.minSources}`,
       contributing,
       eligibility,
     };
@@ -152,7 +173,33 @@ function ineligible(s: SourceState, reading: ReadingState | null, reason: Inelig
     weight: s.weight,
     effectiveWeight: 0,
     readingId: reading?.readingId ?? null,
+    independent: true,
+    mirrorOf: null,
   };
+}
+
+/**
+ * For each penalised pair where both sources are eligible, the lighter one
+ * (ties: the later sourceId) is shadowed. Its weight is scaled by the
+ * penalty factor and it no longer counts toward the independent-source
+ * quorum. The two together therefore weigh less than two independent sources.
+ */
+function applyPenalties(eligibility: SourceEligibility[], penalties: PairPenalty[]): void {
+  const byId = new Map(eligibility.map((e) => [e.sourceId, e]));
+  const ordered = [...penalties].sort(
+    (x, y) => x.sourceA.localeCompare(y.sourceA) || x.sourceB.localeCompare(y.sourceB),
+  );
+  for (const p of ordered) {
+    const a = byId.get(p.sourceA);
+    const b = byId.get(p.sourceB);
+    if (!a?.eligible || !b?.eligible) continue;
+    const [keep, shadow] =
+      a.weight > b.weight || (a.weight === b.weight && a.sourceId < b.sourceId) ? [a, b] : [b, a];
+    if (!shadow.independent) continue;
+    shadow.independent = false;
+    shadow.mirrorOf = keep.mirrorOf ?? keep.sourceId;
+    shadow.effectiveWeight = round(shadow.weight * p.factor);
+  }
 }
 
 /** Lower weighted median; ties ordered by value then sourceId for determinism. */

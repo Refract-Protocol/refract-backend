@@ -26,6 +26,7 @@ import {
   SignatureResultDto,
 } from "./dto/consensus.dto";
 import { EvidenceLedger } from "./evidence-ledger";
+import { MirrorDetectionService } from "./mirror-detection";
 import { parseReconstructionQuery, reconstructConsensusState, serializeReconstruction } from "./reconstruction";
 
 const HOLD_STATUSES: HoldStatus[] = ["payout_held", "released", "escalated", "approved", "denied", "settled"];
@@ -43,7 +44,21 @@ export class ConsensusController {
     private readonly consensus: ConsensusService,
     private readonly holds: ClaimHoldService,
     @Inject(EVIDENCE_LEDGER) private readonly ledger: EvidenceLedger,
+    private readonly mirrors: MirrorDetectionService,
   ) {}
+
+  /** Sources, declared provenance, and suspected mirror pairs with evidence (issue #273). */
+  @Get("trust-status")
+  @ConsensusRoles("operator", "auditor")
+  trustStatus() {
+    return this.mirrors.trustStatus();
+  }
+
+  /** Runs the mirror-detection batch now instead of waiting for the schedule. */
+  @Post("mirror-scan")
+  mirrorScan() {
+    return this.mirrors.scan();
+  }
 
   /**
    * Point-in-time reconstruction (issue #271): what the system knew and

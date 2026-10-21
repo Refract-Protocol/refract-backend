@@ -159,6 +159,14 @@ describe("reconstructConsensusState", () => {
     expect(b).toBe(a);
   });
 
+  it("still matches decisions recorded before contributors carried an `independent` flag", () => {
+    const { h, first } = scenario();
+    const legacy = h.ledger.events().map((e) =>
+      e.kind === "decision" ? { ...e, contributing: e.contributing.map(({ independent: _i, ...c }) => c) } : e,
+    );
+    expect(reconstructConsensusState(legacy, { feedId: FEED, at: first.at }).consistency).toBe("matches_recorded");
+  });
+
   it("never mutates the ledger", () => {
     const { h, first } = scenario();
     const before = JSON.stringify(h.ledger.events());

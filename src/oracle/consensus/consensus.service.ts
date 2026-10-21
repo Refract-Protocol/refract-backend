@@ -3,6 +3,7 @@ import { canonicalJson, sha256Hex } from "./canonical";
 import { computeConsensus, ConsensusResult } from "./consensus.engine";
 import { EVIDENCE_LEDGER, PAYLOAD_STORE } from "./consensus.config";
 import { EvidenceLedger, PayloadStore } from "./evidence-ledger";
+import { fingerprintReading, loadMirrorDetectionConfig } from "./fingerprint";
 import {
   DecisionEvent,
   QuorumPolicyEvent,
@@ -15,6 +16,7 @@ import {
 import {
   latestPolicyVersionNumber,
   latestSourceVersionNumber,
+  penaltiesAt,
   policyAt,
   readingsAt,
   sourcesAt,
@@ -168,6 +170,7 @@ export class ConsensusService {
       ledgerSeq: input.ledgerSeq,
       payloadHash: hash,
       signature: input.signature ?? "not_required",
+      fingerprint: fingerprintReading(input.feedId, input.value, input.observedAt, loadMirrorDetectionConfig().bucketMs),
     }) as ReadingEvent;
   }
 
@@ -211,6 +214,7 @@ export class ConsensusService {
       policy: policyAt(events, feedId, t),
       sources: sourcesAt(events, feedId, t),
       readings: readingsAt(events, feedId, t),
+      penalties: penaltiesAt(events, feedId, t),
     });
   }
 }

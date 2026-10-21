@@ -127,3 +127,74 @@ Possible `no_decision` reasons:
 
 `npm run oracle:ops -- holds --status escalated` prints the hold queue from
 the same ledger file.
+
+## Mirrored-source detection (issue #273)
+
+Two "independent" sources that publish the same numbers, for example a paid
+provider reselling a free feed, should not count as two confirmations. A batch
+scan, run off the consensus hot path, compares every source pair on each
+feed:
+
+1. **Fingerprint.** Each normalised reading is stored with
+   `sha256(feedId, canonical value, time bucket)`. The canonical value is
+   rounded to 12 significant digits, so formatting and float noise don't
+   matter.
+2. **Align.** Each source contributes its last value per `MIRROR_BUCKET_MS`
+   bucket. The pair is compared at every lag up to `MIRROR_MAX_LAG_BUCKETS`,
+   so delaying a copied value does not hide it.
+3. **Count only movement.** A bucket is *informative* only if one of the two
+   series moved since its previous bucket. Agreeing on a flat market proves
+   nothing.
+4. **Flag** the pair when, at the best lag, all of these hold:
+   - informative buckets ≥ `MIRROR_MIN_INFORMATIVE_SAMPLES`
+   - match ratio ≥ `MIRROR_MIN_MATCH_RATIO`, where a match means the values
+     are within `MIRROR_RELATIVE_TOLERANCE`
+   - the matched values span ≥ `MIRROR_MIN_DISTINCT_VALUES` levels, which
+     guards low-cardinality and categorical feeds
+
+| Variable                          | Default            | Notes                                     |
+|-----------------------------------|--------------------|-------------------------------------------|
+| `MIRROR_WINDOW_MS`                | `21600000` (6 h)   | Sliding window per scan                   |
+| `MIRROR_BUCKET_MS`                | `60000`            | Coarse time bucket                        |
+| `MIRROR_RELATIVE_TOLERANCE`       | `0.00005` (0.5 bp) | Near-match tolerance                      |
+| `MIRROR_MAX_LAG_BUCKETS`          | `2`                | Delay tolerated                           |
+| `MIRROR_MIN_INFORMATIVE_SAMPLES`  | `8`                | Sustained overlap, not one coincidence    |
+| `MIRROR_MIN_MATCH_RATIO`          | `0.9`              |                                           |
+| `MIRROR_MIN_DISTINCT_VALUES`      | `3`                |                                           |
+| `MIRROR_PENALTY_FACTOR`           | `0.25`             | Weight multiplier for the shadowed source |
+| `MIRROR_SCAN_INTERVAL_MS`         | `300000`           |                                           |
+
+A flagged pair gets a persisted `independence_penalty` with the window, lag,
+match statistics and up to 10 matched reading pairs as evidence. From then
+on, consensus treats the lighter source as a suspected mirror:
+
+- its weight is multiplied by the penalty factor;
+- it does not count toward `minSources`;
+- it does not count toward a payout's `expectedSources`.
+
+The penalty is cleared, with an audit entry, once the pair diverges over at
+least the minimum number of informative buckets, or when one of the two
+sources is retired. A quiet market never clears a penalty.
+
+Limits:
+
+- A mirror that adds noise larger than the tolerance looks independent. Raise
+  `MIRROR_RELATIVE_TOLERANCE` for feeds where honest sources are much
+  noisier than that.
+- A delay longer than the lag window also escapes detection.
+
+Surfaces:
+
+| Surface | Use |
+|---------|-----|
+| `GET /api/v1/ops/consensus/trust-status` (operator, auditor) | Sources, declared upstream and suspected pairs with evidence. Use it to cross-check on-chain provenance and licences. |
+| `POST /api/v1/ops/consensus/mirror-scan` | Run a scan now |
+| `refract_oracle_suspected_mirror_pairs{feed}` | Metric: pairs currently penalised per feed |
+| `refract_oracle_mirror_penalty_changes_total{feed,action}` | Metric: penalties applied or cleared |
+
+Before you tighten thresholds or onboard a new source, run a backtest. It
+replays detection over the whole ledger and writes nothing:
+
+```sh
+npm run oracle:ops -- mirror-backtest --ledger-file "$EVIDENCE_LEDGER_PATH"
+```

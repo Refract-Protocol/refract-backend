@@ -1,6 +1,7 @@
 import {
   DecisionEvent,
   EvidenceEvent,
+  IndependencePenaltyEvent,
   QuorumPolicyEvent,
   ReadingEvent,
   SignatureStatus,
@@ -188,4 +189,15 @@ export function decisionById(events: readonly EvidenceEvent[], decisionId: strin
     if (e.kind === "decision" && e.decisionId === decisionId) return e;
   }
   return undefined;
+}
+
+/** Mirror penalties on a feed that were recorded, and not cleared, by t. */
+export function penaltiesAt(events: readonly EvidenceEvent[], feedId: string, t: number): IndependencePenaltyEvent[] {
+  const active = new Map<string, IndependencePenaltyEvent>();
+  for (const e of events) {
+    if (e.recordedAt > t) continue;
+    if (e.kind === "independence_penalty" && e.feedId === feedId) active.set(e.penaltyId, e);
+    if (e.kind === "independence_penalty_cleared" && e.feedId === feedId) active.delete(e.penaltyId);
+  }
+  return [...active.values()].sort((a, b) => a.seq - b.seq);
 }

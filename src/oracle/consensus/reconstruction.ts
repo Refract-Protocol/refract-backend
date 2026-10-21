@@ -1,7 +1,7 @@
 import { canonicalJson } from "./canonical";
 import { computeConsensus, SourceEligibility } from "./consensus.engine";
 import { DecisionEvent, EvidenceEvent, QuorumPolicyEvent } from "./evidence.types";
-import { decisionInForceAt, policyAt, readingsAt, sourcesAt } from "./ledger-view";
+import { decisionInForceAt, penaltiesAt, policyAt, readingsAt, sourcesAt } from "./ledger-view";
 
 export interface ReconstructionQuery {
   feedId: string;
@@ -39,6 +39,8 @@ export interface ReconstructedState {
   /** Last ledger event visible at T: the exact knowledge cutoff. */
   knowledgeCutoffSeq: number | null;
   quorumPolicy: Omit<QuorumPolicyEvent, "kind" | "seq"> | null;
+  /** Mirror penalties in force at T (issue #273). */
+  independencePenalties: { penaltyId: string; sourceA: string; sourceB: string; factor: number; matchRatio: number; recordedAt: number }[];
   sources: ReconstructedSource[];
   /** Readings that contributed to the decision at T. */
   contributingReadings: ReconstructedReading[];
@@ -113,6 +115,7 @@ export function reconstructConsensusState(
       resolvedAtIso: null,
       knowledgeCutoffSeq: null,
       quorumPolicy: null,
+      independencePenalties: [],
       sources: [],
       contributingReadings: [],
       decision: noDecision(`no_evidence_at_or_before_ledger_${query.ledgerSeq}`),
@@ -126,7 +129,8 @@ export function reconstructConsensusState(
   const policy = policyAt(known, query.feedId, T);
   const sourceStates = sourcesAt(known, query.feedId, T);
   const readings = readingsAt(known, query.feedId, T);
-  const result = computeConsensus({ feedId: query.feedId, at: T, policy, sources: sourceStates, readings });
+  const penalties = penaltiesAt(known, query.feedId, T);
+  const result = computeConsensus({ feedId: query.feedId, at: T, policy, sources: sourceStates, readings, penalties });
 
   const byId = new Map(sourceStates.map((s) => [s.sourceId, s]));
   const readingById = new Map(readings.map((r) => [r.readingId, r]));
@@ -179,6 +183,14 @@ export function reconstructConsensusState(
           recordedAt: policy.recordedAt,
         }
       : null,
+    independencePenalties: penalties.map((p) => ({
+      penaltyId: p.penaltyId,
+      sourceA: p.sourceA,
+      sourceB: p.sourceB,
+      factor: p.factor,
+      matchRatio: p.matchRatio,
+      recordedAt: p.recordedAt,
+    })),
     sources: result.eligibility.map((e) => ({
       ...e,
       providerId: byId.get(e.sourceId)?.providerId ?? "",
@@ -203,7 +215,10 @@ export function reconstructConsensusState(
 }
 
 function summarise(d: DecisionSummary): string {
-  const { outcome, value, triggered, reason, policyVersion, contributing } = d;
+  const { outcome, value, triggered, reason, policyVersion } = d;
+  // Decisions recorded before mirror detection (#273) have no `independent`
+  // flag. Without a penalty every contributor was independent.
+  const contributing = d.contributing.map((c) => ({ ...c, independent: c.independent ?? true }));
   return canonicalJson({ outcome, value, triggered, reason, policyVersion, contributing });
 }
 

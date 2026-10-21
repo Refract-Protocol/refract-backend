@@ -79,6 +79,8 @@ export interface ReadingEvent extends BaseEvent {
   /** Content hash of the raw payload, or null if capture failed. */
   payloadHash: string | null;
   signature: SignatureStatus;
+  /** sha256 of canonical value + coarse time bucket (see fingerprint.ts). */
+  fingerprint?: string;
 }
 
 /** Late-arriving signature verification for a reading recorded as `pending`. */
@@ -100,6 +102,8 @@ export interface ContributingReading {
   sourceId: string;
   value: number;
   effectiveWeight: number;
+  /** False when this source is a suspected mirror of another contributor. */
+  independent?: boolean;
 }
 
 export interface DecisionEvent extends BaseEvent {
@@ -189,6 +193,39 @@ export interface HoldSettledEvent extends BaseEvent {
   holdId: string;
 }
 
+/**
+ * Persisted finding that two nominally independent sources on one feed are
+ * mirroring each other. While active, consensus scales down the lighter
+ * source's weight and does not count it as independent corroboration.
+ */
+export interface IndependencePenaltyEvent extends BaseEvent {
+  kind: "independence_penalty";
+  penaltyId: string;
+  feedId: string;
+  sourceA: string;
+  sourceB: string;
+  factor: number;
+  windowStart: number;
+  windowEnd: number;
+  lagBuckets: number;
+  informativeSamples: number;
+  matches: number;
+  exactMatches: number;
+  matchRatio: number;
+  evidence: { bucket: number; readingA: string; readingB: string; valueA: number; valueB: number }[];
+}
+
+export interface IndependencePenaltyClearedEvent extends BaseEvent {
+  kind: "independence_penalty_cleared";
+  penaltyId: string;
+  feedId: string;
+  sourceA: string;
+  sourceB: string;
+  reason: string;
+  matchRatio: number;
+  informativeSamples: number;
+}
+
 /** Operator-facing audit trail entry. */
 export interface AuditEvent extends BaseEvent {
   kind: "audit";
@@ -211,6 +248,8 @@ export type EvidenceEvent =
   | HoldEscalatedEvent
   | HoldDisposedEvent
   | HoldSettledEvent
+  | IndependencePenaltyEvent
+  | IndependencePenaltyClearedEvent
   | AuditEvent;
 
 /** An event before the ledger assigns `seq` / `recordedAt`. */
