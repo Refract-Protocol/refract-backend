@@ -1,0 +1,172 @@
+import { ContributingReading, QuorumPolicyEvent, SourceStatus } from "./evidence.types";
+import { ReadingState, SourceState } from "./ledger-view";
+
+export type IneligibleReason =
+  | "retired"
+  | "quarantined"
+  | "zero_weight"
+  | "no_reading_in_window"
+  | "signature_failed";
+
+export interface SourceEligibility {
+  sourceId: string;
+  version: number;
+  status: SourceStatus;
+  eligible: boolean;
+  reason: IneligibleReason | null;
+  /** True for warm-up sources: eligible, but immature evidence. */
+  immature: boolean;
+  weight: number;
+  effectiveWeight: number;
+  readingId: string | null;
+}
+
+export interface ConsensusInput {
+  feedId: string;
+  at: number;
+  policy: QuorumPolicyEvent | null;
+  sources: SourceState[];
+  readings: ReadingState[];
+}
+
+export interface ConsensusResult {
+  feedId: string;
+  at: number;
+  outcome: "decision" | "no_decision";
+  value: number | null;
+  triggered: boolean;
+  reason: string;
+  policyVersion: number | null;
+  contributing: ContributingReading[];
+  eligibility: SourceEligibility[];
+}
+
+/**
+ * Pure consensus over one feed at one instant: picks each source's latest
+ * reading inside the policy window, filters ineligible sources, checks
+ * quorum, and takes the weighted median of the rest.
+ *
+ * No I/O, no clock, no mutable state. Same input → same output.
+ */
+export function computeConsensus(input: ConsensusInput): ConsensusResult {
+  const { feedId, at, policy } = input;
+  const base = { feedId, at, policyVersion: policy?.version ?? null };
+
+  if (!policy) {
+    return {
+      ...base,
+      outcome: "no_decision",
+      value: null,
+      triggered: false,
+      reason: "no_quorum_policy",
+      contributing: [],
+      eligibility: input.sources.map((s) => ineligible(s, null, "no_reading_in_window")),
+    };
+  }
+
+  const windowStart = at - policy.maxReadingAgeMs;
+  const latestBySource = new Map<string, ReadingState>();
+  for (const r of input.readings) {
+    if (r.observedAt > at || r.observedAt < windowStart) continue;
+    const prev = latestBySource.get(r.sourceId);
+    if (!prev || r.observedAt > prev.observedAt || (r.observedAt === prev.observedAt && r.seq > prev.seq)) {
+      latestBySource.set(r.sourceId, r);
+    }
+  }
+
+  const eligibility = [...input.sources]
+    .sort((a, b) => a.sourceId.localeCompare(b.sourceId))
+    .map((s): SourceEligibility => {
+      const reading = latestBySource.get(s.sourceId) ?? null;
+      if (s.status === "retired") return ineligible(s, reading, "retired");
+      if (s.status === "quarantined") return ineligible(s, reading, "quarantined");
+      if (s.weight <= 0) return ineligible(s, reading, "zero_weight");
+      if (!reading) return ineligible(s, null, "no_reading_in_window");
+      if (reading.signature === "failed") return ineligible(s, reading, "signature_failed");
+      return {
+        sourceId: s.sourceId,
+        version: s.version,
+        status: s.status,
+        eligible: true,
+        reason: null,
+        immature: s.status === "warmup",
+        weight: s.weight,
+        effectiveWeight: s.weight,
+        readingId: reading.readingId,
+      };
+    });
+
+  const eligible = eligibility.filter((e) => e.eligible);
+  const contributing: ContributingReading[] = eligible.map((e) => ({
+    readingId: e.readingId as string,
+    sourceId: e.sourceId,
+    value: (latestBySource.get(e.sourceId) as ReadingState).value,
+    effectiveWeight: e.effectiveWeight,
+  }));
+  const totalWeight = contributing.reduce((sum, c) => sum + c.effectiveWeight, 0);
+
+  if (eligible.length < policy.minSources) {
+    return {
+      ...base,
+      outcome: "no_decision",
+      value: null,
+      triggered: false,
+      reason: `quorum_not_met: ${eligible.length} eligible source(s), policy requires ${policy.minSources}`,
+      contributing,
+      eligibility,
+    };
+  }
+  if (totalWeight < policy.minTotalWeight) {
+    return {
+      ...base,
+      outcome: "no_decision",
+      value: null,
+      triggered: false,
+      reason: `weight_not_met: eligible weight ${round(totalWeight)}, policy requires ${policy.minTotalWeight}`,
+      contributing,
+      eligibility,
+    };
+  }
+
+  const value = weightedMedian(contributing);
+  const triggered = policy.trigger.op === "lt" ? value < policy.trigger.threshold : value > policy.trigger.threshold;
+  return {
+    ...base,
+    outcome: "decision",
+    value,
+    triggered,
+    reason: `${triggered ? "triggered" : "not_triggered"}: ${value} ${policy.trigger.op} ${policy.trigger.threshold}`,
+    contributing,
+    eligibility,
+  };
+}
+
+function ineligible(s: SourceState, reading: ReadingState | null, reason: IneligibleReason): SourceEligibility {
+  return {
+    sourceId: s.sourceId,
+    version: s.version,
+    status: s.status,
+    eligible: false,
+    reason,
+    immature: s.status === "warmup",
+    weight: s.weight,
+    effectiveWeight: 0,
+    readingId: reading?.readingId ?? null,
+  };
+}
+
+/** Lower weighted median; ties ordered by value then sourceId for determinism. */
+export function weightedMedian(items: ContributingReading[]): number {
+  const sorted = [...items].sort((a, b) => a.value - b.value || a.sourceId.localeCompare(b.sourceId));
+  const total = sorted.reduce((s, i) => s + i.effectiveWeight, 0);
+  let acc = 0;
+  for (const item of sorted) {
+    acc += item.effectiveWeight;
+    if (acc >= total / 2) return item.value;
+  }
+  return sorted[sorted.length - 1].value;
+}
+
+function round(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
+}

@@ -1,4 +1,5 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
+import { ClaimHoldService, COVERAGE_FEEDS } from "../oracle/consensus/claim-hold.service";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
@@ -36,7 +37,10 @@ export class ClaimService {
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
+    private readonly oracleEventRepository: OracleEventRepository,
+    // Optional so existing wiring/tests without the consensus layer keep
+    // today's behaviour: no gate, settle directly.
+    @Optional() private readonly claimHoldService?: ClaimHoldService
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -135,6 +139,25 @@ export class ClaimService {
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
 
+    // Evidence-completeness gate (issue #272). A triggered claim whose
+    // evidence is incomplete is put on `payout_held` instead of being paid
+    // or dropped. The policy stays active, so the next scan re-checks it and
+    // a released hold settles here.
+    let holdId: string | undefined;
+    if (this.claimHoldService) {
+      const gate = this.claimHoldService.gate({
+        policyId: policy.id,
+        holder: policy.holder,
+        feedId: COVERAGE_FEEDS[policy.coverageType] ?? `coverage-${policy.coverageType}`,
+        policyExpiresAt: policy.expiresAt * 1000,
+      });
+      if (gate.action === "block") {
+        this.logger.warn(`Payout for policy ${policy.id} not settled: ${gate.reason}`);
+        return undefined;
+      }
+      holdId = gate.holdId;
+    }
+
     const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
     if (!settlement.settled) {
       this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
@@ -142,6 +165,7 @@ export class ClaimService {
     }
 
     this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
+    if (holdId) this.claimHoldService?.markSettled(holdId);
     this.policyService.deactivate(policy.id);
     this.processedCount++;
     this.payoutTotal += BigInt(result.payout);

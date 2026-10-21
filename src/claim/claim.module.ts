@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { ConsensusModule } from "../oracle/consensus/consensus.module";
 import { OracleModule } from "../oracle/oracle.module";
 import { PolicyModule } from "../policy/policy.module";
 import { ClaimController } from "./claim.controller";
@@ -9,7 +10,7 @@ import { ClaimService } from "./claim.service";
 import { ReconciliationService } from "./reconciliation.service";
 
 @Module({
-  imports: [PolicyModule, OracleModule],
+  imports: [PolicyModule, OracleModule, ConsensusModule],
   controllers: [ClaimController],
   providers: [
     ClaimRepository,

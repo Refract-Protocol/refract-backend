@@ -9,6 +9,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ClaimsModule } from './claims/claims.module';
 import { OracleModule } from './oracle/oracle.module';
+import { ConsensusModule } from './oracle/consensus/consensus.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
 import { CacheModule } from './cache/cache.module';
@@ -93,6 +94,7 @@ export const isSandboxMode = (): boolean =>
     RedisModule,
     ClaimsModule,
     OracleModule,
+    ConsensusModule,
     ClaimModule,
     TxModule,
   ],
