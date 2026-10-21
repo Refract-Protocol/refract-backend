@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EvidenceAtRestEncryptor } from "./evidenceAtRestEncryptor.ts";
 
 test("EvidenceAtRestEncryptor supports AES-256-GCM encryption, key rotation, role separation, and tamper detection", () => {
@@ -11,7 +12,9 @@ test("EvidenceAtRestEncryptor supports AES-256-GCM encryption, key rotation, rol
     role: "writer",
     recordId: "ev-1",
     feedId: "XLM_USD",
+    sourceIdentifier: "provider-account-secret",
     rawPayloadJson: '{"price":0.1234,"account":"secret-ref"}',
+    operatorMetadata: { operator: "ops-1", ticket: "incident-9" },
   });
 
   // Rotate to v2 and ensure v1 records still decrypt
@@ -20,7 +23,9 @@ test("EvidenceAtRestEncryptor supports AES-256-GCM encryption, key rotation, rol
     role: "writer",
     recordId: "ev-2",
     feedId: "XLM_USD",
+    sourceIdentifier: "provider-account-secret",
     rawPayloadJson: '{"price":0.1250}',
+    operatorMetadata: { operator: "ops-2" },
   });
   assert.equal(recV2.keyVersion, "v2");
 
@@ -32,13 +37,17 @@ test("EvidenceAtRestEncryptor supports AES-256-GCM encryption, key rotation, rol
   );
 
   // audited_operator can decrypt both v1 and v2
-  assert.equal(
+  assert.deepEqual(
     encryptor.decryptPayload({ role: "audited_operator", record: recV1 }),
-    '{"price":0.1234,"account":"secret-ref"}'
+    {
+      sourceIdentifier: "provider-account-secret",
+      rawPayloadJson: '{"price":0.1234,"account":"secret-ref"}',
+      operatorMetadata: { operator: "ops-1", ticket: "incident-9" },
+    },
   );
   assert.equal(
-    encryptor.decryptPayload({ role: "audited_operator", record: recV2 }),
-    '{"price":0.1250}'
+    encryptor.decryptPayload({ role: "audited_operator", record: recV2 }).rawPayloadJson,
+    '{"price":0.1250}',
   );
 
   // Tampering with ciphertext is detected
@@ -47,4 +56,14 @@ test("EvidenceAtRestEncryptor supports AES-256-GCM encryption, key rotation, rol
   assert.throws(() =>
     encryptor.decryptPayload({ role: "audited_operator", record: tampered })
   );
+
+  const forgedHash = {
+    ...tampered,
+    rowIntegrityHash: createHash("sha256")
+      .update(
+        `${tampered.recordId}|${tampered.feedId}|${tampered.keyVersion}|${tampered.ivHex}|${tampered.authTagHex}|${tampered.ciphertextHex}|${tampered.plaintextSha256}`,
+      )
+      .digest("hex"),
+  };
+  assert.equal(encryptor.readMetadata(forgedHash).integrityValid, false);
 });
