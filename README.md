@@ -194,6 +194,36 @@ reads, and 60/minute for coverage catalogs.
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+### Bootstrapping new oracle sources
+
+A newly onboarded feed or source adapter has no history, so deviation checks
+would either fire on every reading or need to be turned off. Bootstrapping
+backfills recent history from the adapter and seeds:
+
+- **Seed readings** (`oracle_seed_readings`). These are kept apart from
+  `oracle_events` and never feed claim settlement.
+- **A statistical baseline**: median, MAD, mean, stddev, and percentiles.
+  `SourceBootstrapService.assess()` scores live readings against it with a
+  robust z-score. It returns `ready: false` until the source is `warm`, so
+  callers skip the check instead of firing on an empty reference.
+- **An initial reputation** from history coverage and agreement with the
+  feed's other sources. It is capped at 0.8, so new sources still have to
+  earn full trust live.
+
+Apply `src/db/migrations/004_oracle_source_bootstrap.sql`, then run:
+
+```bash
+npx ts-node scripts/oracle-bootstrap.ts --feed stablecoin-depeg \
+  --source cg-usdc:coingecko:coinId=usd-coin \
+  --source cg-usdt:coingecko:coinId=tether
+# compiled image: node dist/oracle/bootstrap/bootstrap.cli.js --help
+```
+
+History providers exist for `coingecko` (`coinId`) and `defillama`
+(`protocolSlug` for TVL, or `coinId` for prices). Runs are idempotent. Warm sources are skipped unless
+`--force` is passed, and a forced re-run that fails keeps the previous
+baseline.
+
 ## License
 
 [MIT](./LICENSE)

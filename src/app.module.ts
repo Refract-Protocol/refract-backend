@@ -9,6 +9,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ClaimsModule } from './claims/claims.module';
 import { OracleModule } from './oracle/oracle.module';
+import { OracleBootstrapModule } from './oracle/bootstrap/oracle-bootstrap.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
 import { CacheModule } from './cache/cache.module';
@@ -112,6 +113,7 @@ export const isSandboxMode = (): boolean =>
     RedisModule,
     ClaimsModule,
     OracleModule,
+    OracleBootstrapModule,
     ClaimModule,
     TxModule,
     SecurityReportsModule,
