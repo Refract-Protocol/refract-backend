@@ -15,6 +15,7 @@
     "migrate:down": "node-pg-migrate down --migrations-dir migrations --config-file database.json",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
+    "simulate:oracle": "ts-node scripts/simulate-oracle-parameters.ts",
     "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand"
   },
   "jest": {

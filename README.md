@@ -171,6 +171,40 @@ reads, and 60/minute for coverage catalogs.
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+## Offline oracle parameter simulation
+
+Operators can replay stored `oracle_events` without contacting providers or
+publishing transactions. The simulator compares recorded trigger decisions
+with a candidate quorum, freshness window, thresholds, and anomaly tolerance.
+It also estimates payout changes using the historical average settled payout
+per coverage type; estimates are indicative, not settlement predictions.
+
+Create a candidate JSON file, for example:
+
+```json
+{
+  "schemaVersion": 1,
+  "quorum": 2,
+  "freshnessSeconds": 300,
+  "anomalyDeviationPct": 10,
+  "thresholds": {
+    "StablecoinDepeg": 0.95,
+    "MarketCrash": -30,
+    "FlightDelay": 120
+  }
+}
+```
+
+Set `DATABASE_URL` to the database containing the historical readings and run:
+
+```sh
+npm run simulate:oracle -- candidate.json 2026-01-01T00:00:00Z 2026-02-01T00:00:00Z
+```
+
+Simulation windows are limited to 366 days and 50,000 readings per run. The
+command is read-only and does not contact providers or alter policies, claims,
+or on-chain state.
+
 ## License
 
 [MIT](./LICENSE)
