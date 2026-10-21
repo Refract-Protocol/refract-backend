@@ -8,6 +8,7 @@ import {
   OracleObservabilitySink,
   OracleSourceRegistry,
 } from "./adapters/source-registry";
+import { ConsensusService } from "./consensus/consensus.service";
 import { EVIDENCE_STORE, EvidenceStore } from "./evidence/evidence-record";
 import { EvidenceSpool } from "./evidence/evidence-spool";
 import { OracleEvidenceBuffer } from "./evidence/oracle-evidence-buffer";
@@ -58,9 +59,20 @@ import { loadOracleTrustConfig, ORACLE_TRUST_CONFIG, OracleTrustConfig } from ".
           onStatus: (s) => metrics?.setOracleEvidenceStatus(s.pending, s.lostTotal, s.complete),
         }),
     },
+    {
+      provide: ConsensusService,
+      inject: [OracleSourceRegistry, OracleEvidenceBuffer, ORACLE_TRUST_CONFIG],
+      useFactory: (registry: OracleSourceRegistry, evidence: OracleEvidenceBuffer, config: OracleTrustConfig) =>
+        new ConsensusService(registry, evidence, {
+          minSources: config.consensusMinSources,
+          targetSources: config.consensusTargetSources,
+          minConfidence: config.consensusMinConfidence,
+          decisionTtlMs: config.consensusDecisionTtlMs,
+        }),
+    },
     OracleGateway,
     OracleScheduler,
   ],
-  exports: [ORACLE_TRUST_CONFIG, OracleSourceRegistry, OracleService, OracleEvidenceBuffer, OracleGateway],
+  exports: [ORACLE_TRUST_CONFIG, OracleSourceRegistry, OracleService, OracleEvidenceBuffer, ConsensusService, OracleGateway],
 })
 export class OracleModule {}

@@ -17,6 +17,24 @@ export interface OracleTrustConfig {
   evidenceSpoolDir: string;
   /** Hard cap on spool size; beyond it evidence is recorded as a gap and settlement fails closed. */
   evidenceSpoolMaxBytes: number;
+  /** Minimum agreeing live sources for an actionable consensus decision. */
+  consensusMinSources: number;
+  /** Source count at which a decision's coverage confidence reaches 1. */
+  consensusTargetSources: number;
+  /** Minimum confidence (0–1) for a decision to be actionable. */
+  consensusMinConfidence: number;
+  /** How long a consensus decision is reused within a claim scan. */
+  consensusDecisionTtlMs: number;
+}
+
+function fractionEnv(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    throw new Error(`${key} must be a number between 0 and 1 (got "${raw}")`);
+  }
+  return n;
 }
 
 function intEnv(env: NodeJS.ProcessEnv, key: string, fallback: number, min = 0): number {
@@ -45,6 +63,12 @@ export function loadOracleTrustConfig(env: NodeJS.ProcessEnv = process.env): Ora
     quarantineMs: intEnv(env, "ORACLE_QUARANTINE_MS", 5 * 60_000, 0),
     evidenceSpoolDir: strEnv(env, "ORACLE_EVIDENCE_SPOOL_DIR", ".data/oracle-evidence"),
     evidenceSpoolMaxBytes: intEnv(env, "ORACLE_EVIDENCE_SPOOL_MAX_BYTES", 256 * 1024 * 1024, 1024),
+    // Each production metric has one live source today, so the default
+    // quorum is 1. Raise to 2 as soon as a second source is registered.
+    consensusMinSources: intEnv(env, "ORACLE_CONSENSUS_MIN_SOURCES", 1, 1),
+    consensusTargetSources: intEnv(env, "ORACLE_CONSENSUS_TARGET_SOURCES", 2, 1),
+    consensusMinConfidence: fractionEnv(env, "ORACLE_CONSENSUS_MIN_CONFIDENCE", 0.5),
+    consensusDecisionTtlMs: intEnv(env, "ORACLE_CONSENSUS_DECISION_TTL_MS", 30_000, 0),
   };
 }
 
