@@ -4,6 +4,7 @@ import { ObservationResult, OracleSourceRegistry } from "../adapters/source-regi
 import { EvidenceNotDurableError } from "../evidence/evidence-record";
 import { OracleEvidenceBuffer } from "../evidence/oracle-evidence-buffer";
 import { ConsensusDecision, ConsensusStatus, DecisionInput } from "./consensus-decision";
+import { TemporalSmoother } from "./temporal-smoother";
 import { isPastThreshold, TRIGGER_SPECS, TriggerSpec } from "./trigger-specs";
 
 export interface ConsensusOptions {
@@ -25,6 +26,8 @@ export interface ConsensusOptions {
  * For a coverage type it observes the trigger metric from every registered
  * live source, aggregates the usable values (median), and then evaluates:
  *
+ *   smoothing   each source contributes the median of its recent samples
+ *               (TemporalSmoother); sources still warming up don't count
  *   quorum      enough usable live sources?            → else "insufficient"
  *   agreement   spread within the trigger's maxSpread? → else "conflicted"
  *   confidence  coverage × agreement ≥ minConfidence?  → else not actionable
@@ -44,6 +47,7 @@ export class ConsensusService {
     private readonly registry: OracleSourceRegistry,
     private readonly evidence: OracleEvidenceBuffer,
     private readonly options: ConsensusOptions,
+    private readonly smoother?: TemporalSmoother,
   ) {
     this.now = options.now ?? Date.now;
   }
@@ -66,32 +70,41 @@ export class ConsensusService {
 
   private async evaluate(spec: TriggerSpec, subject?: string): Promise<ConsensusDecision> {
     const results = spec.metric ? await this.registry.observe({ metric: spec.metric, subject }) : [];
-    const usable = this.usableObservations(results);
     const failures = results.flatMap((r) => (r.ok ? [] : [{ sourceId: r.sourceId, reason: r.reason }]));
-    const decision = this.aggregate(spec, subject, usable, failures);
+    const inputs = this.toInputs(liveObservations(results), failures);
+    const decision = this.aggregate(spec, subject, inputs, failures);
     return this.record(decision);
   }
 
   /**
-   * Live, successful observations that count toward quorum. Extension point
-   * for per-source filtering before cross-source aggregation.
+   * Turns this round's observations into decision inputs. With smoothing on,
+   * each source contributes its window median; a source without enough
+   * history is moved to `failures` as warming up.
    */
-  protected usableObservations(results: ObservationResult[]): SourceObservation[] {
-    return results.flatMap((r) => (r.ok && r.observation.trustTier === "live" ? [r.observation] : []));
+  private toInputs(observations: SourceObservation[], failures: Array<{ sourceId: string; reason: string }>): DecisionInput[] {
+    const inputs: DecisionInput[] = [];
+    for (const o of observations) {
+      const base = { sourceId: o.sourceId, rawValue: o.value, observedAt: o.observedAt, evidenceSha256: o.evidence.bodySha256 };
+      if (!this.smoother) {
+        inputs.push({ ...base, value: o.value, samples: 1, spanMs: 0 });
+        continue;
+      }
+      const s = this.smoother.smooth(o);
+      if (!s.ready || s.value === null) {
+        failures.push({ sourceId: o.sourceId, reason: s.reason ?? "warming up" });
+        continue;
+      }
+      inputs.push({ ...base, value: s.value, samples: s.samples, spanMs: s.spanMs });
+    }
+    return inputs;
   }
 
-  protected aggregate(
+  private aggregate(
     spec: TriggerSpec,
     subject: string | undefined,
-    observations: SourceObservation[],
+    inputs: DecisionInput[],
     failures: Array<{ sourceId: string; reason: string }>,
   ): ConsensusDecision {
-    const inputs: DecisionInput[] = observations.map((o) => ({
-      sourceId: o.sourceId,
-      value: o.value,
-      observedAt: o.observedAt,
-      evidenceSha256: o.evidence.bodySha256,
-    }));
     const values = inputs.map((i) => i.value);
     const required = this.options.minSources;
     const quorum = { required, available: values.length, met: values.length >= required };
@@ -173,6 +186,10 @@ export class ConsensusService {
       };
     }
   }
+}
+
+function liveObservations(results: ObservationResult[]): SourceObservation[] {
+  return results.flatMap((r) => (r.ok && r.observation.trustTier === "live" ? [r.observation] : []));
 }
 
 function median(values: number[]): number {

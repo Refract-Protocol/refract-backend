@@ -25,6 +25,13 @@ export interface OracleTrustConfig {
   consensusMinConfidence: number;
   /** How long a consensus decision is reused within a claim scan. */
   consensusDecisionTtlMs: number;
+  /** Per-source smoothing window. */
+  smoothingWindowMs: number;
+  /** Distinct samples a source needs in its window before it counts toward quorum. */
+  smoothingMinSamples: number;
+  /** Minimum time those samples must span. */
+  smoothingMinSpanMs: number;
+  smoothingMaxSamples: number;
 }
 
 function fractionEnv(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
@@ -69,6 +76,10 @@ export function loadOracleTrustConfig(env: NodeJS.ProcessEnv = process.env): Ora
     consensusTargetSources: intEnv(env, "ORACLE_CONSENSUS_TARGET_SOURCES", 2, 1),
     consensusMinConfidence: fractionEnv(env, "ORACLE_CONSENSUS_MIN_CONFIDENCE", 0.5),
     consensusDecisionTtlMs: intEnv(env, "ORACLE_CONSENSUS_DECISION_TTL_MS", 30_000, 0),
+    smoothingWindowMs: intEnv(env, "ORACLE_SMOOTHING_WINDOW_MS", 15 * 60_000, 1),
+    smoothingMinSamples: intEnv(env, "ORACLE_SMOOTHING_MIN_SAMPLES", 3, 1),
+    smoothingMinSpanMs: intEnv(env, "ORACLE_SMOOTHING_MIN_SPAN_MS", 2 * 60_000, 0),
+    smoothingMaxSamples: intEnv(env, "ORACLE_SMOOTHING_MAX_SAMPLES", 60, 1),
   };
 }
 

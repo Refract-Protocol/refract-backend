@@ -40,8 +40,8 @@ function buildDecision(overrides: Partial<ConsensusDecision> = {}): ConsensusDec
     confidence: 1,
     quorum: { required: 2, available: 2, met: true },
     inputs: [
-      { sourceId: "coingecko", value: 0.9, observedAt: 1, evidenceSha256: "a" },
-      { sourceId: "other", value: 0.9, observedAt: 1, evidenceSha256: "b" },
+      { sourceId: "coingecko", value: 0.9, rawValue: 0.9, observedAt: 1, evidenceSha256: "a", samples: 5, spanMs: 240_000 },
+      { sourceId: "other", value: 0.9, rawValue: 0.89, observedAt: 1, evidenceSha256: "b", samples: 5, spanMs: 240_000 },
     ],
     failures: [],
     blockers: [],

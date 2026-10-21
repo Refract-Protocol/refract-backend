@@ -61,6 +61,7 @@ export class OracleSourceRegistry {
   private readonly logger = new Logger(OracleSourceRegistry.name);
   private readonly adapters = new Map<string, OracleSourceAdapter>();
   private readonly health = new Map<string, HealthState>();
+  private readonly listeners = new Set<(obs: SourceObservation) => void>();
   private readonly now: () => number;
 
   constructor(private readonly options: RegistryOptions) {
@@ -73,6 +74,16 @@ export class OracleSourceRegistry {
     }
     this.adapters.set(adapter.id, adapter);
     return this;
+  }
+
+  /**
+   * Called with every observation that passes the pipeline, whoever asked
+   * for it. Used to build per-source history (TemporalSmoother).
+   * Returns an unsubscribe function.
+   */
+  subscribe(listener: (obs: SourceObservation) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   list(): OracleSourceAdapter[] {
@@ -150,21 +161,26 @@ export class OracleSourceRegistry {
     state.quarantinedUntil = 0;
     state.lastReason = undefined;
 
-    return this.finish(adapter.id, metric, started, {
-      ok: true,
-      observation: {
-        sourceId: adapter.id,
-        trustTier: adapter.trustTier,
-        metric,
-        subject: request.subject,
-        value,
-        observedAt,
-        fetchedAt,
-        hasUpstreamTimestamp,
-        evidence: raw.evidence,
-        context: raw.context,
-      },
-    });
+    const observation: SourceObservation = {
+      sourceId: adapter.id,
+      trustTier: adapter.trustTier,
+      metric,
+      subject: request.subject,
+      value,
+      observedAt,
+      fetchedAt,
+      hasUpstreamTimestamp,
+      evidence: raw.evidence,
+      context: raw.context,
+    };
+    for (const listener of this.listeners) {
+      try {
+        listener(observation);
+      } catch (err) {
+        this.logger.warn(`Observation listener threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return this.finish(adapter.id, metric, started, { ok: true, observation });
   }
 
   private fail(

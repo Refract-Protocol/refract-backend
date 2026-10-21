@@ -9,6 +9,7 @@ import {
   OracleSourceRegistry,
 } from "./adapters/source-registry";
 import { ConsensusService } from "./consensus/consensus.service";
+import { TemporalSmoother } from "./consensus/temporal-smoother";
 import { EVIDENCE_STORE, EvidenceStore } from "./evidence/evidence-record";
 import { EvidenceSpool } from "./evidence/evidence-spool";
 import { OracleEvidenceBuffer } from "./evidence/oracle-evidence-buffer";
@@ -60,15 +61,40 @@ import { loadOracleTrustConfig, ORACLE_TRUST_CONFIG, OracleTrustConfig } from ".
         }),
     },
     {
+      provide: TemporalSmoother,
+      inject: [OracleSourceRegistry, ORACLE_TRUST_CONFIG],
+      useFactory: (registry: OracleSourceRegistry, config: OracleTrustConfig) => {
+        const smoother = new TemporalSmoother({
+          windowMs: config.smoothingWindowMs,
+          minSamples: config.smoothingMinSamples,
+          minSpanMs: config.smoothingMinSpanMs,
+          maxSamples: config.smoothingMaxSamples,
+        });
+        // Scheduler polls and consensus rounds both build history.
+        registry.subscribe((obs) => smoother.ingest(obs));
+        return smoother;
+      },
+    },
+    {
       provide: ConsensusService,
-      inject: [OracleSourceRegistry, OracleEvidenceBuffer, ORACLE_TRUST_CONFIG],
-      useFactory: (registry: OracleSourceRegistry, evidence: OracleEvidenceBuffer, config: OracleTrustConfig) =>
-        new ConsensusService(registry, evidence, {
-          minSources: config.consensusMinSources,
-          targetSources: config.consensusTargetSources,
-          minConfidence: config.consensusMinConfidence,
-          decisionTtlMs: config.consensusDecisionTtlMs,
-        }),
+      inject: [OracleSourceRegistry, OracleEvidenceBuffer, ORACLE_TRUST_CONFIG, TemporalSmoother],
+      useFactory: (
+        registry: OracleSourceRegistry,
+        evidence: OracleEvidenceBuffer,
+        config: OracleTrustConfig,
+        smoother: TemporalSmoother,
+      ) =>
+        new ConsensusService(
+          registry,
+          evidence,
+          {
+            minSources: config.consensusMinSources,
+            targetSources: config.consensusTargetSources,
+            minConfidence: config.consensusMinConfidence,
+            decisionTtlMs: config.consensusDecisionTtlMs,
+          },
+          smoother,
+        ),
     },
     OracleGateway,
     OracleScheduler,

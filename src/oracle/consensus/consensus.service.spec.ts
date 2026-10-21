@@ -4,6 +4,7 @@ import { EvidenceNotDurableError } from "../evidence/evidence-record";
 import { OracleEvidenceBuffer } from "../evidence/oracle-evidence-buffer";
 import { authorizesPayout } from "./consensus-decision";
 import { ConsensusOptions, ConsensusService } from "./consensus.service";
+import { TemporalSmoother } from "./temporal-smoother";
 
 const evidence = { url: "u", status: 200, bodySha256: "sha", bytes: 1, excerpt: "{}", capturedAt: 0 };
 
@@ -142,5 +143,67 @@ describe("ConsensusService", () => {
 
   it("rejects unknown coverage types", async () => {
     await expect(setup([]).consensus.decide(9)).rejects.toThrow(/Unknown coverageType 9/);
+  });
+});
+
+describe("ConsensusService with temporal smoothing", () => {
+  const MIN = 60_000;
+
+  function smoothedSetup(values: number[]) {
+    const clock = { t: 1_000 * MIN };
+    let i = 0;
+    const adapter: OracleSourceAdapter = {
+      id: "coingecko",
+      displayName: "cg",
+      trustTier: "live",
+      metrics: ["usdc.usd.price"],
+      async fetch(): Promise<RawObservation> {
+        return { value: values[i++], observedAt: clock.t, evidence };
+      },
+    };
+    const registry = new OracleSourceRegistry({ timeoutMs: 100, quarantineAfterFailures: 99, quarantineMs: 0, now: () => clock.t });
+    registry.register(adapter);
+    const smoother = new TemporalSmoother({ windowMs: 15 * MIN, minSamples: 3, minSpanMs: 2 * MIN, maxSamples: 60, now: () => clock.t });
+    registry.subscribe((o) => smoother.ingest(o));
+    const consensus = new ConsensusService(
+      registry,
+      fakeEvidence().asBuffer,
+      { minSources: 1, targetSources: 2, minConfidence: 0.5, decisionTtlMs: 0, now: () => clock.t },
+      smoother,
+    );
+    const tick = async () => {
+      const d = await consensus.decide(0);
+      clock.t += MIN;
+      return d;
+    };
+    return { tick };
+  }
+
+  it("is insufficient while the only source is warming up", async () => {
+    const { tick } = smoothedSetup([0.9, 0.9, 0.9]);
+    const d1 = await tick();
+    expect(d1).toMatchObject({ status: "insufficient", actionable: false });
+    expect(d1.failures[0].reason).toMatch(/warming up/);
+    await tick();
+    const d3 = await tick();
+    expect(d3).toMatchObject({ status: "ok", actionable: true, triggered: true });
+    expect(d3.inputs[0]).toMatchObject({ samples: 3, spanMs: 2 * MIN });
+  });
+
+  it("does not trigger on a single depeg print from an otherwise healthy source", async () => {
+    const { tick } = smoothedSetup([1, 1, 1, 1, 0.5, 1, 1]);
+    const decisions = [];
+    for (let k = 0; k < 7; k++) decisions.push(await tick());
+    const spike = decisions[4];
+    expect(spike.inputs[0]).toMatchObject({ rawValue: 0.5, value: 1 });
+    expect(decisions.some((d) => d.triggered)).toBe(false);
+  });
+
+  it("triggers once a real depeg persists through the window", async () => {
+    const { tick } = smoothedSetup([1, 1, 1, 0.9, 0.9, 0.9, 0.9]);
+    const decisions = [];
+    for (let k = 0; k < 7; k++) decisions.push(await tick());
+    expect(decisions[3].triggered).toBe(false); // first low print
+    expect(decisions[6]).toMatchObject({ triggered: true, actionable: true, value: 0.9 });
   });
 });

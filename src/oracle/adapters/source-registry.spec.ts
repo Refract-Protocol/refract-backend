@@ -113,6 +113,23 @@ describe("OracleSourceRegistry", () => {
     expect((await registry.observe({ metric: "usdc.usd.price" }))[0]).toMatchObject({ reason: "quarantined" });
   });
 
+  it("notifies subscribers of every successful observation and isolates a throwing listener", async () => {
+    const { registry, now } = setup();
+    registry
+      .register(adapter("a", () => ({ value: 1, observedAt: now.t })))
+      .register(adapter("b", () => ({ value: NaN })));
+    const seen: string[] = [];
+    registry.subscribe(() => {
+      throw new Error("bad listener");
+    });
+    const unsubscribe = registry.subscribe((o) => seen.push(o.sourceId));
+    await registry.observe({ metric: "usdc.usd.price" });
+    expect(seen).toEqual(["a"]);
+    unsubscribe();
+    await registry.observe({ metric: "usdc.usd.price" });
+    expect(seen).toEqual(["a"]);
+  });
+
   it("emits an observability event for every outcome and survives a throwing sink", async () => {
     const { registry, sink, now } = setup();
     registry.register(adapter("a", () => ({ value: 1, observedAt: now.t })));

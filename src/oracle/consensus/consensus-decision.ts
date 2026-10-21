@@ -13,9 +13,16 @@ export type TriggerDirection = "below" | "above";
 
 export interface DecisionInput {
   sourceId: string;
+  /** The source's contribution: its smoothed (window-median) value when smoothing is on. */
   value: number;
+  /** This round's raw observation from the source. */
+  rawValue: number;
   observedAt: number;
   evidenceSha256: string;
+  /** Samples in the source's smoothing window (1 when smoothing is off). */
+  samples: number;
+  /** Time covered by those samples, ms. */
+  spanMs: number;
 }
 
 export interface ConsensusDecision {
