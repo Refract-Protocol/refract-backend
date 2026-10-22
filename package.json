@@ -1,0 +1,57 @@
+{
+  "name": "oracle-backend",
+  "version": "1.0.0",
+  "description": "Oracle backend with corroborated consensus engine, evidence ledger, and operator tooling",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "lint": "eslint \"src/**/*.ts\" \"scripts/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest",
+    "test:unit": "jest --testPathPattern=\"(src|tests)/.*\\.test\\.ts$\"",
+    "test:query-budget": "jest --runInBand --testPathPattern=\"tests/query-budget\"",
+    "test:incident-postmortem": "jest --runInBand --testPathPattern=\"tests/incident-postmortem\"",
+    "test:restore-drill": "jest --runInBand --testPathPattern=\"tests/restore-drill\"",
+    "db:migrate": "ts-node scripts/migrate.ts",
+    "db:schema": "ts-node scripts/apply-schema.ts",
+    "db:partitions:ensure": "ts-node scripts/ensure-partitions.ts",
+    "dr:restore-drill": "ts-node scripts/restore-drill.ts",
+    "dr:restore-drill:verify": "ts-node scripts/restore-drill.ts --verify-only",
+    "dr:restore-drill:ci": "ts-node scripts/restore-drill.ts --ci --report=artifacts/restore-drill-report.json",
+    "incidents:render": "ts-node scripts/render-incident.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.11.5",
+    "pino": "^9.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.12.7",
+    "@types/pg": "^8.11.5",
+    "@typescript-eslint/eslint-plugin": "^7.7.0",
+    "@typescript-eslint/parser": "^7.7.0",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/tests/**/*.test.ts",
+      "**/src/**/*.test.ts"
+    ],
+    "testTimeout": 60000
+  }
+}

@@ -129,3 +129,90 @@ reassessed against deployment exposure and on-chain contract controls.
 - This document is a threat-model baseline, not a penetration test or proof
   that all vulnerabilities have been found. Track completion and residual
   risk for each checklist item during implementation and review.
+
+## 6. Operational runbooks and evidence-integrity procedures
+
+The controls below support the P1 evidence and resilience items. They are
+operational procedures, not substitutes for the code-level controls above.
+
+### 6.1 Recovery objectives (RPO/RTO)
+
+The oracle PostgreSQL store holds two classes of data with different recovery
+requirements:
+
+| Data class | Examples | RPO | RTO |
+|---|---|---|---|
+| **Evidence and decision data** | Per-source readings, consensus decisions, evidence ledger records, payout linkage, methodology versions, incident timelines | **Lossless to the last committed decision** (RPO = 0 for committed transactions) | Restore and verify within the drill's measured target (tracked per drill run) |
+| **Cache-like data** | Rendered postmortem documents, trust-status projections, derived aggregates, in-memory scheduler state | May be regenerated from evidence; loss acceptable | Rebuilt on demand after restore |
+
+A backup older than the evidence RPO target must cause the restore drill to
+**fail closed** rather than report success. The drill emits measured restore
+duration and data-loss window so drift against these targets is visible.
+
+### 6.2 Restore drill
+
+The restore drill is an idempotent, container-friendly script under
+`scripts/` (restore-and-verify entrypoint) driven entirely by environment
+variables for the source backup/dump and the target ephemeral instance. It:
+
+1. Provisions an ephemeral PostgreSQL instance (see the drill service in
+   `docker-compose.yml`) — never production.
+2. Applies `src/db/migrations/` (and/or `src/db/schema.sql`) from scratch.
+3. Restores the supplied backup or logical dump.
+4. Runs integrity verification: row counts per feed/decision table within
+   tolerance, gap-free evidence sequence/chain verification, and a
+   referential check that every settled claim has a decision and evidence
+   record.
+5. Tears everything down and emits a pass/fail signal plus measured restore
+   duration and data-loss window.
+
+The drill runs on a **weekly schedule in CI/staging** and records its outcome
+in an operator-visible place (metrics endpoint or a small report artifact).
+Credentials are injected via environment/secret stores, never checked in.
+Backups taken mid-run (partial partitions, in-flight decisions) must still
+verify consistently; deliberately truncated or stale backups must fail with a
+clear diagnostic.
+
+### 6.3 Applying the partitioning migration to an existing deployment
+
+The readings and evidence tables are converted to time-based range
+partitions by a numbered migration under `src/db/migrations/`. The migration
+takes bounded locks and is safe to re-run:
+
+1. Create the new partitioned table alongside the existing table.
+2. Backfill existing rows in batches (bounded batch size, resumable).
+3. Swap table names once backfill and verification complete.
+4. Create the covering indexes for the hot query shapes (consensus window per
+   `(feed, source, observed_at)`, evidence lookup by decision/payout id,
+   trust-status by feed) and pre-create future partitions.
+
+Apply it during a maintenance window with the ingestion write path paused or
+draining; verify row counts and index presence before resuming. Partition
+maintenance pre-creates future partitions from the scheduler and alerts if
+the next partition is missing.
+
+### 6.4 Query-budget policy for readings/evidence tables
+
+Every repository query against the partitioned readings and evidence tables
+**must bound the timestamp range**. Queries that omit the timestamp predicate
+must fail loudly rather than scan all partitions. Review checklist for new
+queries:
+
+- [ ] Includes an explicit `observed_at`/decision timestamp range predicate.
+- [ ] Targets the expected partition(s) and index (verified with
+      `EXPLAIN (ANALYZE, BUFFERS)`).
+- [ ] Does not scan full history for hot-path or audit queries.
+- [ ] Unique constraints include the partition key.
+- [ ] Covered by a slow-query budget test that fails CI on unbounded scans.
+
+### 6.5 Incident and postmortem workflow
+
+Circuit-breaker trips, quorum failures, freshness breaches, operator pauses,
+and backfill/replay events open an incident automatically (or manually by an
+operator). Events are appended to the incident as they happen; the markdown
+postmortem is rendered on demand from stored events, deterministically, with
+human-authored analysis fields left blank. Incidents must not leak secrets or
+unredacted provider payloads. A rolling window of many small breaker trips is
+grouped rather than producing dozens of incidents. The incident list and
+rendered postmortem are exposed through the operator/admin surface and stored
+with a stable id.

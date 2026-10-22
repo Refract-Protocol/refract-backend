@@ -17,6 +17,29 @@ services:
       retries: 10
       start_period: 5s
 
+  # Ephemeral PostgreSQL instance used exclusively by the disaster-recovery
+  # restore drill (scripts/restore-drill.sh). It has NO persistent volume and
+  # is torn down after every run, so it can never hold or serve production data.
+  # The drill must NEVER be pointed at the production database: this service is
+  # the only target it is allowed to restore into.
+  postgres-drill:
+    image: postgres:16-alpine
+    profiles: ["drill"]
+    environment:
+      POSTGRES_DB: ${DRILL_POSTGRES_DB:-refract_drill}
+      POSTGRES_USER: ${DRILL_POSTGRES_USER:-refract_drill}
+      POSTGRES_PASSWORD: ${DRILL_POSTGRES_PASSWORD:-refract_drill}
+    ports:
+      - "127.0.0.1:${DRILL_POSTGRES_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DRILL_POSTGRES_USER:-refract_drill} -d ${DRILL_POSTGRES_DB:-refract_drill}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]

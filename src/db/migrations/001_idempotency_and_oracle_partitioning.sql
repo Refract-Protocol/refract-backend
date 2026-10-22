@@ -3,6 +3,10 @@
 --
 -- Apply on top of src/db/schema.sql:
 --   psql "$DATABASE_URL" -f src/db/migrations/001_idempotency_and_oracle_partitioning.sql
+--
+-- NOTE: superseded for the oracle readings/evidence tables by
+-- 004_methodology_partitioning_and_incidents.sql, which converts them to
+-- partitioned form.  This file remains for fresh-install ordering.
 
 -- ─── Idempotency Keys ────────────────────────────────────────────────────────
 -- Stores durable idempotency locks and committed responses for state-changing

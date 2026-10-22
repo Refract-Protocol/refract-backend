@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { Counter, Histogram, Registry } from "@prometheus-io/client";
+import { Counter, Gauge, Histogram, Registry } from "@prometheus-io/client";
 import { NextFunction, Request, RequestHandler, Response } from "express";
 
 type Outcome = "success" | "failure";
@@ -54,6 +54,36 @@ export class MetricsService {
     buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
     registers: [this.registry],
   });
+  private readonly drDrillLastRunTimestamp = new Gauge<"drill">({
+    name: "refract_dr_drill_last_run_timestamp_seconds",
+    help: "Unix timestamp of the last completed disaster-recovery restore drill.",
+    labelNames: ["drill"],
+    registers: [this.registry],
+  });
+  private readonly drDrillPassed = new Gauge<"drill">({
+    name: "refract_dr_drill_passed",
+    help: "Whether the last disaster-recovery restore drill passed (1) or failed (0).",
+    labelNames: ["drill"],
+    registers: [this.registry],
+  });
+  private readonly drDrillRestoreDuration = new Gauge<"drill">({
+    name: "refract_dr_drill_restore_duration_seconds",
+    help: "Measured restore duration (RTO) of the last disaster-recovery drill in seconds.",
+    labelNames: ["drill"],
+    registers: [this.registry],
+  });
+  private readonly drDrillDataLossWindow = new Gauge<"drill">({
+    name: "refract_dr_drill_data_loss_window_seconds",
+    help: "Measured data-loss window (RPO) of the last disaster-recovery drill in seconds.",
+    labelNames: ["drill"],
+    registers: [this.registry],
+  });
+  private readonly incidentsOpened = new Counter<"trigger_class">({
+    name: "refract_incidents_opened_total",
+    help: "Incidents opened, labeled by trigger class.",
+    labelNames: ["trigger_class"],
+    registers: [this.registry],
+  });
 
   readonly httpMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     if (req.path === "/metrics") {
@@ -84,6 +114,25 @@ export class MetricsService {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  recordDrDrillResult(result: {
+    drill?: string;
+    passed: boolean;
+    restoreDurationSeconds: number;
+    dataLossWindowSeconds: number;
+    completedAt?: Date;
+  }): void {
+    const drill = result.drill ?? "restore";
+    const completedAt = result.completedAt ?? new Date();
+    this.drDrillLastRunTimestamp.labels({ drill }).set(completedAt.getTime() / 1000);
+    this.drDrillPassed.labels({ drill }).set(result.passed ? 1 : 0);
+    this.drDrillRestoreDuration.labels({ drill }).set(result.restoreDurationSeconds);
+    this.drDrillDataLossWindow.labels({ drill }).set(result.dataLossWindowSeconds);
+  }
+
+  recordIncidentOpened(triggerClass: string): void {
+    this.incidentsOpened.labels({ trigger_class: triggerClass }).inc();
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {
