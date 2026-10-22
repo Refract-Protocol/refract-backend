@@ -9,6 +9,44 @@ import { ClaimResult } from "./claim-result";
 const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
 
 /**
+ * Side-effect-free trigger evaluation, parameterized by feed state.
+ *
+ * This is the single source of truth for "would this policy trigger given
+ * this oracle reading". ClaimService's live scan and the manual-override
+ * dry-run preview (OverridePreviewService) both call it, so the preview
+ * runs the real logic rather than a parallel approximation.
+ */
+export function evaluateTrigger(policy: StoredPolicy, oracle: OracleReading, fetchedAt: number, nowSeconds: number): ClaimResult {
+  const staleness = nowSeconds - fetchedAt;
+  if (staleness > STALENESS_LIMIT_SECONDS) {
+    return buildTriggerResult(policy, false, `Oracle data stale (${staleness}s old)`);
+  }
+
+  let triggered: boolean;
+  switch (policy.coverageType) {
+    case 4: // FlightDelay: triggers when the delay exceeds the threshold
+      triggered = oracle.value > oracle.threshold;
+      break;
+    default: // StablecoinDepeg, MarketCrash, LiquidationShield, SmartContractRisk: trigger below threshold
+      triggered = oracle.value < oracle.threshold;
+  }
+
+  return buildTriggerResult(policy, triggered, oracle.message);
+}
+
+function buildTriggerResult(policy: StoredPolicy, triggered: boolean, reason: string): ClaimResult {
+  return {
+    policyId: policy.id,
+    holder: policy.holder,
+    coverageType: policy.coverageType,
+    triggered,
+    payout: triggered ? policy.coverageAmount : "0",
+    reason,
+    processedAt: Date.now(),
+  };
+}
+
+/**
  * ClaimService scans active policies for triggered conditions and settles
  * payouts. This is a migration of src/services/claimProcessor.ts, with one
  * deliberate fix: the old ClaimProcessor kept its own private
@@ -100,33 +138,7 @@ export class ClaimService {
   }
 
   private evaluatePolicy(policy: StoredPolicy, oracle: OracleReading, fetchedAt: number): ClaimResult {
-    const staleness = Math.floor(Date.now() / 1000) - fetchedAt;
-    if (staleness > STALENESS_LIMIT_SECONDS) {
-      return this.buildResult(policy, false, `Oracle data stale (${staleness}s old)`);
-    }
-
-    let triggered: boolean;
-    switch (policy.coverageType) {
-      case 4: // FlightDelay: triggers when the delay exceeds the threshold
-        triggered = oracle.value > oracle.threshold;
-        break;
-      default: // StablecoinDepeg, MarketCrash, LiquidationShield, SmartContractRisk: trigger below threshold
-        triggered = oracle.value < oracle.threshold;
-    }
-
-    return this.buildResult(policy, triggered, oracle.message);
-  }
-
-  private buildResult(policy: StoredPolicy, triggered: boolean, reason: string): ClaimResult {
-    return {
-      policyId: policy.id,
-      holder: policy.holder,
-      coverageType: policy.coverageType,
-      triggered,
-      payout: triggered ? policy.coverageAmount : "0",
-      reason,
-      processedAt: Date.now(),
-    };
+    return evaluateTrigger(policy, oracle, fetchedAt, Math.floor(Date.now() / 1000));
   }
 
   /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */

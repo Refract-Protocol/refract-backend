@@ -104,6 +104,74 @@ export const envSchema = z
       .enum(["true", "false"])
       .optional()
       .transform((value) => value === "true"),
+    // Alert routing (dedup / grouping / escalation).
+    ALERT_DEDUP_WINDOW_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "ALERT_DEDUP_WINDOW_MS",
+    }),
+    ALERT_GROUP_WINDOW_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "ALERT_GROUP_WINDOW_MS",
+    }),
+    ALERT_ESCALATION_DELAY_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "ALERT_ESCALATION_DELAY_MS",
+    }),
+    ALERT_RENOTIFY_INTERVAL_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "ALERT_RENOTIFY_INTERVAL_MS",
+    }),
+    ALERT_NOTIFIER: z
+      .enum(["noop", "webhook"])
+      .optional()
+      .default("noop"),
+    ALERT_WEBHOOK_URL: urlFromEnv("ALERT_WEBHOOK_URL"),
+    // Dead-man's-switch heartbeat and local watchdog.
+    HEARTBEAT_ENABLED: z
+      .enum(["true", "false"])
+      .optional()
+      .transform((value) => value === "true"),
+    HEARTBEAT_URL: urlFromEnv("HEARTBEAT_URL"),
+    HEARTBEAT_INTERVAL_MS: intFromEnv({
+      min: 1_000,
+      max: 86_400_000,
+      label: "HEARTBEAT_INTERVAL_MS",
+    }),
+    HEARTBEAT_GRACE_PERIOD_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "HEARTBEAT_GRACE_PERIOD_MS",
+    }),
+    HEARTBEAT_MAX_CONSECUTIVE_MISSES: intFromEnv({
+      min: 1,
+      max: 1_000,
+      label: "HEARTBEAT_MAX_CONSECUTIVE_MISSES",
+    }),
+    WATCHDOG_METRICS_STALENESS_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "WATCHDOG_METRICS_STALENESS_MS",
+    }),
+    WATCHDOG_ALERT_DELIVERY_STALENESS_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "WATCHDOG_ALERT_DELIVERY_STALENESS_MS",
+    }),
+    // Manual override preview / apply.
+    OVERRIDE_PREVIEW_VALIDITY_MS: intFromEnv({
+      min: 0,
+      max: 86_400_000,
+      label: "OVERRIDE_PREVIEW_VALIDITY_MS",
+    }),
+    OVERRIDE_EXPOSURE_CEILING: intFromEnv({
+      min: 0,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "OVERRIDE_EXPOSURE_CEILING",
+    }),
   })
   .superRefine((env, ctx) => {
     if (!env.REQUIRE_CHAIN_CONFIG) {
@@ -124,6 +192,22 @@ export const envSchema = z
           message: `${key} is required when REQUIRE_CHAIN_CONFIG=true`,
         });
       }
+    }
+  })
+  .superRefine((env, ctx) => {
+    if (env.ALERT_NOTIFIER === "webhook" && env.ALERT_WEBHOOK_URL === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ALERT_WEBHOOK_URL"],
+        message: "ALERT_WEBHOOK_URL is required when ALERT_NOTIFIER=webhook",
+      });
+    }
+    if (env.HEARTBEAT_ENABLED && env.HEARTBEAT_URL === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["HEARTBEAT_URL"],
+        message: "HEARTBEAT_URL is required when HEARTBEAT_ENABLED=true",
+      });
     }
   });
 

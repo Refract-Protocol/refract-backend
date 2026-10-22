@@ -116,7 +116,53 @@ reassessed against deployment exposure and on-chain contract controls.
   use circuit breakers/backoff for dependencies, and alert on stale oracle
   inputs, settlement failures, and backlog age.
 
-## 5. Assumptions and limitations
+## 5. Dead-man's-switch runbook (issue #290)
+
+Every alert described above is produced by the same process whose failure is
+the most likely disaster. To make silence detectable, the oracle pipeline
+emits a heartbeat to an external dead-man's-switch endpoint, and a local
+watchdog verifies that metrics scrapes and alert deliveries are still fresh.
+
+### 5.1 Heartbeat contract
+
+- **Cadence:** one heartbeat per completed poll cycle, sent only after a
+  successful poll *and* a successful DB write. The heartbeat is driven by the
+  completed-work signal, not a standalone timer, so a wedged loop that never
+  finishes a cycle stops heartbeating by construction.
+- **Expected interval:** `HEARTBEAT_INTERVAL_MS` (default 60s). The external
+  monitor must be configured with a grace period of at least
+  `HEARTBEAT_GRACE_PERIOD_MS` (default 3× the interval) before paging.
+- **Payload:** feed coverage counts and the last successful publish
+  timestamp, so a stalled-but-alive pipeline is detectable remotely. The
+  payload must never contain secrets (no relayer keys, no signed XDR).
+- **Transient failures:** a single failed delivery to the receiver must not
+  page; the monitor requires `HEARTBEAT_MISS_THRESHOLD` (default 3)
+  consecutive misses.
+- **Disabling:** set `HEARTBEAT_ENABLED=false` for local dev; the watchdog
+  and external monitor are then expected to be disabled too.
+
+### 5.2 Local watchdog
+
+The watchdog checks metrics-scrape freshness and alert-delivery success and
+raises a high-severity alert when either lapses beyond its threshold. It is
+unit-tested against the staleness thresholds; thresholds are configuration,
+not hard-coded.
+
+### 5.3 Runbook: "heartbeat missing"
+
+1. Confirm the external monitor is configured with the documented cadence and
+   grace period, and that `HEARTBEAT_ENABLED` is not accidentally `false`.
+2. Check whether the process is alive (`src/index.ts`), whether the scheduler
+   is running, and whether the DB is reachable. A live process with no
+   heartbeat means cycles are not completing.
+3. Inspect the last heartbeat payload's coverage counts and last publish
+   timestamp to distinguish a stalled pipeline from a dead one.
+4. Check the local watchdog's metrics-scrape and alert-delivery freshness
+   signals; a broken alerting integration can also produce silence.
+5. If the pipeline is wedged, restart it and confirm heartbeats resume before
+   closing the incident. Record the outage window and any missed cycles.
+
+## 6. Assumptions and limitations
 
 - This assessment covers the backend code paths named above, not frontend
   wallet UX, contract implementation, RPC-provider internals, cloud IAM,

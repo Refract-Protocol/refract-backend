@@ -36,8 +36,28 @@
  *   must filter to `live` products so a draft is never accidentally live.
  * - Each publish transition records an approval record (who drafted, who
  *   published, when) so the governance step is auditable.
-
+ *
+ * Composite / derived feeds (issue #298):
+ * - A composite feed's value is computed deterministically from one or more
+ *   upstream *consensus* feeds via a declared, versioned formula. Composites
+ *   are first-class: they participate in the same scheduling, evidence,
+ *   anomaly, and trust machinery as primitive feeds.
+ * - Formulas are represented as a small, versioned, non-Turing-complete AST
+ *   evaluated by a pure function over a fixed-decimal numeric type so results
+ *   are reproducible byte-for-byte across nodes and replays.
+ * - Composite evaluation only ever reads upstream *consensus* outputs (never
+ *   raw single-source readings), with declared freshness requirements on each
+ *   input. A composite inherits the weakest required input state (stale,
+ *   quarantined, degraded) so a degraded input degrades the composite.
+ * - Cycles, self-reference, and undefined units are rejected at config load;
+ *   the dependency graph is resolved topologically so composites-of-composites
+ *   evaluate in order.
+ * - Every evaluation emits a consensus-quality decision + evidence record
+ *   recording the formula version, input decision ids, and computed value so
+ *   replay uses the version in force at the time.
  */
+import { FixedDecimal, FixedDecimalError } from "./fixed-point";
+
 export type CoverageType =
   | "StablecoinDepeg"
   | "MarketCrash"
@@ -255,4 +275,514 @@ export function maxPoolExposureForType(
     return 0;
   }
   return (lockedCapital * product.maxPoolExposurePct) / 100;
+}
+
+// ---------------------------------------------------------------------------
+// Composite / derived feeds (issue #298)
+// ---------------------------------------------------------------------------
+
+/**
+ * Unit of a feed value. Composites must declare a unit and every formula node
+ * must resolve to a defined unit; undefined units are rejected at config load.
+ */
+export type FeedUnit = "usd" | "ratio" | "bps" | "minutes" | "count";
+
+/** Rounding policy applied to the final composite value. */
+export type RoundingMode = "half-up" | "half-even" | "floor" | "ceil" | "truncate";
+
+export interface RoundingPolicy {
+  mode: RoundingMode;
+  /** Number of decimal places to round to (>= 0). */
+  scale: number;
+}
+
+/**
+ * Trust/quality state of a feed reading. Ordered from best to worst so a
+ * composite can inherit the weakest required input state via `max`.
+ */
+export type FeedQualityState = "ok" | "degraded" | "stale" | "quarantined";
+
+const QUALITY_RANK: Record<FeedQualityState, number> = {
+  ok: 0,
+  degraded: 1,
+  stale: 2,
+  quarantined: 3,
+};
+
+/** Returns the weaker (worse) of two quality states. */
+export function weakestQualityState(
+  a: FeedQualityState,
+  b: FeedQualityState,
+): FeedQualityState {
+  return QUALITY_RANK[a] >= QUALITY_RANK[b] ? a : b;
+}
+
+/**
+ * Non-Turing-complete expression AST. Every node is a plain data object so it
+ * can be serialized, versioned, and replayed. There are no loops, no user
+ * functions, and no side effects — evaluation is a pure fold over the tree.
+ */
+export type CompositeExpression =
+  | { kind: "input"; feedId: string }
+  | { kind: "const"; value: string }
+  | { kind: "add"; left: CompositeExpression; right: CompositeExpression }
+  | { kind: "sub"; left: CompositeExpression; right: CompositeExpression }
+  | { kind: "mul"; left: CompositeExpression; right: CompositeExpression }
+  | { kind: "div"; left: CompositeExpression; right: CompositeExpression }
+  | { kind: "neg"; operand: CompositeExpression }
+  | { kind: "abs"; operand: CompositeExpression }
+  | { kind: "min"; operands: CompositeExpression[] }
+  | { kind: "max"; operands: CompositeExpression[] };
+
+/** Declared freshness requirement on a single input feed. */
+export interface CompositeInputSpec {
+  /** Upstream feed id (primitive or another composite). */
+  feedId: string;
+  /** Maximum age in seconds of the upstream consensus decision. */
+  maxAgeSeconds: number;
+  /** Unit the upstream feed must be denominated in. */
+  unit: FeedUnit;
+}
+
+/**
+ * Versioned composite feed definition. The `version` is stored with every
+ * decision so replay uses the formula version in force at the time.
+ */
+export interface CompositeFeedDefinition {
+  /** Output feed id produced by this composite. */
+  outputFeedId: string;
+  /** Explicit, monotonically increasing formula version. */
+  version: number;
+  /** Declared inputs with freshness requirements. */
+  inputs: CompositeInputSpec[];
+  /** Deterministic expression evaluated over upstream consensus outputs. */
+  expression: CompositeExpression;
+  /** Unit of the composite's output value. */
+  outputUnit: FeedUnit;
+  /** Rounding policy applied to the final value. */
+  rounding: RoundingPolicy;
+}
+
+/** Raised when a composite definition is invalid at config-load time. */
+export class CompositeConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CompositeConfigError";
+  }
+}
+
+/** Raised when a composite evaluation cannot produce a value. */
+export class CompositeEvaluationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CompositeEvaluationError";
+  }
+}
+
+/**
+ * Upstream consensus output consumed by a composite. Only consensus outputs
+ * are ever passed here — never raw single-source readings.
+ */
+export interface UpstreamConsensusOutput {
+  feedId: string;
+  /** Consensus decision id, recorded in the composite's evidence. */
+  decisionId: string;
+  /** Fixed-decimal value of the consensus output. */
+  value: FixedDecimal;
+  unit: FeedUnit;
+  /** Quality state of the upstream consensus decision. */
+  quality: FeedQualityState;
+  /** Unix timestamp (seconds) at which the upstream decision was produced. */
+  decidedAt: number;
+}
+
+/** Evidence record emitted for every composite evaluation. */
+export interface CompositeEvidenceRecord {
+  outputFeedId: string;
+  formulaVersion: number;
+  /** Ordered input decision ids (in declared input order). */
+  inputDecisionIds: string[];
+  /** Computed value serialized as a canonical fixed-decimal string. */
+  computedValue: string;
+  unit: FeedUnit;
+  quality: FeedQualityState;
+  evaluatedAt: number;
+}
+
+/** Consensus-quality decision emitted for every composite evaluation. */
+export interface CompositeDecision {
+  outputFeedId: string;
+  formulaVersion: number;
+  value: FixedDecimal;
+  unit: FeedUnit;
+  quality: FeedQualityState;
+  evidence: CompositeEvidenceRecord;
+}
+
+// --- Config-load validation -------------------------------------------------
+
+function collectInputFeedIds(expr: CompositeExpression, acc: Set<string>): void {
+  switch (expr.kind) {
+    case "input":
+      acc.add(expr.feedId);
+      return;
+    case "const":
+      return;
+    case "neg":
+    case "abs":
+      collectInputFeedIds(expr.operand, acc);
+      return;
+    case "min":
+    case "max":
+      for (const operand of expr.operands) {
+        collectInputFeedIds(operand, acc);
+      }
+      return;
+    case "add":
+    case "sub":
+    case "mul":
+    case "div":
+      collectInputFeedIds(expr.left, acc);
+      collectInputFeedIds(expr.right, acc);
+      return;
+    default: {
+      const _exhaustive: never = expr;
+      throw new CompositeConfigError(`unknown expression node: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}
+
+/**
+ * Validates a single composite definition in isolation: rejects self-reference,
+ * undefined units, malformed rounding, and expressions referencing feeds not
+ * declared as inputs. Cross-composite cycle detection is done by
+ * `buildCompositeDependencyGraph`.
+ */
+export function validateCompositeDefinition(def: CompositeFeedDefinition): void {
+  if (!def.outputFeedId) {
+    throw new CompositeConfigError("composite feed requires an outputFeedId");
+  }
+  if (!Number.isInteger(def.version) || def.version < 1) {
+    throw new CompositeConfigError(
+      `composite ${def.outputFeedId}: version must be a positive integer`,
+    );
+  }
+  if (!def.outputUnit) {
+    throw new CompositeConfigError(`composite ${def.outputFeedId}: outputUnit is required`);
+  }
+  if (!def.rounding || !Number.isInteger(def.rounding.scale) || def.rounding.scale < 0) {
+    throw new CompositeConfigError(
+      `composite ${def.outputFeedId}: rounding.scale must be a non-negative integer`,
+    );
+  }
+  if (!["half-up", "half-even", "floor", "ceil", "truncate"].includes(def.rounding.mode)) {
+    throw new CompositeConfigError(
+      `composite ${def.outputFeedId}: unknown rounding mode ${def.rounding.mode}`,
+    );
+  }
+  if (def.inputs.length === 0) {
+    throw new CompositeConfigError(`composite ${def.outputFeedId}: at least one input required`);
+  }
+
+  const declared = new Set<string>();
+  for (const input of def.inputs) {
+    if (!input.feedId) {
+      throw new CompositeConfigError(`composite ${def.outputFeedId}: input feedId is required`);
+    }
+    if (input.feedId === def.outputFeedId) {
+      throw new CompositeConfigError(
+        `composite ${def.outputFeedId}: self-reference is not allowed`,
+      );
+    }
+    if (!input.unit) {
+      throw new CompositeConfigError(
+        `composite ${def.outputFeedId}: input ${input.feedId} has undefined unit`,
+      );
+    }
+    if (!Number.isFinite(input.maxAgeSeconds) || input.maxAgeSeconds <= 0) {
+      throw new CompositeConfigError(
+        `composite ${def.outputFeedId}: input ${input.feedId} requires a positive maxAgeSeconds`,
+      );
+    }
+    if (declared.has(input.feedId)) {
+      throw new CompositeConfigError(
+        `composite ${def.outputFeedId}: duplicate input ${input.feedId}`,
+      );
+    }
+    declared.add(input.feedId);
+  }
+
+  const referenced = new Set<string>();
+  collectInputFeedIds(def.expression, referenced);
+  for (const feedId of referenced) {
+    if (!declared.has(feedId)) {
+      throw new CompositeConfigError(
+        `composite ${def.outputFeedId}: expression references undeclared input ${feedId}`,
+      );
+    }
+  }
+}
+
+// --- Dependency graph & topological ordering --------------------------------
+
+export interface CompositeDependencyGraph {
+  /** outputFeedId -> set of upstream feed ids it depends on. */
+  edges: Map<string, Set<string>>;
+  /** Topologically ordered output feed ids (upstreams before dependents). */
+  order: string[];
+}
+
+/**
+ * Builds a dependency graph across composite definitions and returns a
+ * topological evaluation order. Rejects cycles (including self-reference) and
+ * duplicate output feed ids. Primitive upstream feeds are treated as leaves.
+ */
+export function buildCompositeDependencyGraph(
+  definitions: readonly CompositeFeedDefinition[],
+): CompositeDependencyGraph {
+  const byOutput = new Map<string, CompositeFeedDefinition>();
+  for (const def of definitions) {
+    validateCompositeDefinition(def);
+    if (byOutput.has(def.outputFeedId)) {
+      throw new CompositeConfigError(`duplicate composite output feed ${def.outputFeedId}`);
+    }
+    byOutput.set(def.outputFeedId, def);
+  }
+
+  const edges = new Map<string, Set<string>>();
+  for (const def of definitions) {
+    edges.set(def.outputFeedId, new Set(def.inputs.map((i) => i.feedId)));
+  }
+
+  // Kahn's algorithm over composite nodes only; primitive inputs are leaves.
+  const inDegree = new Map<string, number>();
+  for (const id of byOutput.keys()) {
+    inDegree.set(id, 0);
+  }
+  for (const [id, deps] of edges) {
+    for (const dep of deps) {
+      if (byOutput.has(dep)) {
+        inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
+      }
+    }
+  }
+
+  const queue: string[] = [];
+  for (const [id, degree] of inDegree) {
+    if (degree === 0) {
+      queue.push(id);
+    }
+  }
+  queue.sort();
+
+  const order: string[] = [];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    order.push(id);
+    for (const [dependent, deps] of edges) {
+      if (deps.has(id)) {
+        const next = (inDegree.get(dependent) ?? 0) - 1;
+        inDegree.set(dependent, next);
+        if (next === 0) {
+          queue.push(dependent);
+          queue.sort();
+        }
+      }
+    }
+  }
+
+  if (order.length !== byOutput.size) {
+    const cyclic = [...byOutput.keys()].filter((id) => !order.includes(id));
+    throw new CompositeConfigError(
+      `composite dependency cycle detected among: ${cyclic.sort().join(", ")}`,
+    );
+  }
+
+  return { edges, order };
+}
+
+// --- Pure fixed-decimal AST evaluator ---------------------------------------
+
+function roundFixed(value: FixedDecimal, policy: RoundingPolicy): FixedDecimal {
+  return value.round(policy.scale, policy.mode);
+}
+
+function evalNode(
+  expr: CompositeExpression,
+  values: Map<string, FixedDecimal>,
+): FixedDecimal {
+  switch (expr.kind) {
+    case "input": {
+      const v = values.get(expr.feedId);
+      if (v === undefined) {
+        throw new CompositeEvaluationError(`missing value for input ${expr.feedId}`);
+      }
+      return v;
+    }
+    case "const":
+      return FixedDecimal.parse(expr.value);
+    case "add":
+      return evalNode(expr.left, values).add(evalNode(expr.right, values));
+    case "sub":
+      return evalNode(expr.left, values).sub(evalNode(expr.right, values));
+    case "mul":
+      return evalNode(expr.left, values).mul(evalNode(expr.right, values));
+    case "div": {
+      const divisor = evalNode(expr.right, values);
+      if (divisor.isZero()) {
+        throw new CompositeEvaluationError("division by zero");
+      }
+      return evalNode(expr.left, values).div(divisor);
+    }
+    case "neg":
+      return evalNode(expr.operand, values).neg();
+    case "abs":
+      return evalNode(expr.operand, values).abs();
+    case "min": {
+      if (expr.operands.length === 0) {
+        throw new CompositeEvaluationError("min requires at least one operand");
+      }
+      let acc = evalNode(expr.operands[0], values);
+      for (let i = 1; i < expr.operands.length; i += 1) {
+        acc = acc.min(evalNode(expr.operands[i], values));
+      }
+      return acc;
+    }
+    case "max": {
+      if (expr.operands.length === 0) {
+        throw new CompositeEvaluationError("max requires at least one operand");
+      }
+      let acc = evalNode(expr.operands[0], values);
+      for (let i = 1; i < expr.operands.length; i += 1) {
+        acc = acc.max(evalNode(expr.operands[i], values));
+      }
+      return acc;
+    }
+    default: {
+      const _exhaustive: never = expr;
+      throw new CompositeEvaluationError(
+        `unknown expression node: ${JSON.stringify(_exhaustive)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Evaluates a composite definition over upstream consensus outputs. Pure and
+ * deterministic: identical inputs and formula version always produce the
+ * identical output byte-for-byte.
+ *
+ * Only consensus outputs are accepted. Each declared input must be present,
+ * match the declared unit, and be within its freshness window; otherwise the
+ * composite inherits the weakest required input state (stale/quarantined/
+ * degraded). Divide-by-zero, overflow, and NaN are rejected.
+ */
+export function evaluateComposite(
+  def: CompositeFeedDefinition,
+  upstream: readonly UpstreamConsensusOutput[],
+  evaluatedAt: number,
+): CompositeDecision {
+  validateCompositeDefinition(def);
+
+  const byFeed = new Map<string, UpstreamConsensusOutput>();
+  for (const output of upstream) {
+    byFeed.set(output.feedId, output);
+  }
+
+  let quality: FeedQualityState = "ok";
+  const values = new Map<string, FixedDecimal>();
+  const inputDecisionIds: string[] = [];
+
+  for (const input of def.inputs) {
+    const output = byFeed.get(input.feedId);
+    if (!output) {
+      throw new CompositeEvaluationError(
+        `composite ${def.outputFeedId}: missing upstream consensus output for ${input.feedId}`,
+      );
+    }
+    if (output.unit !== input.unit) {
+      throw new CompositeEvaluationError(
+        `composite ${def.outputFeedId}: unit mismatch for ${input.feedId} ` +
+          `(expected ${input.unit}, got ${output.unit})`,
+      );
+    }
+    const age = evaluatedAt - output.decidedAt;
+    let inputQuality = output.quality;
+    if (age > input.maxAgeSeconds && inputQuality === "ok") {
+      inputQuality = "stale";
+    }
+    quality = weakestQualityState(quality, inputQuality);
+    values.set(input.feedId, output.value);
+    inputDecisionIds.push(output.decisionId);
+  }
+
+  let computed: FixedDecimal;
+  try {
+    computed = roundFixed(evalNode(def.expression, values), def.rounding);
+  } catch (err) {
+    if (err instanceof FixedDecimalError) {
+      throw new CompositeEvaluationError(
+        `composite ${def.outputFeedId}: ${err.message}`,
+      );
+    }
+    throw err;
+  }
+
+  const computedValue = computed.toString();
+  const evidence: CompositeEvidenceRecord = {
+    outputFeedId: def.outputFeedId,
+    formulaVersion: def.version,
+    inputDecisionIds,
+    computedValue,
+    unit: def.outputUnit,
+    quality,
+    evaluatedAt,
+  };
+
+  return {
+    outputFeedId: def.outputFeedId,
+    formulaVersion: def.version,
+    value: computed,
+    unit: def.outputUnit,
+    quality,
+    evidence,
+  };
+}
+
+/**
+ * Evaluates a batch of composite definitions in topological order, threading
+ * each composite's output back in as an upstream consensus output for
+ * dependents. Returns decisions keyed by output feed id.
+ */
+export function evaluateCompositeBatch(
+  definitions: readonly CompositeFeedDefinition[],
+  primitiveUpstream: readonly UpstreamConsensusOutput[],
+  evaluatedAt: number,
+): Map<string, CompositeDecision> {
+  const graph = buildCompositeDependencyGraph(definitions);
+  const byOutput = new Map<string, CompositeFeedDefinition>();
+  for (const def of definitions) {
+    byOutput.set(def.outputFeedId, def);
+  }
+
+  const available = new Map<string, UpstreamConsensusOutput>();
+  for (const output of primitiveUpstream) {
+    available.set(output.feedId, output);
+  }
+
+  const decisions = new Map<string, CompositeDecision>();
+  for (const outputFeedId of graph.order) {
+    const def = byOutput.get(outputFeedId) as CompositeFeedDefinition;
+    const decision = evaluateComposite(def, [...available.values()], evaluatedAt);
+    decisions.set(outputFeedId, decision);
+    available.set(outputFeedId, {
+      feedId: outputFeedId,
+      decisionId: `composite:${outputFeedId}:v${decision.formulaVersion}:${decision.evidence.computedValue}`,
+      value: decision.value,
+      unit: decision.unit,
+      quality: decision.quality,
+      decidedAt: evaluatedAt,
+    });
+  }
+  return decisions;
 }
