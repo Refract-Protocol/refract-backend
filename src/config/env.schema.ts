@@ -104,8 +104,61 @@ export const envSchema = z
       .enum(["true", "false"])
       .optional()
       .transform((value) => value === "true"),
+    /**
+     * Reference data (versioned entity registry) settings.
+     *
+     * Feed pins are supplied as `REFERENCE_DATA_PIN_<FEED>=<dataset>@<version>`
+     * (e.g. `REFERENCE_DATA_PIN_FLIGHTDELAY=aviation@3`). Pins are optional at
+     * the schema level so local tooling can run without them, but they are
+     * REQUIRED in production: without a pin a feed would silently follow the
+     * latest dataset version and a refresh could retroactively change how a
+     * past reading was interpreted.
+     */
+    REFERENCE_DATA_IMPORT_DRY_RUN: z
+      .enum(["true", "false"])
+      .optional()
+      .transform((value) => value === "true"),
+    REFERENCE_DATA_UNKNOWN_ALERT_WINDOW_MS: intFromEnv({
+      min: 1_000,
+      max: 86_400_000,
+      label: "REFERENCE_DATA_UNKNOWN_ALERT_WINDOW_MS",
+    }),
+    REFERENCE_DATA_UNKNOWN_ALERT_MAX: intFromEnv({
+      min: 1,
+      max: 10_000,
+      label: "REFERENCE_DATA_UNKNOWN_ALERT_MAX",
+    }),
   })
+  .catchall(
+    // Allow dynamic `REFERENCE_DATA_PIN_<FEED>` keys; each must be a
+    // `<dataset>@<version>` pin. Unknown keys are rejected below.
+    z.unknown(),
+  )
   .superRefine((env, ctx) => {
+    const raw = env as Record<string, unknown>;
+    for (const key of Object.keys(raw)) {
+      if (!key.startsWith("REFERENCE_DATA_PIN_")) {
+        continue;
+      }
+      const feed = key.slice("REFERENCE_DATA_PIN_".length);
+      const value = raw[key];
+      if (feed.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} must name a feed (e.g. REFERENCE_DATA_PIN_FLIGHTDELAY)`,
+        });
+        continue;
+      }
+      if (typeof value !== "string" || !/^[A-Za-z0-9_.-]+@\d+$/.test(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} must be a dataset pin of the form <dataset>@<version> (e.g. aviation@3)`,
+        });
+      }
+    }
+
     if (!env.REQUIRE_CHAIN_CONFIG) {
       return;
     }
@@ -128,6 +181,34 @@ export const envSchema = z
   });
 
 export type Env = z.infer<typeof envSchema>;
+
+/**
+ * Extract the configured reference-data dataset pins from a validated env.
+ *
+ * Returns a map of feed name (upper-cased, e.g. `FLIGHTDELAY`) to
+ * `{ dataset, version }`. Pins are required in production; callers should
+ * fail fast when a feed has no pin.
+ */
+export function referenceDataPins(
+  env: Env,
+): Record<string, { dataset: string; version: number }> {
+  const pins: Record<string, { dataset: string; version: number }> = {};
+  for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+    if (!key.startsWith("REFERENCE_DATA_PIN_") || typeof value !== "string") {
+      continue;
+    }
+    const feed = key.slice("REFERENCE_DATA_PIN_".length).toUpperCase();
+    const at = value.lastIndexOf("@");
+    if (at <= 0) {
+      continue;
+    }
+    pins[feed] = {
+      dataset: value.slice(0, at),
+      version: Number(value.slice(at + 1)),
+    };
+  }
+  return pins;
+}
 
 /**
  * Validate `process.env` and return the parsed, typed environment.

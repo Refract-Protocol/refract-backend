@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Pool } from "pg";
 import { PG_POOL } from "../db/db.module";
 import { OracleReading } from "./oracle-reading";
+import { ReferenceDataRejection } from "./reference-data.types";
 
 /**
  * Persists oracle readings to the `oracle_events` table defined in
@@ -33,8 +34,17 @@ export class OracleEventRepository {
    * Persists one oracle reading. The call is fire-and-forget: errors are
    * logged but never re-thrown so a DB hiccup can never disrupt the
    * oracle broadcast or claim-evaluation paths that call this.
+   *
+   * Readings rejected by reference-data validation are never written to
+   * `oracle_events` (which feeds quorum counting); they are diverted to
+   * the dead-letter path instead.
    */
-  async record(reading: OracleReading): Promise<void> {
+  async record(reading: OracleReading, rejection?: ReferenceDataRejection): Promise<void> {
+    if (rejection) {
+      await this.recordDeadLetter(reading, rejection);
+      return;
+    }
+
     const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
     if (!coverageType) {
       this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
@@ -58,13 +68,25 @@ export class OracleEventRepository {
   /**
    * Batch-records multiple readings in a single transaction.
    * Also fire-and-forget.
+   *
+   * Readings rejected by reference-data validation are diverted to the
+   * dead-letter table within the same transaction and never inserted into
+   * `oracle_events`, so they cannot count toward quorum.
    */
-  async recordBatch(readings: OracleReading[]): Promise<void> {
+  async recordBatch(
+    readings: OracleReading[],
+    rejections?: Map<OracleReading, ReferenceDataRejection>
+  ): Promise<void> {
     if (readings.length === 0) return;
     const client = await this.db.connect();
     try {
       await client.query("BEGIN");
       for (const reading of readings) {
+        const rejection = rejections?.get(reading);
+        if (rejection) {
+          await this.insertDeadLetter(client, reading, rejection);
+          continue;
+        }
         const coverageType = OracleEventRepository.COVERAGE_TYPE_MAP[reading.coverageType];
         if (!coverageType) {
           this.logger.warn(`Unknown coverageType "${reading.coverageType}" — skipping oracle_events insert`);
@@ -86,6 +108,65 @@ export class OracleEventRepository {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Persists a reading rejected by reference-data validation into the
+   * dead-letter table, preserving the raw payload and the rejection
+   * reason for later inspection. Fire-and-forget: errors are logged but
+   * never re-thrown.
+   */
+  async recordDeadLetter(reading: OracleReading, rejection: ReferenceDataRejection): Promise<void> {
+    try {
+      await this.insertDeadLetter(this.db, reading, rejection);
+    } catch (err) {
+      this.logger.error(
+        `Failed to persist dead-letter reading for ${reading.coverageType}`,
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  }
+
+  /**
+   * Returns the dataset version pinned for a given feed, or null when no
+   * pin is configured. Feeds pin a dataset version so a later reference
+   * data refresh cannot retroactively change how a past reading was
+   * interpreted.
+   */
+  async getPinnedDatasetVersion(feedId: string): Promise<string | null> {
+    try {
+      const result = await this.db.query(
+        `SELECT dataset_version FROM feed_dataset_pins WHERE feed_id = $1`,
+        [feedId]
+      );
+      return result.rows.length > 0 ? (result.rows[0].dataset_version as string) : null;
+    } catch (err) {
+      this.logger.error(
+        `Failed to fetch pinned dataset version for feed ${feedId}`,
+        err instanceof Error ? err.message : String(err)
+      );
+      return null;
+    }
+  }
+
+  private async insertDeadLetter(
+    db: Pick<Pool, "query">,
+    reading: OracleReading,
+    rejection: ReferenceDataRejection
+  ): Promise<void> {
+    await db.query(
+      `INSERT INTO dead_letter_readings
+         (coverage_type, feed_id, reason, detail, dataset_version, raw_payload)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        reading.coverageType,
+        rejection.feedId ?? null,
+        rejection.reason,
+        rejection.detail ?? null,
+        rejection.datasetVersion ?? null,
+        JSON.stringify(reading),
+      ]
+    );
   }
 
   /**
