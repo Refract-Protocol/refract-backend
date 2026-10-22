@@ -20,6 +20,27 @@
       "warn",
       { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
     ],
-    "@typescript-eslint/no-explicit-any": "off"
+    "@typescript-eslint/no-explicit-any": "off",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "axios",
+            "message": "Use EgressHttpClient from src/oracle/http/egress-http-client.ts instead of axios directly in provider adapters."
+          },
+          {
+            "name": "node-fetch",
+            "message": "Use EgressHttpClient from src/oracle/http/egress-http-client.ts instead of node-fetch directly in provider adapters."
+          }
+        ],
+        "patterns": [
+          {
+            "group": ["axios/*"],
+            "message": "Use EgressHttpClient from src/oracle/http/egress-http-client.ts instead of axios directly in provider adapters."
+          }
+        ]
+      }
+    ]
   }
 }
