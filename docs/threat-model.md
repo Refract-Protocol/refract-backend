@@ -102,7 +102,9 @@ reassessed against deployment exposure and on-chain contract controls.
 - [ ] **P1 — Harden oracle decision inputs.** Validate schema, numeric range,
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
-  mocked trigger sources before offering those coverages as live.
+  mocked trigger sources before offering those coverages as live. See
+  [section 6](#6-attack-cost-model-and-quorum-sizing) for the quantitative
+  model that sizes corroboration thresholds and operator bonds.
 - [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only
@@ -115,6 +117,123 @@ reassessed against deployment exposure and on-chain contract controls.
   overlap, coordinate scheduled work across replicas, bound per-cycle work,
   use circuit breakers/backoff for dependencies, and alert on stale oracle
   inputs, settlement failures, and backlog age.
+
+## 6. Attack-cost model and quorum sizing
+
+Corroboration and "decentralized" are only meaningful if they translate into a
+number: what does it cost an attacker to move this feed, and is that number
+large relative to the maximum payout the feed can trigger? This section
+documents the analytical model implemented in `scripts/attack-cost-model.ts`
+(pure function library) and `scripts/attack-cost.ts` (operator CLI). The model
+is versioned (`MODEL_VERSION`) alongside the quorum policy it validates; any
+change to the formulas below must bump the version and update this section.
+
+### 6.1 Inputs
+
+A feed definition supplies:
+
+- `sources[]`: each source has an `id`, a `bond` (the capital the source must
+  post, in stroops, as a bigint), and an optional `independence` weight in
+  `[0, 1]` relative to the other sources. **Unknown independence is treated as
+  fully dependent (`0`)**, i.e. the worst case: a source with no declared
+  independence contributes no diversity and cannot be counted on to resist
+  collusion.
+- `quorum`: the number of source confirmations required to trigger a payout
+  (`threshold`), and the total number of sources consulted (`total`).
+- `operatorKeys`: the number of distinct relayer/operator keys that can submit
+  a settlement, and the `bond` each operator posts.
+- `maxExposure`: the maximum payout the feed can trigger (dynamic feeds
+  recompute this from pool TVL before validation).
+
+A quorum policy supplies `safetyFactor` (default `10`): the modeled attack cost
+must exceed the exposure by at least this multiple.
+
+All arithmetic uses `bigint` for bonds and costs and integer basis points for
+independence weights, so large values cannot overflow and no floating-point
+rounding enters the security decision.
+
+### 6.2 Cost formulas
+
+1. **Source-bribery cost.** To bribe the cheapest `threshold` sources to
+   confirm a false reading, the attacker must outbid their bonds. With
+   independence weights `w_i`, the effective cost of bribing source `i` is
+   `bond_i * (1 + w_i)` (a more independent source is harder to bribe because
+   it must also be induced to break with its independent peers). The bribery
+   cost is the sum of the `threshold` smallest effective costs.
+2. **Collusion-threshold cost.** The residual risk after corroboration is that
+   `threshold` sources collude. The model computes the cheapest colluding set
+   of size `threshold` under the same effective-cost ordering and reports it
+   separately, so operators can see the marginal cost of raising `threshold`
+   by one. Sources with unknown independence are grouped as fully dependent, so
+   collusion among them is priced at their bare bonds.
+3. **Key-compromise cost.** To compromise `k` operator keys the attacker must
+   defeat `k` bonds plus the operational cost of key compromise; the model
+   reports `k * operatorBond` for `k = 1..operatorKeys` and the minimum `k`
+   needed to reach the settlement threshold. The overall attack cost is
+   `min(bribery, collusion, keyCompromise)` — the cheapest path an attacker
+   would take.
+
+### 6.3 Derived minimum bond and maximum supported exposure
+
+Given a target `maxExposure` and `safetyFactor`, the model derives the minimum
+per-source bond such that `attackCost >= maxExposure * safetyFactor`, and the
+maximum exposure a feed can support for its current bonds:
+`maxSupportedExposure = attackCost / safetyFactor`. Zero-bond configurations
+yield zero attack cost and therefore support zero exposure; they are reported
+explicitly rather than silently accepted.
+
+### 6.4 Published reference scenario
+
+The regression fixture `scripts/__fixtures__/attack-cost-reference.json`
+encodes the following hand-computed scenario and is asserted by the unit tests:
+
+- 5 sources, each bond `1_000_000` stroops; independence weights
+  `[1.0, 0.8, 0.5, 0.0, 0.0]` (the last two unknown -> fully dependent).
+- Quorum `threshold = 3` of `total = 5`.
+- 3 operator keys, each bond `2_000_000` stroops; settlement threshold 2 keys.
+- `safetyFactor = 10`.
+
+Hand computation (effective bribery cost `bond * (1 + w)` in stroops):
+
+| source | bond | w | effective cost |
+|---|---|---|---|
+| s1 | 1,000,000 | 1.0 | 2,000,000 |
+| s2 | 1,000,000 | 0.8 | 1,800,000 |
+| s3 | 1,000,000 | 0.5 | 1,500,000 |
+| s4 | 1,000,000 | 0.0 | 1,000,000 |
+| s5 | 1,000,000 | 0.0 | 1,000,000 |
+
+- Bribery cost (3 cheapest): `1,000,000 + 1,000,000 + 1,500,000 = 3,500,000`.
+- Collusion cost (3 cheapest, bare bonds for dependent sources):
+  `1,000,000 + 1,000,000 + 1,500,000 = 3,500,000`.
+- Key-compromise cost (2 keys): `2 * 2,000,000 = 4,000,000`.
+- **Attack cost = min(3,500,000; 3,500,000; 4,000,000) = 3,500,000 stroops.**
+- **Max supported exposure at safety factor 10 = 3,500,000 / 10 = 350,000
+  stroops.**
+
+Reproduce with:
+
+```
+npx ts-node scripts/attack-cost.ts \
+  --feed scripts/__fixtures__/attack-cost-reference.json \
+  --safety-factor 10
+```
+
+The CLI prints the attack cost, the maximum supported exposure, and the implied
+minimum bond for a requested exposure, all as exact integers.
+
+### 6.5 Startup validation rule
+
+Configuration validation (`validateFeedSecurity`) runs at startup for every
+payout-triggering feed. It refuses to start when
+`maxExposure * safetyFactor > attackCost`, i.e. when the exposure the feed can
+trigger exceeds the modeled attack cost by the configured safety factor. The
+error names the feed, the modeled attack cost, the exposure, and the safety
+factor so an operator can either raise bonds/quorum or lower exposure. Feeds
+whose exposure is dynamic are re-validated whenever pool TVL changes the
+exposure; a feed that cannot be priced (unknown sources, zero bonds) fails
+closed. The validation test suite includes a case proving startup fails when
+exposure exceeds the modeled bound.
 
 ## 5. Assumptions and limitations
 
@@ -129,3 +248,8 @@ reassessed against deployment exposure and on-chain contract controls.
 - This document is a threat-model baseline, not a penetration test or proof
   that all vulnerabilities have been found. Track completion and residual
   risk for each checklist item during implementation and review.
+- The attack-cost model in section 6 is an analytical estimate, not a market
+  observation. It assumes an attacker must outbid posted bonds and does not
+  price operator capital, liquidity, or the staking/slashing mechanics
+  themselves (tracked separately). Independence weights are operator-declared
+  inputs; unknown independence is conservatively treated as fully dependent.

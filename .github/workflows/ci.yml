@@ -29,6 +29,9 @@ jobs:
       - name: Test
         run: npm test --if-present
 
+      - name: Verify consumer-driven contracts
+        run: npm run test:contracts
+
       - name: Verify OpenAPI spec is up to date
         run: |
           npm run openapi:generate
