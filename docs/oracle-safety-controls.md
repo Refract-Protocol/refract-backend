@@ -27,6 +27,18 @@ returns a consensus candidate but does not publish it: callers must pass only
 that candidate through the recovery gate and then the authenticated oracle
 publisher.
 
+## Claim activity anomaly detector
+
+`ClaimActivityAnomalyDetector` evaluates a bounded sliding window separately
+from individual oracle readings. Configure per-coverage settlement-volume and
+trigger-frequency ceilings, a policy payout-share ceiling, and the minimum
+window volume at which concentration is meaningful. It invokes the supplied
+payout breaker once per anomaly type and coverage per window; wire claim
+ingestion/settlement observations into `record` and call `evaluate` from the
+trusted backend path. Thresholds are deployment-specific and should be
+calibrated against reviewed settlement history before enabling automatic
+trips.
+
 ## Soroban contract requirement
 
 This repository contains TypeScript client code and contract-interface
@@ -39,3 +51,14 @@ authorized pause/resume entrypoint and make oracle reading updates and pool
 claim settlement reject paused feeds/coverage. A deployed contract exposing
 that interface and an authenticated backend adapter are required; local
 pause state must not be represented as on-chain confirmation.
+
+## Integration status for this checkout
+
+The safety classes above are explicit fail-closed components, not a claim
+that the production loops are already wired to them. In this checkout,
+`package.json` is empty and the existing oracle service, publisher, module,
+controller, and claim-settlement service source files are empty. Until those
+application paths are restored and composed with these components, do not
+enable automated publication or payouts based on them. This also prevents a
+meaningful repository build/test run; the intended Jest specs are included
+for when the source/test harness is restored.

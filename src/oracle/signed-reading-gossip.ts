@@ -1,5 +1,5 @@
 import { createPublicKey, verify } from 'node:crypto';
-import { OracleReading, Severity } from './oracle-reading';
+import type { OracleReading, Severity } from './oracle-reading';
 
 export interface SignedReadingEnvelope {
   version: 1;

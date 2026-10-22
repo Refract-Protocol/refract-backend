@@ -1,4 +1,4 @@
-import { OracleReading } from './oracle-reading';
+import type { OracleReading } from './oracle-reading';
 
 export type OracleAdmission = 'publish' | 'canary' | 'hold';
 
