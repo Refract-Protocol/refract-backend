@@ -19,16 +19,19 @@ REST + WebSocket API the web app consumes. See also `refract-contracts` and
 
 ```
 src/
-├── index.ts                 # Express + WebSocket server, service loop
-├── services/
-│   ├── oracleMonitor.ts     # polls data sources (depeg, crash, TVL, flight)
-│   └── claimProcessor.ts    # scans policies, settles triggered claims
-├── routes/
-│   ├── quotes.ts            # POST /quote, GET /coverage-types
-│   ├── policies.ts          # policy CRUD + buy-tx builder
-│   └── pool.ts              # pool stats, provide/withdraw
+├── oracle/                  # OracleScheduler, OracleService (data sources), publisher, oracle_events repository
+├── claim/                   # ClaimScheduler, ClaimService (scan + evaluate), ClaimSettlementService, ops controller
+├── policy/                  # policy purchase and lifecycle
+├── pool/                    # pool stats, LP provide/withdraw
+├── quote/                   # premium quoting and coverage types
+├── tx/                      # signed-XDR submission
+├── stellar/                 # Soroban RPC, contract interface, event indexer
 └── db/schema.sql            # PostgreSQL schema
 ```
+
+Some files under `src/` are empty or missing in parts of the tree; see the
+snapshot caveat in
+[`docs/oracle-trust-architecture.md`](./docs/oracle-trust-architecture.md).
 
 ## Quick start
 
@@ -56,6 +59,31 @@ stores policy purchases, capital deposits/withdrawals, and settled claims in
 `soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
 ledger for the first run; subsequent progress is checkpointed in Postgres.
 
+For an existing database, apply
+`src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
+checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
+the backend polls the configured Soroban RPC endpoint every 10 seconds and
+stores policy purchases, capital deposits/withdrawals, and settled claims in
+`soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
+ledger for the first run; subsequent progress is checkpointed in Postgres.
+
+For an existing database, apply
+`src/db/migrations/002_oracle_trust_engine.sql` to add the oracle trust engine
+tables: `oracle_sources`, append-only `oracle_readings`, `oracle_decisions` with
+`oracle_decision_readings` linking each decision to the readings it used, and
+`oracle_source_health`. The migration is idempotent and transactional, so it is
+safe to re-run. Fresh installs get the same tables from `src/db/schema.sql`,
+which Compose mounts on first startup.
+
+Horizon-derived oracle readings carry their source ledger sequence and hash and
+start `provisional`. They become `final` (and eligible for quorum) once the
+ledger is `HORIZON_FINALITY_DEPTH` ledgers behind the latest observed one
+(default 5; `HORIZON_FINALITY_POLICY=final_only` by default, or
+`allow_provisional`). A ledger whose hash changes is treated as a reorg:
+affected readings are marked `invalidated`, decisions built on them are marked
+`superseded`, the resume checkpoint rewinds, and every correction is appended
+to `oracle_evidence_ledger`. Apply `src/db/migrations/004_horizon_ledger_finality.sql`.
+
 The API listens on http://localhost:4001. PostgreSQL and Redis are also
 available on localhost ports 5432 and 6379. Compose uses the development-only
 Postgres password `refract_dev` unless `POSTGRES_PASSWORD` is set in the
@@ -79,6 +107,28 @@ remain in Docker volumes; `docker compose down -v` removes them.
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint over `src/` |
 
+## Operator CLI
+
+`scripts/operator-cli.ts` inspects feeds and applies audited overrides without
+hand-written SQL. It needs only `DATABASE_URL` (apply
+`migrations/002_operator_controls.sql` first). Read-only commands work while the
+service is down.
+
+```bash
+npx ts-node scripts/operator-cli.ts feeds
+npx ts-node scripts/operator-cli.ts readings market_crash --limit 30
+npx ts-node scripts/operator-cli.ts decisions
+npx ts-node scripts/operator-cli.ts pause market_crash --reason "CoinGecko spike" --operator alice --dry-run
+npx ts-node scripts/operator-cli.ts pause market_crash --reason "CoinGecko spike" --operator alice --yes
+npx ts-node scripts/operator-cli.ts quarantine CoinGecko --reason "bad prices" --operator alice --yes
+npx ts-node scripts/operator-cli.ts audit
+```
+
+Mutating commands require `--reason` and an operator identity (`--operator` or
+`OPERATOR_ID`). `pause` and `quarantine` also require `--yes` (or `--dry-run`).
+Each mutation writes its state change and a row in `operator_audit_log` in one
+transaction, then prints the before/after state. Any failure exits non-zero.
+
 ## API surface
 
 Interactive OpenAPI documentation and the generated JSON document are served
@@ -99,6 +149,11 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `GET` | `/api/v1/claims/dead-letter` | Triggered claims withheld after repeated failed settlement |
 | `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
+| `GET` | `/api/v1/admin/feeds` | Admin: latest version of every oracle feed definition |
+| `GET` | `/api/v1/admin/feeds/:feedKey` | Admin: latest version of one feed |
+| `GET` | `/api/v1/admin/feeds/:feedKey/versions` | Admin: full version history with previous definitions |
+| `POST` | `/api/v1/admin/feeds` | Admin: create a feed (version 1) |
+| `PATCH` | `/api/v1/admin/feeds/:feedKey` | Admin: update a feed; requires `expectedVersion` |
 
 State-changing API attempts emit structured `security_audit` JSON lines to
 stdout; route those events to the deployment's log aggregation or SIEM system.
@@ -106,8 +161,17 @@ See [`SECURITY.md`](./SECURITY.md) for the event fields and identity limitations
 
 Endpoints with the `@AdminOnly()` guard require `X-API-Key: $ADMIN_API_KEY`.
 Set a strong, private `ADMIN_API_KEY` before enabling admin-only routes; if
-it is unset, those routes fail closed with `503`. The current API has no
-admin CRUD, dead-letter review, or contract-override routes. API request
+it is unset, those routes fail closed with `503`. The admin feed routes also
+require an `x-admin-actor` header on mutations; it is recorded in the audit
+trail but is self-reported, because the shared admin key identifies no one.
+Feed definitions are append-only versions in `oracle_feed_definitions`
+(migration `004_oracle_feed_definitions.sql`). A PATCH must carry the version
+it was based on (`expectedVersion`), or it is rejected with `409`. An enabled
+feed whose non-quarantined source weight cannot reach `quorumThreshold` is
+rejected with `400`. The monitor reads the latest definitions from an
+in-process cache that reloads every `FEED_DEFINITIONS_RELOAD_MS` (default
+`15000`), so a change takes effect within one interval on every instance. The
+API has no dead-letter review or contract-override routes. API request
 limits are applied per client IP and endpoint: 30/minute for quotes,
 10/minute for policy buys, LP actions, oracle status, and on-chain coverage
 reads, and 60/minute for coverage catalogs.
@@ -115,10 +179,7 @@ reads, and 60/minute for coverage catalogs.
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
 > `SmartContractRisk` now call real, keyless public APIs — CoinGecko
 > (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama
-> (protocol TVL). No API key is required for any of them. `LiquidationShield`
-> and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
-> liquidation events, and AviationStack (flight data) requires a paid key
-> this project doesn't have. See `src/oracle/oracle.service.ts` for details.
+> (protocol TVL). No API key is required for any of them. `FlightDelay` has a live provider adapter in `src/oracle/sources/flightDelay.ts` (AviationStack free tier, selected with `FLIGHT_DELAY_PROVIDER=aviationstack` and `AVIATIONSTACK_API_KEY`), but the oracle refresh does not call it yet in this checkout, so no FlightDelay readings are produced until it is wired in. `LiquidationShield` has a confirmation-depth adapter (`src/oracle/sources/liquidationShield.ts`) for NEXUS Protocol on-chain liquidation events, but no live NEXUS feed is wired yet, so it produces no reading. See `src/oracle/oracle.service.ts` for details.
 > **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
 > `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
 > are looked up on-chain). Policies start `pending` after `POST /buy`; once
@@ -161,6 +222,36 @@ reads, and 60/minute for coverage catalogs.
 > Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
 > `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
 >
+> **Oracle trust modes** are set per coverage type with
+> `ORACLE_TRUST_MODE_<COVERAGE>` (`single_source` by default, `corroborated`,
+> or `decentralized`), with sources in `ORACLE_SOURCES_<COVERAGE>` and the
+> quorum in `ORACLE_QUORUM_MIN`. `src/oracle/oracle-trust-policy.ts` validates
+> them at startup (`src/main.ts`) and refuses to boot on unknown coverage
+> types, unknown modes, or a non-default mode whose sources cannot meet the
+> quorum. `ClaimService` refuses to pay out when a coverage's mode is not
+> satisfied. Only one reader exists per coverage today, so `corroborated` and
+> `decentralized` fail closed and never pay out until multi-source readers
+> land.
+>
+> Staged rollout: keep every coverage on `single_source` until its sources
+> are live, move one coverage at a time to `corroborated`, watch refusal logs
+> (`Refusing payout ... quorum ... not met`), and only then consider
+> `decentralized`. Roll back by unsetting the variable and redeploying.
+>
+> **Batched publishing** (`OracleBatchPublisherService`) is persist-then-publish:
+> producers `enqueue` decisions into the durable `oracle_publish_queue` table
+> (apply `src/db/migrations/004_oracle_publish_queue.sql`); a single-flight loop
+> submits ordered batches (`ORACLE_PUBLISH_MAX_BATCH_SIZE`,
+> `ORACLE_PUBLISH_MAX_IN_FLIGHT`, `ORACLE_PUBLISH_MAX_PER_FEED_PER_BATCH`). A feed
+> never has two batches in flight, so decisions land in order. Failures retry with
+> jittered backoff (`ORACLE_PUBLISH_BASE_BACKOFF_MS` / `_MAX_BACKOFF_MS`), size/fee
+> errors split the batch, and ambiguous timeouts are reconciled by tx hash before
+> any resubmission. When queue depth (`ORACLE_PUBLISH_BACKPRESSURE_QUEUE_DEPTH`)
+> or RPC latency (`ORACLE_PUBLISH_BACKPRESSURE_RPC_LATENCY_MS`) is exceeded,
+> `pollIntervalMultiplier("low")` slows low-priority polling (payout-triggering
+> feeds are never slowed) and `refract_oracle_publish_*` gauges on `/metrics`
+> show queue depth, backpressure, and RPC latency.
+>
 > **Confirmation polling** uses configurable exponential backoff + jitter
 > (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
 >
@@ -170,6 +261,13 @@ reads, and 60/minute for coverage catalogs.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## Documentation
+
+- [Oracle trust architecture](./docs/oracle-trust-architecture.md) — the path from source polling to on-chain publication, source inventory, corroboration status, evidence ledger, and operator authority.
+- [Oracle incident runbooks](./docs/runbooks/oracle-incidents.md) — stale feeds, divergence, fail-safes, suspect sources, and restoring operation after a pause.
+- [Threat model](./docs/threat-model.md) — transaction lifecycle STRIDE assessment and prioritized follow-ups.
+- [Security policy](./SECURITY.md) — vulnerability reporting and HTTP security configuration.
 
 ## License
 
