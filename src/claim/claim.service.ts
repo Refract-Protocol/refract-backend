@@ -2,12 +2,18 @@ import { Injectable, Logger } from "@nestjs/common";
 import { EvidenceStore } from "../oracle/evidenceStore";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
+import { buildDecisionId } from "../oracle/oracle-encoding";
 import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
+import { ClaimSettlementRepository } from "./claim-settlement.repository";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
+import { classifySettlementError } from "./settlement-attempt";
 
 const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
+// Decisions are keyed per fixed window so every node derives the same id for the
+// same observation; matches the 300 s ClaimScheduler cadence.
+const DECISION_WINDOW_SECONDS = 300;
 
 /**
  * ClaimService scans active policies for triggered conditions and settles
@@ -39,6 +45,7 @@ export class ClaimService {
     private readonly claimSettlementService: ClaimSettlementService,
     private readonly oracleEventRepository: OracleEventRepository,
     private readonly evidenceStore: EvidenceStore
+    private readonly claimSettlementRepository: ClaimSettlementRepository
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -54,10 +61,12 @@ export class ClaimService {
         const { reading: oracle, readingId } = await this.fetchOracleData(policy);
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         if (result.triggered) {
+          const windowStart = Math.floor(fetchedAt / DECISION_WINDOW_SECONDS) * DECISION_WINDOW_SECONDS;
+          const decisionId = buildDecisionId(oracle.coverageType, policy.id, windowStart);
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result, oracle, readingId);
+          const settledResult = await this.processPayout(policy, result, decisionId);
           if (settledResult) settled.push(settledResult);
         }
       } catch (err) {
@@ -136,11 +145,16 @@ export class ClaimService {
   private async processPayout(
     policy: StoredPolicy,
     result: ClaimResult,
-    oracle: OracleReading,
-    readingId: string | null
+    // Decision must be durable before the payout is submitted: if this
+    // throws, settleClaim is never called and no payout exists without a record.
+    const decisionId = await this.evidenceStore.recordDecision({
+      readingIds: readingId ? [readingId] : [],
+      oracle: OracleReading,
+      readingId: string | null,
+      decisionId: string,
   ): Promise<ClaimResult | undefined> {
     this.logger.warn(
-      `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
+      `PAYOUT triggered: policy=${policy.id} decision=${decisionId} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
 
     // Decision must be durable before the payout is submitted: if this
@@ -153,17 +167,34 @@ export class ClaimService {
       payoutAmount: result.payout,
     });
 
-    const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
-    await this.evidenceStore.attachSettlement(decisionId, {
-      status: settlement.settled ? "confirmed" : "unconfirmed",
-      txHash: settlement.txHash,
+    // Durable guard before any on-chain submission: a replayed or concurrent
+    // decision for the same policy/window (or any open settlement for the
+    // policy) is a no-op.
+    const claimed = await this.claimSettlementRepository.claim(decisionId, policy.id, result.payout, {
+      reason: result.reason,
     });
-    if (!settlement.settled) {
-      this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
+    if (!claimed) {
+      this.logger.warn(`Duplicate settlement suppressed: decision=${decisionId} policy=${policy.id}`);
       return undefined;
     }
 
-    this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
+    const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
+    if (!settlement.settled) {
+      if (classifySettlementError(settlement.error) === "indeterminate") {
+        // The transaction may have landed. Leave the row open so it is
+        // reconciled against tx_hash instead of being resubmitted.
+        this.logger.error(
+          `Settlement outcome unknown for decision=${decisionId} policy=${policy.id}; not retrying until reconciled: ${settlement.error}`
+        );
+      } else {
+        await this.claimSettlementRepository.markFailed(decisionId, settlement.error ?? "unknown error");
+        this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
+      }
+      return undefined;
+    }
+
+    await this.claimSettlementRepository.markConfirmed(decisionId, policy.id, settlement.txHash ?? "");
+    this.logger.log(`Settlement confirmed for policy ${policy.id}: decision=${decisionId} tx=${settlement.txHash}`);
     this.policyService.deactivate(policy.id);
     this.processedCount++;
     this.payoutTotal += BigInt(result.payout);

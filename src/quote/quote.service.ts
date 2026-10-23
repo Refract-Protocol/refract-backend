@@ -1,6 +1,12 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { COVERAGE_TYPES, coverageTypeByName } from "../common/coverage-types";
 import { CoverageTypeName } from "./coverage-type";
+import {
+  assessOracleConfidence,
+  OracleConfidenceAssessment,
+  OracleConfidenceSignals,
+  oracleConfidenceConfigFromEnv,
+} from "./oracle-confidence";
 import { CompareQuotesDto } from "./dto/compare-quotes.dto";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
 
@@ -14,6 +20,10 @@ export interface QuoteResult {
   expiresAt: string;
   poolUtilization: string;
   availableCapacity: string;
+  /** Present only when oracle confidence signals were supplied for this quote. */
+  oracleConfidence?: Pick<OracleConfidenceAssessment, "verdict" | "reason" | "multiplier">;
+  /** Set when the quote is `degraded`: the terms are priced but flagged. */
+  warning?: string;
 }
 
 /**
@@ -53,13 +63,20 @@ const BASE_RATE = 0.03; // 3% annual base premium
 
 @Injectable()
 export class QuoteService {
+  private readonly confidenceConfig = oracleConfidenceConfigFromEnv(process.env);
+
   private calcPremium(coverageAmount: number, riskMultiplier: number, durationDays: number): number {
     const annualPremium = coverageAmount * BASE_RATE * riskMultiplier;
     const dailyPremium = annualPremium / 365;
     return parseFloat((dailyPremium * durationDays).toFixed(4));
   }
 
-  createQuote(dto: CreateQuoteDto): QuoteResult {
+  /**
+   * Prices a quote. `signals` are the trust inputs for this coverage type's
+   * trigger data; when omitted, no confidence adjustment is applied. Mocked
+   * trigger sources are refused regardless of signals.
+   */
+  createQuote(dto: CreateQuoteDto, signals?: OracleConfidenceSignals): QuoteResult {
     const { coverageType, coverageAmount, durationDays, triggerThreshold } = dto;
 
     // Each coverage type advertises its own maxDuration via
@@ -76,8 +93,25 @@ export class QuoteService {
         maxDuration: catalogEntry.maxDuration,
       });
     }
+    if (catalogEntry.triggerSource === "mocked") {
+      throw new BadRequestException({
+        error: `${catalogEntry.name} coverage is unavailable: its trigger data is not live`,
+        availability: "unavailable",
+        reason: "mocked_trigger_source",
+      });
+    }
 
-    const premium = this.calcPremium(coverageAmount, catalogEntry.riskMultiplier, durationDays);
+    const oracleConfidence = signals ? assessOracleConfidence(signals, this.confidenceConfig) : undefined;
+    if (oracleConfidence?.verdict === "unavailable") {
+      throw new BadRequestException({
+        error: `${catalogEntry.name} coverage is unavailable: oracle confidence is too low`,
+        availability: "unavailable",
+        reason: oracleConfidence.reason,
+      });
+    }
+
+    const multiplier = oracleConfidence?.multiplier ?? 1;
+    const premium = this.calcPremium(coverageAmount, catalogEntry.riskMultiplier * multiplier, durationDays);
 
     return {
       coverageType,
@@ -89,6 +123,16 @@ export class QuoteService {
       expiresAt: new Date(Date.now() + durationDays * 86_400_000).toISOString(),
       poolUtilization: "42%", // live in production
       availableCapacity: "4,200,000",
+      ...(oracleConfidence && {
+        oracleConfidence: {
+          verdict: oracleConfidence.verdict,
+          reason: oracleConfidence.reason,
+          multiplier: oracleConfidence.multiplier,
+        },
+      }),
+      ...(oracleConfidence?.verdict === "degraded" && {
+        warning: `Oracle confidence is degraded (${oracleConfidence.reason}); premium includes a ${oracleConfidence.multiplier}x multiplier`,
+      }),
     };
   }
 
