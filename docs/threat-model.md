@@ -50,9 +50,11 @@ Security objectives:
 4. **Oracle and scheduled claim evaluation:** External oracle APIs and mocked
    oracle implementations -> `OracleService` -> `OracleScheduler` broadcasts
    readings and `ClaimScheduler` evaluates active in-memory policies every
-   five minutes. Trust boundary: external data providers and scheduler
-   execution to backend decision logic. Some live-source failures produce a
-   non-triggering degraded reading; two coverage sources remain mocked.
+   minute (`@Cron(CronExpression.EVERY_MINUTE)`). Trust boundary: external
+   data providers and scheduler execution to backend decision logic. Some
+   live-source failures produce a non-triggering degraded reading; two coverage
+   sources remain mocked. The hop-by-hop trust model is in
+   [`oracle-trust-architecture.md`](./oracle-trust-architecture.md).
 5. **Payout:** `ClaimService` -> `ClaimSettlementService` -> relayer key ->
    Soroban RPC -> pool contract -> confirmation polling -> local deactivation.
    Trust boundary: privileged backend relayer to public RPC and on-chain
@@ -65,7 +67,7 @@ Security objectives:
 | STRIDE | Lifecycle threats and impact | Existing controls and gaps |
 |---|---|---|
 | **Spoofing** | A caller can claim a holder address in the purchase DTO or use an unrelated valid signed transaction at the generic submit endpoint. A compromised oracle provider or endpoint could impersonate a trustworthy data source and influence automated decisions. | Contract `require_auth` and wallet signatures protect contract-level user actions; HTTPS, origin policy, and upstream authenticity/availability are deployment responsibilities. The API does not authenticate callers or verify the signer/operation against a purchase intent; CORS is not authentication. |
-| **Tampering** | A malicious client can alter transaction XDR, parameters, network, or destination before signing/submitting. Tampered, stale, malformed, or manipulated oracle responses could change a trigger decision. The local policy record can differ from the on-chain policy because it is created before user authorization/submission. | DTO validation and Soroban simulation constrain purchase input and contract execution; transaction signatures prevent edits after signing. There is no submit-time binding or post-confirmation reconciliation. Oracle checks use public APIs; provenance, freshness, independent corroboration, and response-shape bounds need strengthening. |
+| **Tampering** | A malicious client can alter transaction XDR, parameters, network, or destination before signing/submitting. Tampered, stale, malformed, or manipulated oracle responses could change a trigger decision. The local policy record can differ from the on-chain policy because it is created before user authorization/submission. | DTO validation and Soroban simulation constrain purchase input and contract execution; transaction signatures prevent edits after signing. There is no submit-time binding or post-confirmation reconciliation. Implemented: oracle checks use public APIs; readings older than 1800 s are non-triggering; timeouts yield a degraded, non-triggering reading that is never published on-chain. Not implemented: independent corroboration (every live feed is single-source), quorum, and response-shape or plausible-movement bounds. |
 | **Repudiation** | A buyer or operator may dispute a purchase, signature, submission, oracle decision, or payout because evidence is not durably correlated across the complete flow. In-memory policy/history disappears on restart. | Soroban transaction hashes are returned on confirmation and some operations are logged. Durable, tamper-evident audit records linking request, signed transaction hash, oracle observation, policy ID, and settlement result are absent. |
 | **Information Disclosure** | Public policy/claim endpoints may disclose holder addresses, purchase details, or claim history. Signed XDR and verbose exception messages may expose transaction or infrastructure details if logged or returned. A leaked relayer secret enables privileged contract actions. | No secret is intentionally returned by these transaction endpoints, Helmet is enabled, and the relayer key is configuration-driven. The claim history endpoints have no authorization, response minimization, retention policy, or access control; deployment secret management and log redaction are not enforced in code. |
 | **Denial of Service** | Repeated purchase requests can cause account lookups/simulation; the generic submit route can trigger RPC submission and up to roughly 30 seconds of polling per request. Public endpoints have no rate/concurrency limits. Oracle/RPC outages can stall scheduled runs; retries can accumulate load. | Request DTO validation, RPC timeouts where configured, and error handling provide limited protection. Request body, transaction size/complexity, rate, concurrency, and per-caller budgets are not explicitly bounded here. Scheduler run overlap and distributed coordination are not guarded. |
@@ -102,8 +104,47 @@ reassessed against deployment exposure and on-chain contract controls.
 - [ ] **P1 — Harden oracle decision inputs.** Validate schema, numeric range,
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
-  mocked trigger sources before offering those coverages as live.
-- [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
+  mocked trigger sources before offering those coverages as live. Enforced at
+  startup by `src/common/coverage-source-guard.ts`: an enabled coverage type
+  backed by a mocked source, or below its declared minimum trust mode, aborts
+  boot. `ALLOW_MOCKED_COVERAGE_SOURCES=true` waives this outside mainnet only.
+  Secondary price (Kraken) and TVL (Token Terminal) providers are documented in
+  [`oracle-sources.md`](./oracle-sources.md).
+  - *Trust-mode status (per coverage, `ORACLE_TRUST_MODE_<COVERAGE>`):*
+    - `single_source` (default): satisfied only by the existing pause
+      fallback; no independent corroboration.
+    - `corroborated`: config validated at startup and enforced in
+      `ClaimService` (fail closed). Not yet satisfiable: there is one reader
+      per coverage, so no payout can occur until multi-source readers exist.
+    - `decentralized`: config requires registered provider identities at
+      startup and enforces quorum (fail closed). Not satisfiable yet: no
+      third-party submission path exists.
+  *Baseline (issue #206):* `src/oracle/independence-graph.ts` clusters sources
+  that share an operator, upstream origin, or hosting ASN, and corroborates
+  by independent cluster rather than by source count. It also flags identical
+  payloads and near-simultaneous observations. Admin cluster declarations are
+  recorded in `source_cluster_overrides`. Still open: the admin route, wiring
+  into the live scheduler, and external verification of operator ownership.
+  Operator pause is available: `POST /api/v1/oracle/pause` and
+  `POST /api/v1/oracle/resume` (per coverage type or `global`), with
+  `GET /api/v1/oracle/status`. Every change is recorded in the append-only
+  `oracle_pause_audit` table. Corroboration and mocked-source replacement remain open.
+  *Partially mitigated:* freshness (1800 s staleness limit in `ClaimService`),
+  fail-safe degraded readings that are never published, and a single evidence
+  write per reading to `oracle_events`. *Remaining:* schema, numeric range,
+  source identity, and plausible-movement validation; independent corroboration
+  and quorum (PLANNED); an operator pause or circuit breaker for
+  payout-triggering values (PLANNED; the manual pause is documented in the
+  runbooks). `LiquidationShield` and `FlightDelay` remain mocked and must not be
+  offered as live. See [`oracle-trust-architecture.md`](./oracle-trust-architecture.md)
+  and [`runbooks/oracle-incidents.md`](./runbooks/oracle-incidents.md).
+  See
+  [section 6](#6-attack-cost-model-and-quorum-sizing) for the quantitative
+  model that sizes corroboration thresholds and operator bonds.
+- [ ] **P1 — Make lifecycle evidence durable.** *Partially mitigated:*
+  `oracle_events`, `claims`, and `relayer_transaction_audit` exist, but oracle
+  writes are best-effort and partitions are dropped after the retention window,
+  so the ledger is not tamper-evident or permanent. Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only
   audit records with retention and alerting.
@@ -115,6 +156,52 @@ reassessed against deployment exposure and on-chain contract controls.
   overlap, coordinate scheduled work across replicas, bound per-cycle work,
   use circuit breakers/backoff for dependencies, and alert on stale oracle
   inputs, settlement failures, and backlog age.
+
+## 4A. Degraded-mode policy (fail-closed, issue #195)
+
+Policy of record for payout-triggering feeds. Implemented as the per-feed state
+machine in `src/oracle/degraded-mode.ts` (declarative thresholds in
+`DEGRADED_MODE_POLICY`) and persisted in `oracle_feed_state` with blocked-claim
+reason codes in `claims.block_reason` (`src/db/migrations/004_degraded_mode.sql`).
+
+**Current implementation status:** the corroboration layer itself is not yet in
+this snapshot — `oracle.service.ts`, `oracle-publisher.service.ts` and
+`claim-settlement.service.ts` are empty and single-source readings still drive
+`ClaimService`. The matrix below is the required behaviour once corroboration
+lands. Until the publisher and claim processor consult `isPayoutAllowed`, the
+checklist items in section 4 remain open.
+
+States: `healthy` (publish and settle allowed) → `degraded` (on the first failed
+evaluation; the claim is recorded as blocked) → `paused` (after
+`pauseAfterFailures` consecutive failures; leaves only by operator resume).
+A clean evaluation returns a `degraded` feed to `healthy`.
+
+Decision matrix. Every cell is the same action because a degraded feed must
+never fall back to a single reading. Coverage types are the catalog names in
+`src/common/coverage-catalog.ts`.
+
+| Condition | StablecoinDepeg | MarketCrash | LiquidationShield | SmartContractRisk | FlightDelay |
+|---|---|---|---|---|---|
+| Quorum shortfall (`quorum_shortfall`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+| Zero fresh sources (`no_fresh_sources`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+| All sources divergent (`sources_divergent`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+| Consensus engine unavailable (`consensus_unavailable`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+
+Rules that apply to every cell:
+
+- **Fail-closed default.** No single-source fallback. A degraded publish would
+  need an explicit, clearly labelled config flag, which is not added here.
+- **Partial staleness is not degradation.** If some sources are stale but quorum
+  is still met, the feed stays `healthy`.
+- **Blocked is not "not triggered".** A blocked claim keeps its trigger evidence
+  and reason code, and it is re-evaluated when the feed returns to `healthy`.
+- **Already-settled claims are never reverted.** Entering degraded mode does not
+  touch a claim that was correctly corroborated and settled earlier.
+- **Idempotent evaluation.** Re-applying the same observation to the resulting
+  state changes nothing, so repeated scheduler runs do not re-write state.
+- **Operator visibility.** Feed state and reason are exposed through logs and
+  status surfaces per coverage type; `paused` requires an explicit operator
+  resume.
 
 ## 5. Dead-man's-switch runbook (issue #290)
 
@@ -162,7 +249,124 @@ not hard-coded.
 5. If the pipeline is wedged, restart it and confirm heartbeats resume before
    closing the incident. Record the outage window and any missed cycles.
 
-## 6. Assumptions and limitations
+## 6. Attack-cost model and quorum sizing
+
+Corroboration and "decentralized" are only meaningful if they translate into a
+number: what does it cost an attacker to move this feed, and is that number
+large relative to the maximum payout the feed can trigger? This section
+documents the analytical model implemented in `scripts/attack-cost-model.ts`
+(pure function library) and `scripts/attack-cost.ts` (operator CLI). The model
+is versioned (`MODEL_VERSION`) alongside the quorum policy it validates; any
+change to the formulas below must bump the version and update this section.
+
+### 6.1 Inputs
+
+A feed definition supplies:
+
+- `sources[]`: each source has an `id`, a `bond` (the capital the source must
+  post, in stroops, as a bigint), and an optional `independence` weight in
+  `[0, 1]` relative to the other sources. **Unknown independence is treated as
+  fully dependent (`0`)**, i.e. the worst case: a source with no declared
+  independence contributes no diversity and cannot be counted on to resist
+  collusion.
+- `quorum`: the number of source confirmations required to trigger a payout
+  (`threshold`), and the total number of sources consulted (`total`).
+- `operatorKeys`: the number of distinct relayer/operator keys that can submit
+  a settlement, and the `bond` each operator posts.
+- `maxExposure`: the maximum payout the feed can trigger (dynamic feeds
+  recompute this from pool TVL before validation).
+
+A quorum policy supplies `safetyFactor` (default `10`): the modeled attack cost
+must exceed the exposure by at least this multiple.
+
+All arithmetic uses `bigint` for bonds and costs and integer basis points for
+independence weights, so large values cannot overflow and no floating-point
+rounding enters the security decision.
+
+### 6.2 Cost formulas
+
+1. **Source-bribery cost.** To bribe the cheapest `threshold` sources to
+   confirm a false reading, the attacker must outbid their bonds. With
+   independence weights `w_i`, the effective cost of bribing source `i` is
+   `bond_i * (1 + w_i)` (a more independent source is harder to bribe because
+   it must also be induced to break with its independent peers). The bribery
+   cost is the sum of the `threshold` smallest effective costs.
+2. **Collusion-threshold cost.** The residual risk after corroboration is that
+   `threshold` sources collude. The model computes the cheapest colluding set
+   of size `threshold` under the same effective-cost ordering and reports it
+   separately, so operators can see the marginal cost of raising `threshold`
+   by one. Sources with unknown independence are grouped as fully dependent, so
+   collusion among them is priced at their bare bonds.
+3. **Key-compromise cost.** To compromise `k` operator keys the attacker must
+   defeat `k` bonds plus the operational cost of key compromise; the model
+   reports `k * operatorBond` for `k = 1..operatorKeys` and the minimum `k`
+   needed to reach the settlement threshold. The overall attack cost is
+   `min(bribery, collusion, keyCompromise)` — the cheapest path an attacker
+   would take.
+
+### 6.3 Derived minimum bond and maximum supported exposure
+
+Given a target `maxExposure` and `safetyFactor`, the model derives the minimum
+per-source bond such that `attackCost >= maxExposure * safetyFactor`, and the
+maximum exposure a feed can support for its current bonds:
+`maxSupportedExposure = attackCost / safetyFactor`. Zero-bond configurations
+yield zero attack cost and therefore support zero exposure; they are reported
+explicitly rather than silently accepted.
+
+### 6.4 Published reference scenario
+
+The regression fixture `scripts/__fixtures__/attack-cost-reference.json`
+encodes the following hand-computed scenario and is asserted by the unit tests:
+
+- 5 sources, each bond `1_000_000` stroops; independence weights
+  `[1.0, 0.8, 0.5, 0.0, 0.0]` (the last two unknown -> fully dependent).
+- Quorum `threshold = 3` of `total = 5`.
+- 3 operator keys, each bond `2_000_000` stroops; settlement threshold 2 keys.
+- `safetyFactor = 10`.
+
+Hand computation (effective bribery cost `bond * (1 + w)` in stroops):
+
+| source | bond | w | effective cost |
+|---|---|---|---|
+| s1 | 1,000,000 | 1.0 | 2,000,000 |
+| s2 | 1,000,000 | 0.8 | 1,800,000 |
+| s3 | 1,000,000 | 0.5 | 1,500,000 |
+| s4 | 1,000,000 | 0.0 | 1,000,000 |
+| s5 | 1,000,000 | 0.0 | 1,000,000 |
+
+- Bribery cost (3 cheapest): `1,000,000 + 1,000,000 + 1,500,000 = 3,500,000`.
+- Collusion cost (3 cheapest, bare bonds for dependent sources):
+  `1,000,000 + 1,000,000 + 1,500,000 = 3,500,000`.
+- Key-compromise cost (2 keys): `2 * 2,000,000 = 4,000,000`.
+- **Attack cost = min(3,500,000; 3,500,000; 4,000,000) = 3,500,000 stroops.**
+- **Max supported exposure at safety factor 10 = 3,500,000 / 10 = 350,000
+  stroops.**
+
+Reproduce with:
+
+```
+npx ts-node scripts/attack-cost.ts \
+  --feed scripts/__fixtures__/attack-cost-reference.json \
+  --safety-factor 10
+```
+
+The CLI prints the attack cost, the maximum supported exposure, and the implied
+minimum bond for a requested exposure, all as exact integers.
+
+### 6.5 Startup validation rule
+
+Configuration validation (`validateFeedSecurity`) runs at startup for every
+payout-triggering feed. It refuses to start when
+`maxExposure * safetyFactor > attackCost`, i.e. when the exposure the feed can
+trigger exceeds the modeled attack cost by the configured safety factor. The
+error names the feed, the modeled attack cost, the exposure, and the safety
+factor so an operator can either raise bonds/quorum or lower exposure. Feeds
+whose exposure is dynamic are re-validated whenever pool TVL changes the
+exposure; a feed that cannot be priced (unknown sources, zero bonds) fails
+closed. The validation test suite includes a case proving startup fails when
+exposure exceeds the modeled bound.
+
+## 7. Assumptions and limitations
 
 - This assessment covers the backend code paths named above, not frontend
   wallet UX, contract implementation, RPC-provider internals, cloud IAM,
@@ -175,3 +379,98 @@ not hard-coded.
 - This document is a threat-model baseline, not a penetration test or proof
   that all vulnerabilities have been found. Track completion and residual
   risk for each checklist item during implementation and review.
+## 6. Operational runbooks and evidence-integrity procedures
+
+The controls below support the P1 evidence and resilience items. They are
+operational procedures, not substitutes for the code-level controls above.
+
+### 6.1 Recovery objectives (RPO/RTO)
+
+The oracle PostgreSQL store holds two classes of data with different recovery
+requirements:
+
+| Data class | Examples | RPO | RTO |
+|---|---|---|---|
+| **Evidence and decision data** | Per-source readings, consensus decisions, evidence ledger records, payout linkage, methodology versions, incident timelines | **Lossless to the last committed decision** (RPO = 0 for committed transactions) | Restore and verify within the drill's measured target (tracked per drill run) |
+| **Cache-like data** | Rendered postmortem documents, trust-status projections, derived aggregates, in-memory scheduler state | May be regenerated from evidence; loss acceptable | Rebuilt on demand after restore |
+
+A backup older than the evidence RPO target must cause the restore drill to
+**fail closed** rather than report success. The drill emits measured restore
+duration and data-loss window so drift against these targets is visible.
+
+### 6.2 Restore drill
+
+The restore drill is an idempotent, container-friendly script under
+`scripts/` (restore-and-verify entrypoint) driven entirely by environment
+variables for the source backup/dump and the target ephemeral instance. It:
+
+1. Provisions an ephemeral PostgreSQL instance (see the drill service in
+   `docker-compose.yml`) — never production.
+2. Applies `src/db/migrations/` (and/or `src/db/schema.sql`) from scratch.
+3. Restores the supplied backup or logical dump.
+4. Runs integrity verification: row counts per feed/decision table within
+   tolerance, gap-free evidence sequence/chain verification, and a
+   referential check that every settled claim has a decision and evidence
+   record.
+5. Tears everything down and emits a pass/fail signal plus measured restore
+   duration and data-loss window.
+
+The drill runs on a **weekly schedule in CI/staging** and records its outcome
+in an operator-visible place (metrics endpoint or a small report artifact).
+Credentials are injected via environment/secret stores, never checked in.
+Backups taken mid-run (partial partitions, in-flight decisions) must still
+verify consistently; deliberately truncated or stale backups must fail with a
+clear diagnostic.
+
+### 6.3 Applying the partitioning migration to an existing deployment
+
+The readings and evidence tables are converted to time-based range
+partitions by a numbered migration under `src/db/migrations/`. The migration
+takes bounded locks and is safe to re-run:
+
+1. Create the new partitioned table alongside the existing table.
+2. Backfill existing rows in batches (bounded batch size, resumable).
+3. Swap table names once backfill and verification complete.
+4. Create the covering indexes for the hot query shapes (consensus window per
+   `(feed, source, observed_at)`, evidence lookup by decision/payout id,
+   trust-status by feed) and pre-create future partitions.
+
+Apply it during a maintenance window with the ingestion write path paused or
+draining; verify row counts and index presence before resuming. Partition
+maintenance pre-creates future partitions from the scheduler and alerts if
+the next partition is missing.
+
+### 6.4 Query-budget policy for readings/evidence tables
+
+Every repository query against the partitioned readings and evidence tables
+**must bound the timestamp range**. Queries that omit the timestamp predicate
+must fail loudly rather than scan all partitions. Review checklist for new
+queries:
+
+- [ ] Includes an explicit `observed_at`/decision timestamp range predicate.
+- [ ] Targets the expected partition(s) and index (verified with
+      `EXPLAIN (ANALYZE, BUFFERS)`).
+- [ ] Does not scan full history for hot-path or audit queries.
+- [ ] Unique constraints include the partition key.
+- [ ] Covered by a slow-query budget test that fails CI on unbounded scans.
+
+### 6.5 Incident and postmortem workflow
+
+Circuit-breaker trips, quorum failures, freshness breaches, operator pauses,
+and backfill/replay events open an incident automatically (or manually by an
+operator). Events are appended to the incident as they happen; the markdown
+postmortem is rendered on demand from stored events, deterministically, with
+human-authored analysis fields left blank. Incidents must not leak secrets or
+unredacted provider payloads. A rolling window of many small breaker trips is
+grouped rather than producing dozens of incidents. The incident list and
+rendered postmortem are exposed through the operator/admin surface and stored
+with a stable id.
+
+### 6.6 Limitations of the attack-cost model
+
+- The attack-cost model in section 6 is an analytical estimate, not a market
+  observation. It assumes an attacker must outbid posted bonds and does not
+  price operator capital, liquidity, or the staking/slashing mechanics
+  themselves (tracked separately). Independence weights are operator-declared
+  inputs; unknown independence is conservatively treated as fully dependent.
+
