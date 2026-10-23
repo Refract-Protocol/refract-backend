@@ -59,6 +59,31 @@ stores policy purchases, capital deposits/withdrawals, and settled claims in
 `soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
 ledger for the first run; subsequent progress is checkpointed in Postgres.
 
+For an existing database, apply
+`src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
+checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
+the backend polls the configured Soroban RPC endpoint every 10 seconds and
+stores policy purchases, capital deposits/withdrawals, and settled claims in
+`soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
+ledger for the first run; subsequent progress is checkpointed in Postgres.
+
+For an existing database, apply
+`src/db/migrations/002_oracle_trust_engine.sql` to add the oracle trust engine
+tables: `oracle_sources`, append-only `oracle_readings`, `oracle_decisions` with
+`oracle_decision_readings` linking each decision to the readings it used, and
+`oracle_source_health`. The migration is idempotent and transactional, so it is
+safe to re-run. Fresh installs get the same tables from `src/db/schema.sql`,
+which Compose mounts on first startup.
+
+Horizon-derived oracle readings carry their source ledger sequence and hash and
+start `provisional`. They become `final` (and eligible for quorum) once the
+ledger is `HORIZON_FINALITY_DEPTH` ledgers behind the latest observed one
+(default 5; `HORIZON_FINALITY_POLICY=final_only` by default, or
+`allow_provisional`). A ledger whose hash changes is treated as a reorg:
+affected readings are marked `invalidated`, decisions built on them are marked
+`superseded`, the resume checkpoint rewinds, and every correction is appended
+to `oracle_evidence_ledger`. Apply `src/db/migrations/004_horizon_ledger_finality.sql`.
+
 The API listens on http://localhost:4001. PostgreSQL and Redis are also
 available on localhost ports 5432 and 6379. Compose uses the development-only
 Postgres password `refract_dev` unless `POSTGRES_PASSWORD` is set in the
@@ -118,10 +143,7 @@ reads, and 60/minute for coverage catalogs.
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
 > `SmartContractRisk` now call real, keyless public APIs — CoinGecko
 > (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama
-> (protocol TVL). No API key is required for any of them. `LiquidationShield`
-> and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
-> liquidation events, and AviationStack (flight data) requires a paid key
-> this project doesn't have. See `src/oracle/oracle.service.ts` for details.
+> (protocol TVL). No API key is required for any of them. `FlightDelay` has a live provider adapter in `src/oracle/sources/flightDelay.ts` (AviationStack free tier, selected with `FLIGHT_DELAY_PROVIDER=aviationstack` and `AVIATIONSTACK_API_KEY`), but the oracle refresh does not call it yet in this checkout, so no FlightDelay readings are produced until it is wired in. `LiquidationShield` has a confirmation-depth adapter (`src/oracle/sources/liquidationShield.ts`) for NEXUS Protocol on-chain liquidation events, but no live NEXUS feed is wired yet, so it produces no reading. See `src/oracle/oracle.service.ts` for details.
 > **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
 > `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
 > are looked up on-chain). Policies start `pending` after `POST /buy`; once
@@ -163,6 +185,20 @@ reads, and 60/minute for coverage catalogs.
 > relayer secret is set. Degraded fail-safe readings are never published.
 > Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
 > `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
+>
+> **Batched publishing** (`OracleBatchPublisherService`) is persist-then-publish:
+> producers `enqueue` decisions into the durable `oracle_publish_queue` table
+> (apply `src/db/migrations/004_oracle_publish_queue.sql`); a single-flight loop
+> submits ordered batches (`ORACLE_PUBLISH_MAX_BATCH_SIZE`,
+> `ORACLE_PUBLISH_MAX_IN_FLIGHT`, `ORACLE_PUBLISH_MAX_PER_FEED_PER_BATCH`). A feed
+> never has two batches in flight, so decisions land in order. Failures retry with
+> jittered backoff (`ORACLE_PUBLISH_BASE_BACKOFF_MS` / `_MAX_BACKOFF_MS`), size/fee
+> errors split the batch, and ambiguous timeouts are reconciled by tx hash before
+> any resubmission. When queue depth (`ORACLE_PUBLISH_BACKPRESSURE_QUEUE_DEPTH`)
+> or RPC latency (`ORACLE_PUBLISH_BACKPRESSURE_RPC_LATENCY_MS`) is exceeded,
+> `pollIntervalMultiplier("low")` slows low-priority polling (payout-triggering
+> feeds are never slowed) and `refract_oracle_publish_*` gauges on `/metrics`
+> show queue depth, backpressure, and RPC latency.
 >
 > **Confirmation polling** uses configurable exponential backoff + jitter
 > (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
