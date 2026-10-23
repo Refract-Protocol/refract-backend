@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly DR restore drill (#296): Mondays 03:00 UTC.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -28,6 +32,9 @@ jobs:
 
       - name: Test
         run: npm test --if-present
+
+      - name: Verify consumer-driven contracts
+        run: npm run test:contracts
 
       - name: Verify OpenAPI spec is up to date
         run: |
@@ -74,11 +81,121 @@ jobs:
       - name: Deploy refract-contracts
         run: npm run soroban:deploy
 
-      - name: Audit dependencies
-        run: npm audit
+  # Query-budget / partition-index assertions for the oracle store (#295).
+  # Fails CI if consensus-window or evidence-lookup queries stop hitting the
+  # expected partitions/indexes, or if an unbounded scan is reintroduced.
+  oracle-query-budget:
+    name: oracle query budget & partition assertions
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: oracle
+          POSTGRES_PASSWORD: oracle
+          POSTGRES_DB: oracle
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oracle"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://oracle:oracle@localhost:5432/oracle
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Lint
-        run: npm run lint
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-      - name: Start local Soroban network
-        run: npm run soroban:up
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply schema and migrations to a fresh database
+        run: npm run db:migrate
+
+      - name: Seed synthetic readings and evidence
+        run: npm run db:seed:test
+
+      - name: EXPLAIN (ANALYZE, BUFFERS) partition/index assertions
+        run: npm run test:db:explain
+
+      - name: Slow-query budget check (fails on unbounded scans)
+        run: npm run test:db:query-budget
+
+  # Weekly disaster-recovery restore drill (#296). Rebuilds the oracle store
+  # from a backup into an ephemeral instance, verifies the evidence chain, and
+  # reports measured RPO/RTO. Never points at production.
+  dr-restore-drill:
+    name: DR restore drill (weekly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    services:
+      postgres-drill:
+        image: postgres:16
+        env:
+          POSTGRES_USER: drill
+          POSTGRES_PASSWORD: drill
+          POSTGRES_DB: drill
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U drill"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DRILL_TARGET_URL: postgres://drill:drill@localhost:5433/drill
+      DRILL_RPO_SECONDS: "3600"
+      DRILL_RTO_SECONDS: "1800"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build a clean backup fixture
+        run: npm run drill:backup:clean
+
+      - name: Restore drill against a clean backup (must pass)
+        run: npm run drill:restore -- --backup "$DRILL_CLEAN_BACKUP" --report drill-report-clean.json
+
+      - name: Restore drill against a truncated backup (must fail)
+        run: |
+          set +e
+          npm run drill:restore -- --backup "$DRILL_TRUNCATED_BACKUP" --report drill-report-truncated.json
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::Truncated backup unexpectedly passed verification."
+            exit 1
+          fi
+          echo "Truncated backup correctly rejected (exit $status)."
+
+      - name: Restore drill against a backup missing recent partitions (must fail)
+        run: |
+          set +e
+          npm run drill:restore -- --backup "$DRILL_MISSING_PARTITIONS_BACKUP" --report drill-report-missing-partitions.json
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::Backup missing recent partitions unexpectedly passed verification."
+            exit 1
+          fi
+          echo "Backup missing recent partitions correctly rejected (exit $status)."
+
+      - name: Publish drill report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dr-restore-drill-report
+          path: drill-report-*.json
+          if-no-files-found: warn

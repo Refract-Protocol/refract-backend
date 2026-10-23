@@ -36,6 +36,95 @@ interface SettlementLatencyRow {
   total_premium_amount: string | number | null;
 }
 
+/**
+ * A settled claim joined to the consensus decision and evidence record that
+ * justify it. Used by the incident timeline generator and the DR restore drill.
+ */
+export interface SettledClaimWithEvidence {
+  claimId: string;
+  policyId: string;
+  coverageType: string;
+  status: string;
+  payoutAmount: number | null;
+  processedAt: string;
+  decisionId: string | null;
+  feedId: string | null;
+  evidenceId: string | null;
+  evidenceSequence: number | null;
+}
+
+interface SettledClaimWithEvidenceRow {
+  claim_id: string;
+  policy_id: string;
+  coverage_type: string;
+  status: string;
+  payout_amount: string | number | null;
+  processed_at: string | Date;
+  decision_id: string | null;
+  feed_id: string | null;
+  evidence_id: string | null;
+  evidence_sequence: string | number | null;
+}
+
+/**
+ * Result of the referential-integrity check: every settled claim in the window
+ * must have a linked consensus decision and an evidence record.
+ */
+export interface SettledClaimIntegrityReport {
+  windowStart: string;
+  windowEnd: string;
+  settledClaims: number;
+  claimsMissingDecision: number;
+  claimsMissingEvidence: number;
+  missingDecisionClaimIds: string[];
+  missingEvidenceClaimIds: string[];
+  ok: boolean;
+}
+
+interface SettledClaimIntegrityRow {
+  claim_id: string;
+  has_decision: boolean;
+  has_evidence: boolean;
+}
+
+/** Per-feed row counts used by the restore verification drill. */
+export interface FeedRowCount {
+  feedId: string;
+  claimCount: number;
+  settledClaimCount: number;
+}
+
+interface FeedRowCountRow {
+  feed_id: string;
+  claim_count: string | number;
+  settled_claim_count: string | number;
+}
+
+/**
+ * Query-budget policy: every query against the claims/evidence tables must
+ * bound its timestamp range. These helpers reject unbounded windows loudly
+ * rather than silently scanning the full history.
+ */
+const MAX_QUERY_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+const MAX_INTEGRITY_SAMPLE_IDS = 100;
+
+function assertBoundedWindow(windowStart: Date, windowEnd: Date): void {
+  if (!(windowStart instanceof Date) || Number.isNaN(windowStart.getTime())) {
+    throw new Error('Query budget violation: windowStart must be a valid Date');
+  }
+  if (!(windowEnd instanceof Date) || Number.isNaN(windowEnd.getTime())) {
+    throw new Error('Query budget violation: windowEnd must be a valid Date');
+  }
+  if (windowEnd.getTime() <= windowStart.getTime()) {
+    throw new Error('Query budget violation: windowEnd must be after windowStart');
+  }
+  if (windowEnd.getTime() - windowStart.getTime() > MAX_QUERY_WINDOW_MS) {
+    throw new Error(
+      `Query budget violation: window exceeds ${MAX_QUERY_WINDOW_MS / (24 * 60 * 60 * 1000)} days; narrow the range or paginate`,
+    );
+  }
+}
+
 @Injectable()
 export class ClaimRepository {
   constructor(private readonly db: DatabaseService) {}
@@ -148,6 +237,152 @@ export class ClaimRepository {
       };
     });
   }
+
+  /**
+   * Bounded-range lookup of settled claims with their consensus decision and
+   * evidence references. Used by the incident timeline generator to assemble
+   * "claims settled, held, or reversed" for an incident window.
+   *
+   * The timestamp predicate is mandatory (query-budget policy) and is applied
+   * on the partition key (processed_at) so only the relevant partitions are
+   * scanned.
+   */
+  async findSettledClaimsWithEvidence(
+    windowStart: Date,
+    windowEnd: Date,
+    options: { feedId?: string; limit?: number } = {},
+  ): Promise<SettledClaimWithEvidence[]> {
+    assertBoundedWindow(windowStart, windowEnd);
+    const limit = Math.min(Math.max(options.limit ?? 1000, 1), 5000);
+
+    const params: unknown[] = [windowStart, windowEnd];
+    let feedFilter = '';
+    if (options.feedId) {
+      params.push(options.feedId);
+      feedFilter = `AND c.feed_id = $${params.length}`;
+    }
+    params.push(limit);
+
+    const rows = await this.db.query<SettledClaimWithEvidenceRow>(
+      `SELECT
+         c.id AS claim_id,
+         c.policy_id,
+         c.coverage_type,
+         c.status,
+         c.payout_amount,
+         c.processed_at,
+         d.id AS decision_id,
+         d.feed_id,
+         e.id AS evidence_id,
+         e.sequence AS evidence_sequence
+       FROM claims c
+       LEFT JOIN consensus_decisions d ON d.id = c.decision_id
+       LEFT JOIN evidence_ledger e ON e.decision_id = d.id
+       WHERE c.processed_at >= $1
+         AND c.processed_at < $2
+         ${feedFilter}
+       ORDER BY c.processed_at ASC, c.id ASC
+       LIMIT $${params.length}`,
+      params,
+    );
+
+    return rows.map((row) => ({
+      claimId: row.claim_id,
+      policyId: row.policy_id,
+      coverageType: row.coverage_type,
+      status: row.status,
+      payoutAmount: toNullableNumber(row.payout_amount),
+      processedAt: toIsoString(row.processed_at),
+      decisionId: row.decision_id,
+      feedId: row.feed_id,
+      evidenceId: row.evidence_id,
+      evidenceSequence: toNullableNumber(row.evidence_sequence),
+    }));
+  }
+
+  /**
+   * Referential-integrity check used by the DR restore drill: every settled
+   * claim in the window must have a consensus decision and an evidence record.
+   * Returns a bounded sample of offending claim ids for diagnostics.
+   */
+  async verifySettledClaimIntegrity(
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<SettledClaimIntegrityReport> {
+    assertBoundedWindow(windowStart, windowEnd);
+
+    const rows = await this.db.query<SettledClaimIntegrityRow>(
+      `SELECT
+         c.id AS claim_id,
+         (c.decision_id IS NOT NULL AND d.id IS NOT NULL) AS has_decision,
+         (e.id IS NOT NULL) AS has_evidence
+       FROM claims c
+       LEFT JOIN consensus_decisions d ON d.id = c.decision_id
+       LEFT JOIN evidence_ledger e ON e.decision_id = d.id
+       WHERE c.processed_at >= $1
+         AND c.processed_at < $2
+         AND c.status = 'settled'`,
+      [windowStart, windowEnd],
+    );
+
+    const missingDecisionClaimIds: string[] = [];
+    const missingEvidenceClaimIds: string[] = [];
+    for (const row of rows) {
+      if (!row.has_decision && missingDecisionClaimIds.length < MAX_INTEGRITY_SAMPLE_IDS) {
+        missingDecisionClaimIds.push(row.claim_id);
+      }
+      if (!row.has_evidence && missingEvidenceClaimIds.length < MAX_INTEGRITY_SAMPLE_IDS) {
+        missingEvidenceClaimIds.push(row.claim_id);
+      }
+    }
+
+    const claimsMissingDecision = rows.filter((row) => !row.has_decision).length;
+    const claimsMissingEvidence = rows.filter((row) => !row.has_evidence).length;
+
+    return {
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      settledClaims: rows.length,
+      claimsMissingDecision,
+      claimsMissingEvidence,
+      missingDecisionClaimIds,
+      missingEvidenceClaimIds,
+      ok: claimsMissingDecision === 0 && claimsMissingEvidence === 0,
+    };
+  }
+
+  /**
+   * Per-feed row counts within a bounded window, used by the restore
+   * verification drill to compare a restored database against the source
+   * backup within tolerance.
+   */
+  async getFeedRowCounts(windowStart: Date, windowEnd: Date): Promise<FeedRowCount[]> {
+    assertBoundedWindow(windowStart, windowEnd);
+
+    const rows = await this.db.query<FeedRowCountRow>(
+      `SELECT
+         c.feed_id,
+         COUNT(*) AS claim_count,
+         COUNT(*) FILTER (WHERE c.status = 'settled') AS settled_claim_count
+       FROM claims c
+       WHERE c.processed_at >= $1
+         AND c.processed_at < $2
+         AND c.feed_id IS NOT NULL
+       GROUP BY c.feed_id
+       ORDER BY c.feed_id ASC`,
+      [windowStart, windowEnd],
+    );
+
+    return rows.map((row) => ({
+      feedId: row.feed_id,
+      claimCount: toNumber(row.claim_count),
+      settledClaimCount: toNumber(row.settled_claim_count),
+    }));
+  }
+}
+
+function toIsoString(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : value;
 }
 
 function toNumber(value: string | number | null | undefined): number {
