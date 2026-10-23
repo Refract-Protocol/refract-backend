@@ -51,6 +51,74 @@ when a pool contract ID is configured, validates the live pool WASM contract
 spec at startup. Startup fails with the specific interface mismatch if the
 deployed contract differs from the backend's assumed interface.
 
+### Soroban RPC endpoint pool
+
+Set `SOROBAN_RPC_URLS` (comma-separated, in preference order) alongside
+`SOROBAN_RPC_URL` to run against several RPC providers. All reads, event
+polling, and oracle publish submissions share one health-checked pool
+(`SorobanRpcPoolService`):
+
+- A background `getHealth` probe runs every `SOROBAN_RPC_HEALTH_INTERVAL_MS`.
+  An endpoint that reports a non-healthy status or fails the probe is marked
+  `unhealthy`. One that trails the most advanced endpoint by more than
+  `SOROBAN_RPC_MAX_LEDGER_LAG` ledgers is marked `lagging`.
+- `SOROBAN_RPC_FAILURE_THRESHOLD` consecutive transient call failures also mark
+  an endpoint `unhealthy`. It is skipped for `SOROBAN_RPC_COOLDOWN_MS`, then
+  retried.
+- Calls go to healthy endpoints first, then unknown, then lagging. Unhealthy
+  endpoints are tried last rather than dropped, so a fully degraded pool still
+  makes progress instead of stalling.
+- Event polling stays on the endpoint that served the previous page while it is
+  healthy, because paging cursors are only valid on the node that issued them.
+- Re-sending a signed oracle publish to another endpoint after a transport
+  error is safe: the hash and sequence number are the same, so it applies at
+  most once.
+
+### Network configuration validation
+
+Before any module starts, the backend checks that the environment targets
+exactly one network and lists every problem at once:
+
+- `STELLAR_NETWORK` must be `testnet`, `futurenet` or `mainnet` (`public` is
+  an alias for `mainnet`).
+- No `*_TESTNET` / `*_FUTURENET` / `*_MAINNET` value may be set for any
+  network other than the selected one. This covers `SOROBAN_RPC_URL`,
+  `STELLAR_HORIZON_URL`, `STELLAR_NETWORK_PASSPHRASE`, and
+  `REFRACT_{POOL,ORACLE,POLICY}_CONTRACT_ID`. A suffixed and an unsuffixed
+  value for the same setting must match.
+- The passphrase must match the network. RPC and Horizon URLs must not point
+  at another network, and mainnet requires https.
+- Contract IDs must be valid and must not repeat across roles.
+- With `STELLAR_VALIDATE_ONCHAIN=true`, RPC `getNetwork` and Horizon `/` must
+  report the expected passphrase.
+
+Missing payout pieces (oracle ID, pool ID, relayer key) only produce a
+warning, so read-only setups still boot. Run the same check before deploying:
+
+```bash
+npx ts-node scripts/check-network-config.ts --live
+```
+
+Example failure:
+
+```
+Stellar network configuration is inconsistent:
+  - REFRACT_ORACLE_CONTRACT_ID_MAINNET is set for mainnet but STELLAR_NETWORK=testnet; remove it so only one network is configured
+  - STELLAR_NETWORK_PASSPHRASE is the mainnet passphrase but STELLAR_NETWORK=testnet (expected "Test SDF Network ; September 2015")
+```
+
+
+
+For an existing database, apply
+`src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
+checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
+the backend polls the configured Soroban RPC endpoint every 10 seconds and
+stores policy purchases, capital deposits/withdrawals, and settled claims in
+`soroban_pool_events`. Set `SOROBAN_EVENT_START_LEDGER` to an RPC-retained
+ledger for the first run; subsequent progress is checkpointed in Postgres.
+
+For an e
+
 For an existing database, apply
 `src/db/migrations/001_soroban_pool_events.sql` to add idempotent storage and
 checkpoints for Soroban pool events. Once `REFRACT_POOL_CONTRACT_ID` is set,
@@ -149,6 +217,11 @@ Schemas are generated from the Nest controllers and request DTOs.
 | `GET` | `/api/v1/claims/dead-letter` | Triggered claims withheld after repeated failed settlement |
 | `POST` | `/api/v1/tx/submit` | Submit signed XDR; confirmed policy buys return their on-chain ID |
 | `WS` | `/` | Live oracle alert stream |
+| `GET` | `/api/v1/admin/feeds` | Admin: latest version of every oracle feed definition |
+| `GET` | `/api/v1/admin/feeds/:feedKey` | Admin: latest version of one feed |
+| `GET` | `/api/v1/admin/feeds/:feedKey/versions` | Admin: full version history with previous definitions |
+| `POST` | `/api/v1/admin/feeds` | Admin: create a feed (version 1) |
+| `PATCH` | `/api/v1/admin/feeds/:feedKey` | Admin: update a feed; requires `expectedVersion` |
 
 State-changing API attempts emit structured `security_audit` JSON lines to
 stdout; route those events to the deployment's log aggregation or SIEM system.
@@ -156,8 +229,17 @@ See [`SECURITY.md`](./SECURITY.md) for the event fields and identity limitations
 
 Endpoints with the `@AdminOnly()` guard require `X-API-Key: $ADMIN_API_KEY`.
 Set a strong, private `ADMIN_API_KEY` before enabling admin-only routes; if
-it is unset, those routes fail closed with `503`. The current API has no
-admin CRUD, dead-letter review, or contract-override routes. API request
+it is unset, those routes fail closed with `503`. The admin feed routes also
+require an `x-admin-actor` header on mutations; it is recorded in the audit
+trail but is self-reported, because the shared admin key identifies no one.
+Feed definitions are append-only versions in `oracle_feed_definitions`
+(migration `004_oracle_feed_definitions.sql`). A PATCH must carry the version
+it was based on (`expectedVersion`), or it is rejected with `409`. An enabled
+feed whose non-quarantined source weight cannot reach `quorumThreshold` is
+rejected with `400`. The monitor reads the latest definitions from an
+in-process cache that reloads every `FEED_DEFINITIONS_RELOAD_MS` (default
+`15000`), so a change takes effect within one interval on every instance. The
+API has no dead-letter review or contract-override routes. API request
 limits are applied per client IP and endpoint: 30/minute for quotes,
 10/minute for policy buys, LP actions, oracle status, and on-chain coverage
 reads, and 60/minute for coverage catalogs.
@@ -247,6 +329,104 @@ reads, and 60/minute for coverage catalogs.
 > This README predates the NestJS migration in some other places (route
 > layout, stack description) — a fuller pass is pending; see
 > [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+### Oracle feed config validation
+
+Oracle feeds, their sources, and their quorum policy are defined in JSON
+(`ORACLE_FEEDS_FILE` or `ORACLE_FEEDS_JSON`; see
+[`docs/oracle-feeds.example.json`](./docs/oracle-feeds.example.json)). The
+config is validated in `main.ts` before the Nest app is created, so a bad
+config stops the process before anything polls, publishes, or settles. The
+same rules run as a standalone lint for CI:
+
+```bash
+npx ts-node scripts/oracle-config-lint.ts --file oracle-feeds.json --network mainnet [--strict] [--json]
+# compiled image: node dist/oracle/config/oracle-config-lint.cli.js --help
+# exit codes: 0 valid, 1 invalid, 2 usage error or malformed file
+```
+
+Errors (startup refuses to continue):
+
+| Code | Meaning |
+|---|---|
+| `QUORUM_EXCEEDS_INDEPENDENT_SOURCES` | `quorum.minSources` is greater than the number of enabled sources with distinct `operator`s, so quorum can never be reached |
+| `FRESHNESS_SHORTER_THAN_POLL` | `freshnessWindowMs` < `pollIntervalMs`, so every reading is stale before the next poll |
+| `MISSING_TRUST_MODE` / `UNKNOWN_TRUST_MODE` | No valid `trustMode` on the feed or in `defaults` |
+| `QUORUM_MODE_WITHOUT_QUORUM` | `median_quorum` / `weighted_quorum` with `minSources` < 2 |
+| `TRUST_MODE_QUORUM_CONFLICT` | `single_source` with `minSources` > 1 |
+| `SINGLE_SOURCE_ON_MAINNET` / `MOCK_SOURCE_ON_MAINNET` | A claim-settling feed on mainnet that trusts one source or uses synthetic data |
+| `MISSING_SOURCE_WEIGHT` / `OPERATOR_CONTROLS_QUORUM` | `weighted_quorum` without positive weights, or one operator holding more than half the weight |
+| `NO_FEEDS`, `NO_ENABLED_SOURCES`, `DUPLICATE_FEED_ID`, `DUPLICATE_SOURCE_ID`, `UNKNOWN_ADAPTER`, `UNKNOWN_COVERAGE_TYPE`, `POLL_INTERVAL_TOO_SHORT`, `DEVIATION_OUT_OF_RANGE` | Structural mistakes |
+
+Warnings (logged, or fatal with `ORACLE_CONFIG_STRICT=true` / `--strict`):
+`SINGLE_SOURCE`, `SHARED_OPERATOR`, `NO_QUORUM_HEADROOM`, `MINORITY_QUORUM`,
+`FRESHNESS_WINDOW_TIGHT`, `PUBLISH_INTERVAL_EXCEEDS_FRESHNESS`,
+`UNUSED_SOURCES`. Unknown keys in the file are rejected, so a typo such as
+`freshnesWindowMs` fails instead of silently falling back to a default.
+
+### Bootstrapping new oracle sources
+
+A newly onboarded feed or source adapter has no history, so deviation checks
+would either fire on every reading or need to be turned off. Bootstrapping
+backfills recent history from the adapter and seeds:
+
+- **Seed readings** (`oracle_seed_readings`). These are kept apart from
+  `oracle_events` and never feed claim settlement.
+- **A statistical baseline**: median, MAD, mean, stddev, and percentiles.
+  `SourceBootstrapService.assess()` scores live readings against it with a
+  robust z-score. It returns `ready: false` until the source is `warm`, so
+  callers skip the check instead of firing on an empty reference.
+- **An initial reputation** from history coverage and agreement with the
+  feed's other sources. It is capped at 0.8, so new sources still have to
+  earn full trust live.
+
+Apply `src/db/migrations/004_oracle_source_bootstrap.sql`, then run:
+
+```bash
+npx ts-node scripts/oracle-bootstrap.ts --feed stablecoin-depeg \
+  --source cg-usdc:coingecko:coinId=usd-coin \
+  --source cg-usdt:coingecko:coinId=tether
+# compiled image: node dist/oracle/bootstrap/bootstrap.cli.js --help
+```
+
+History providers exist for `coingecko` (`coinId`) and `defillama`
+(`protocolSlug` for TVL, or `coinId` for prices). Runs are idempotent. Warm sources are skipped unless
+`--force` is passed, and a forced re-run that fails keeps the previous
+baseline.
+
+## Offline oracle parameter simulation
+
+Operators can replay stored `oracle_events` without contacting providers or
+publishing transactions. The simulator compares recorded trigger decisions
+with a candidate quorum, freshness window, thresholds, and anomaly tolerance.
+It also estimates payout changes using the historical average settled payout
+per coverage type; estimates are indicative, not settlement predictions.
+
+Create a candidate JSON file, for example:
+
+```json
+{
+  "schemaVersion": 1,
+  "quorum": 2,
+  "freshnessSeconds": 300,
+  "anomalyDeviationPct": 10,
+  "thresholds": {
+    "StablecoinDepeg": 0.95,
+    "MarketCrash": -30,
+    "FlightDelay": 120
+  }
+}
+```
+
+Set `DATABASE_URL` to the database containing the historical readings and run:
+
+```sh
+npm run simulate:oracle -- candidate.json 2026-01-01T00:00:00Z 2026-02-01T00:00:00Z
+```
+
+Simulation windows are limited to 366 days and 50,000 readings per run. The
+command is read-only and does not contact providers or alter policies, claims,
+or on-chain state.
 
 ## Documentation
 

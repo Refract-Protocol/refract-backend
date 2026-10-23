@@ -1,8 +1,10 @@
 import { Global, Module } from "@nestjs/common";
+import { ScheduleModule } from "@nestjs/schedule";
 import { SorobanRpcService } from "./soroban-rpc.service";
-import { RelayerKeyring } from "./relayer-keyring.service";
-import { OracleQuorumService } from "../oracle/oracle-quorum.service";
-import { OracleQuorumValidator } from "../oracle/oracle-quorum.validator";
+import { ContractSpecRevalidator } from "./contract-spec-revalidator";
+import { OpsContractSpecController } from "./ops-contract-spec.controller";
+import { AlertingModule } from "../alerting/alerting.module";
+import { DbModule } from "../db/db.module";
 
 /**
  * Global so Policy/Pool/Claim/Tx modules need no import churn — same
@@ -10,7 +12,9 @@ import { OracleQuorumValidator } from "../oracle/oracle-quorum.validator";
  */
 @Global()
 @Module({
-  providers: [SorobanRpcService, RelayerKeyring, OracleQuorumService, OracleQuorumValidator],
-  exports: [SorobanRpcService, RelayerKeyring, OracleQuorumService],
+  imports: [ScheduleModule, AlertingModule, DbModule],
+  providers: [SorobanRpcService, ContractSpecRevalidator],
+  controllers: [OpsContractSpecController],
+  exports: [SorobanRpcService, ContractSpecRevalidator],
 })
 export class StellarModule {}

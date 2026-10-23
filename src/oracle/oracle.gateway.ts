@@ -1,14 +1,14 @@
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
-  OnModuleDestroy,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger, Optional } from '@nestjs/common';
+import { Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { timingSafeEqual } from 'crypto';
 import { IncomingMessage } from 'http';
 import { Server, WebSocket } from 'ws';
+import { OracleReading } from './oracle-reading';
 import { TrustEventsService } from './trust-events.service';
 import {
   TRUST_CHANNELS,
@@ -43,7 +43,7 @@ export class OracleGateway
   private heartbeatTimer?: NodeJS.Timeout;
 
   @WebSocketServer()
-  server: Server;
+  server!: Server;
 
   constructor(@Optional() private readonly trust?: TrustEventsService) {
     this.unsubscribe = this.trust?.onEvent((e) => this.broadcast(e));
