@@ -8,6 +8,13 @@ import type { Config } from "jest";
  *
  * The suite is intentionally kept out of the default `jest` (rootDir:src)
  * run so unit tests stay fast and free of Docker dependency.
+ *
+ * Note: the global setup applies the full schema, including the
+ * reference-data registry migration (see `src/db/migrations/`), so
+ * integration tests for reference-data validation run against the
+ * same schema as production. The `*.ispec.ts` glob below already
+ * matches the reference-data integration tests (e.g.
+ * `test/integration/referenceData.ispec.ts`).
  */
 const config: Config = {
   preset: "ts-jest",

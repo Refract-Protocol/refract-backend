@@ -444,3 +444,135 @@ void Address;
 void nativeToScVal;
 
 console.log(`Regenerated fixtures in ${outDir}`);
+
+// ---------------------------------------------------------------------------
+// Reference data importer (issue #287)
+// ---------------------------------------------------------------------------
+// Loads a reference dataset (airports, routes, carriers, protocols, markets,
+// chains, assets) from a JSON or CSV source, validates it, and publishes it as
+// a new immutable dataset version. Published versions are never mutated: any
+// attempt to write to an already-published version fails.
+//
+// Usage:
+//   npx ts-node scripts/import-reference-data.ts --file data/airports.json \
+//     --kind airports --version 2024.11.1 --effective-from 2024-11-01T00:00:00Z \
+//     [--effective-to 2025-11-01T00:00:00Z] [--dry-run]
+//
+// --dry-run prints a diff (added / changed / retired entities and ambiguous
+// alias mappings) against the currently pinned version without writing.
+//
+// This block is intentionally self-contained so the fixture regeneration above
+// keeps working unchanged; the importer is only executed when this file is run
+// with an --file argument.
+
+import {
+  ReferenceDataRepository,
+  ReferenceDatasetKind,
+  ReferenceEntityInput,
+  ReferenceAliasInput,
+  validateReferenceDataset,
+  diffReferenceDatasets,
+  formatReferenceDiff,
+} from "../src/oracle/referenceData";
+
+interface ImportArgs {
+  file: string;
+  kind: ReferenceDatasetKind;
+  version: string;
+  effectiveFrom: string;
+  effectiveTo?: string;
+  dryRun: boolean;
+  baseVersion?: string;
+}
+
+function parseArgs(argv: string[]): ImportArgs {
+  const get = (flag: string): string | undefined => {
+    const idx = argv.indexOf(flag);
+    return idx >= 0 ? argv[idx + 1] : undefined;
+  };
+  const file = get("--file");
+  const kind = get("--kind") as ReferenceDatasetKind | undefined;
+  const version = get("--version");
+  const effectiveFrom = get("--effective-from");
+  if (!file || !kind || !version || !effectiveFrom) {
+    throw new Error(
+      "Usage: import-reference-data --file <path> --kind <kind> --version <ver> --effective-from <iso> [--effective-to <iso>] [--dry-run]"
+    );
+  }
+  return {
+    file,
+    kind,
+    version,
+    effectiveFrom,
+    effectiveTo: get("--effective-to"),
+    dryRun: argv.includes("--dry-run"),
+    baseVersion: get("--base-version"),
+  };
+}
+
+function parseCsv(text: string): Record<string, string>[] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return [];
+  const headers = lines[0].split(",").map((h) => h.trim());
+  return lines.slice(1).map((line) => {
+    const cells = line.split(",").map((c) => c.trim());
+    const row: Record<string, string> = {};
+    headers.forEach((h, i) => (row[h] = cells[i] ?? ""));
+    return row;
+  });
+}
+
+function loadSource(file: string): { entities: ReferenceEntityInput[]; aliases: ReferenceAliasInput[] } {
+  const raw = fs.readFileSync(file, "utf8");
+  const isCsv = file.toLowerCase().endsWith(".csv");
+  const parsed = isCsv ? parseCsv(raw) : JSON.parse(raw);
+  const entities: ReferenceEntityInput[] = Array.isArray(parsed) ? parsed : parsed.entities ?? [];
+  const aliases: ReferenceAliasInput[] = Array.isArray(parsed) ? [] : parsed.aliases ?? [];
+  return { entities, aliases };
+}
+
+async function runImporter(argv: string[]): Promise<void> {
+  const args = parseArgs(argv);
+  const { entities, aliases } = loadSource(args.file);
+
+  const validation = validateReferenceDataset({ kind: args.kind, entities, aliases });
+  if (!validation.ok) {
+    console.error("Reference dataset failed validation:");
+    for (const err of validation.errors) console.error(`  - ${err}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const repo = new ReferenceDataRepository();
+  const baseVersion = args.baseVersion ?? (await repo.getPinnedVersion(args.kind));
+
+  if (args.dryRun) {
+    const base = baseVersion ? await repo.getDataset(args.kind, baseVersion) : null;
+    const diff = diffReferenceDatasets(base, { kind: args.kind, entities, aliases });
+    console.log(formatReferenceDiff(diff));
+    return;
+  }
+
+  if (baseVersion && (await repo.isPublished(args.kind, args.version))) {
+    throw new Error(
+      `Dataset ${args.kind}@${args.version} is already published and immutable; bump --version instead of mutating it.`
+    );
+  }
+
+  await repo.publishDataset({
+    kind: args.kind,
+    version: args.version,
+    effectiveFrom: args.effectiveFrom,
+    effectiveTo: args.effectiveTo,
+    entities,
+    aliases,
+  });
+  console.log(`Published ${args.kind}@${args.version} (${entities.length} entities, ${aliases.length} aliases).`);
+}
+
+if (require.main === module && process.argv.includes("--file")) {
+  runImporter(process.argv.slice(2)).catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exitCode = 1;
+  });
+}

@@ -1,149 +1,82 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
+import { AppConfig } from "../config/configuration";
+import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
-export interface ClaimSettlementRecord {
-  claimId: string;
-  feedId: string;
-  amount: string;
-  currency: string;
-  decisionId: string;
-  methodologyVersionIds: string[];
-  settledAt: Date;
-  status: 'settled' | 'held' | 'reversed';
-  reason?: string;
+export interface SettlementResult {
+  settled: boolean;
+  txHash?: string;
+  error?: string;
 }
 
-export interface IncidentEventInput {
-  incidentId: string;
-  eventType: string;
-  feedId: string;
-  sourceId?: string;
-  decisionId?: string;
-  payload: Record<string, unknown>;
-  occurredAt: Date;
-}
-
+/**
+ * Builds, signs, and submits the pool.process_claim() Soroban transaction.
+ * Its deployed interface accepts only a u64 on-chain policy ID. Policy
+ * records currently use off-chain UUIDs until buy_policy is wired to persist
+ * its on-chain return value, so those records are rejected before submission.
+ */
 @Injectable()
 export class ClaimSettlementService {
   private readonly logger = new Logger(ClaimSettlementService.name);
+  private readonly server: rpc.Server;
+  private readonly networkPassphrase: string;
+  private readonly poolContractId: string;
+  private readonly relayerKeypair: Keypair | null;
 
-  constructor(
-    @InjectRepository('ClaimSettlementRecord')
-    private readonly settlementRepository: Repository<ClaimSettlementRecord>,
-    @InjectRepository('Incident')
-    private readonly incidentRepository: Repository<any>,
-    @InjectRepository('IncidentEvent')
-    private readonly incidentEventRepository: Repository<IncidentEventInput>,
-  ) {}
-
-  /**
-   * Settle a claim, recording the methodology version ids used for the
-   * underlying consensus decision so that historical decisions resolve to
-   * the exact methodology semantics in effect at settlement time.
-   */
-  async settleClaim(params: {
-    claimId: string;
-    feedId: string;
-    amount: string;
-    currency: string;
-    decisionId: string;
-    methodologyVersionIds: string[];
-    status: 'settled' | 'held' | 'reversed';
-    reason?: string;
-  }): Promise<ClaimSettlementRecord> {
-    const settledAt = new Date();
-
-    const record: ClaimSettlementRecord = {
-      claimId: params.claimId,
-      feedId: params.feedId,
-      amount: params.amount,
-      currency: params.currency,
-      decisionId: params.decisionId,
-      methodologyVersionIds: [...params.methodologyVersionIds],
-      settledAt,
-      status: params.status,
-      reason: params.reason,
-    };
-
-    const saved = await this.settlementRepository.save(record);
-
-    await this.appendIncidentEventForFeed({
-      feedId: params.feedId,
-      decisionId: params.decisionId,
-      status: params.status,
-      claimId: params.claimId,
-      amount: params.amount,
-      currency: params.currency,
-      methodologyVersionIds: record.methodologyVersionIds,
-      occurredAt: settledAt,
-    });
-
-    return saved;
+  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+    const stellar = this.configService.get("stellar", { infer: true });
+    this.server = new rpc.Server(stellar.sorobanRpcUrl);
+    this.networkPassphrase = stellar.networkPassphrase;
+    this.poolContractId = stellar.poolContractId;
+    this.relayerKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
   }
 
-  /**
-   * Append a settlement event to any open incident covering the affected feed.
-   * Incidents are event-sourced, so the timeline survives a crash and can be
-   * rendered deterministically on demand.
-   */
-  private async appendIncidentEventForFeed(params: {
-    feedId: string;
-    decisionId: string;
-    status: 'settled' | 'held' | 'reversed';
-    claimId: string;
-    amount: string;
-    currency: string;
-    methodologyVersionIds: string[];
-    occurredAt: Date;
-  }): Promise<void> {
-    let openIncidents: any[] = [];
-    try {
-      openIncidents = await this.incidentRepository.find({
-        where: { feedId: params.feedId, status: 'open' },
-      });
-    } catch (err) {
-      this.logger.warn(
-        `Failed to look up open incidents for feed ${params.feedId}: ${(err as Error).message}`,
-      );
-      return;
-    }
+  /** True once a pool contract ID and relayer secret are configured. */
+  isConfigured(): boolean {
+    return Boolean(this.poolContractId && this.relayerKeypair);
+  }
 
-    if (!openIncidents || openIncidents.length === 0) {
-      return;
-    }
-
-    const eventType =
-      params.status === 'settled'
-        ? 'claim_settled'
-        : params.status === 'held'
-          ? 'claim_held'
-          : 'claim_reversed';
-
-    for (const incident of openIncidents) {
-      const event: IncidentEventInput = {
-        incidentId: incident.id,
-        eventType,
-        feedId: params.feedId,
-        decisionId: params.decisionId,
-        payload: {
-          claimId: params.claimId,
-          amount: params.amount,
-          currency: params.currency,
-          status: params.status,
-          decisionId: params.decisionId,
-          methodologyVersionIds: params.methodologyVersionIds,
-        },
-        occurredAt: params.occurredAt,
+  async settleClaim(policyId: string): Promise<SettlementResult> {
+    if (!this.relayerKeypair || !this.poolContractId) {
+      return {
+        settled: false,
+        error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET)",
       };
+    }
 
-      try {
-        await this.incidentEventRepository.save(event);
-      } catch (err) {
-        this.logger.warn(
-          `Failed to append ${eventType} event to incident ${incident.id}: ${(err as Error).message}`,
-        );
+    if (!/^\d+$/.test(policyId) || BigInt(policyId) > 18_446_744_073_709_551_615n) {
+      return { settled: false, error: "Policy ID must be an on-chain u64" };
+    }
+
+    try {
+      const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
+      const contract = new Contract(this.poolContractId);
+
+      const operation = contract.call("process_claim", nativeToScVal(BigInt(policyId), { type: "u64" }));
+
+      const builtTx = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await this.server.prepareTransaction(builtTx);
+      preparedTx.sign(this.relayerKeypair);
+
+      const sendResult = await this.server.sendTransaction(preparedTx);
+      if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
+        return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
       }
+
+      const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+      return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
+      return { settled: false, error: message };
     }
   }
 }
