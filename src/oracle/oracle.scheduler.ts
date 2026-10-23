@@ -4,6 +4,7 @@ import { CronJob } from 'cron';
 import { OracleService } from './oracle.service';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
 import { ProtocolParameterKey } from '../parameters/protocol-parameter-key.enum';
+import { LeaderElector } from '../leader/leader-elector.service';
 
 const ORACLE_REFRESH_JOB_NAME = 'oracle-refresh';
 
@@ -15,6 +16,7 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly oracleService: OracleService,
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly protocolParameters: ProtocolParametersService,
+    private readonly leaderElector: LeaderElector,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -41,6 +43,10 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
   }
 
   private async refresh(): Promise<void> {
+    if (!this.leaderElector.isLeader()) {
+      return;
+    }
+
     try {
       await this.oracleService.refreshPrices();
     } catch (error) {
