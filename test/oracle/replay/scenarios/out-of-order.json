@@ -1,0 +1,45 @@
+{
+  "name": "out-of-order",
+  "description": "Two sources later replay an older observation than already accepted: rejected, pause.",
+  "fixture": "sample-v1.json",
+  "seed": 42,
+  "startMs": 1767225600000,
+  "config": {
+    "sources": [
+      "provider-a",
+      "provider-b",
+      "provider-c"
+    ],
+    "maxAgeMs": 90000,
+    "maxFutureSkewMs": 5000,
+    "toleranceBps": 500,
+    "minSources": 2,
+    "triggerThreshold": 140,
+    "maxRetries": 1,
+    "retryBaseMs": 1000
+  },
+  "faults": [
+    {
+      "kind": "delay",
+      "source": "provider-a",
+      "fromMs": 119000,
+      "toMs": 200000,
+      "param": 90000
+    },
+    {
+      "kind": "delay",
+      "source": "provider-b",
+      "fromMs": 119000,
+      "toMs": 200000,
+      "param": 90000
+    }
+  ],
+  "ticks": [
+    60000,
+    120000
+  ],
+  "expect": [
+    "no_action",
+    "pause"
+  ]
+}

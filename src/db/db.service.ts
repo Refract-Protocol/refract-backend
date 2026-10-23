@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
+import { Injectable, Logger, OnApplicationShutdown } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 import { AppConfig } from "../config/configuration";
@@ -8,7 +8,7 @@ import { AppConfig } from "../config/configuration";
  * missing or empty so unit tests can boot Nest modules without Postgres.
  */
 @Injectable()
-export class DbService implements OnModuleDestroy {
+export class DbService implements OnApplicationShutdown {
   private readonly logger = new Logger(DbService.name);
   private readonly pool: Pool | null;
 
@@ -56,8 +56,14 @@ export class DbService implements OnModuleDestroy {
     }
   }
 
-  async onModuleDestroy(): Promise<void> {
+  /**
+   * Closes the pool in the last shutdown phase, not onModuleDestroy. The
+   * oracle pipeline drains in beforeApplicationShutdown, and its in-flight
+   * evidence writes still need a connection then.
+   */
+  async onApplicationShutdown(): Promise<void> {
     if (this.pool) {
+      this.logger.log("Closing Postgres pool");
       await this.pool.end();
     }
   }

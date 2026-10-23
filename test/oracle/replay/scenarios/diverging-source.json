@@ -1,0 +1,36 @@
+{
+  "name": "diverging-source",
+  "description": "One source diverges beyond tolerance: pause instead of paying.",
+  "fixture": "sample-v1.json",
+  "seed": 42,
+  "startMs": 1767225600000,
+  "config": {
+    "sources": [
+      "provider-a",
+      "provider-b",
+      "provider-c"
+    ],
+    "maxAgeMs": 90000,
+    "maxFutureSkewMs": 5000,
+    "toleranceBps": 500,
+    "minSources": 2,
+    "triggerThreshold": 140,
+    "maxRetries": 1,
+    "retryBaseMs": 1000
+  },
+  "faults": [
+    {
+      "kind": "diverge",
+      "source": "provider-c",
+      "fromMs": 100000,
+      "toMs": 200000,
+      "param": 1.5
+    }
+  ],
+  "ticks": [
+    120000
+  ],
+  "expect": [
+    "pause"
+  ]
+}

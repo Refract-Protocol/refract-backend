@@ -17,6 +17,29 @@ services:
       retries: 10
       start_period: 5s
 
+  # Ephemeral PostgreSQL instance used exclusively by the disaster-recovery
+  # restore drill (scripts/restore-drill.sh). It has NO persistent volume and
+  # is torn down after every run, so it can never hold or serve production data.
+  # The drill must NEVER be pointed at the production database: this service is
+  # the only target it is allowed to restore into.
+  postgres-drill:
+    image: postgres:16-alpine
+    profiles: ["drill"]
+    environment:
+      POSTGRES_DB: ${DRILL_POSTGRES_DB:-refract_drill}
+      POSTGRES_USER: ${DRILL_POSTGRES_USER:-refract_drill}
+      POSTGRES_PASSWORD: ${DRILL_POSTGRES_PASSWORD:-refract_drill}
+    ports:
+      - "127.0.0.1:${DRILL_POSTGRES_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DRILL_POSTGRES_USER:-refract_drill} -d ${DRILL_POSTGRES_DB:-refract_drill}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
@@ -34,6 +57,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Must exceed SHUTDOWN_GRACE_PERIOD_MS so the app's own deadline fires
+    # before Docker sends SIGKILL (the default is only 10s).
+    stop_grace_period: 40s
     environment:
       PORT: 4001
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
@@ -51,6 +77,13 @@ services:
       DEFILLAMA_BASE_URL: ${DEFILLAMA_BASE_URL:-https://api.llama.fi}
       DEFILLAMA_PROTOCOL_SLUG: ${DEFILLAMA_PROTOCOL_SLUG:-aave}
       ORACLE_HTTP_TIMEOUT_MS: ${ORACLE_HTTP_TIMEOUT_MS:-5000}
+      SHUTDOWN_GRACE_PERIOD_MS: ${SHUTDOWN_GRACE_PERIOD_MS:-30000}
+      ORACLE_SHUTDOWN_DRAIN_MS: ${ORACLE_SHUTDOWN_DRAIN_MS:-20000}
+      ORACLE_EVIDENCE_SPOOL_DIR: /var/lib/refract/oracle-evidence
+    volumes:
+      # Write-ahead spool for oracle evidence; must survive container restarts
+      # so readings taken during a Postgres outage are replayed, not lost.
+      - oracle-evidence:/var/lib/refract/oracle-evidence
     ports:
       - "4001:4001"
     depends_on:
@@ -68,3 +101,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  oracle-evidence:
