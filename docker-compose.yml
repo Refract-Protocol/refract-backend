@@ -34,6 +34,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Must exceed SHUTDOWN_GRACE_PERIOD_MS so the app's own deadline fires
+    # before Docker sends SIGKILL (the default is only 10s).
+    stop_grace_period: 40s
     environment:
       PORT: 4001
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
@@ -51,6 +54,8 @@ services:
       DEFILLAMA_BASE_URL: ${DEFILLAMA_BASE_URL:-https://api.llama.fi}
       DEFILLAMA_PROTOCOL_SLUG: ${DEFILLAMA_PROTOCOL_SLUG:-aave}
       ORACLE_HTTP_TIMEOUT_MS: ${ORACLE_HTTP_TIMEOUT_MS:-5000}
+      SHUTDOWN_GRACE_PERIOD_MS: ${SHUTDOWN_GRACE_PERIOD_MS:-30000}
+      ORACLE_SHUTDOWN_DRAIN_MS: ${ORACLE_SHUTDOWN_DRAIN_MS:-20000}
     ports:
       - "4001:4001"
     depends_on:

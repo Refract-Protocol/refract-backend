@@ -13,6 +13,7 @@ import { ConsensusModule } from './oracle/consensus/consensus.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
 import { CacheModule } from './cache/cache.module';
+import { LeaderModule } from './leader/leader.module';
 import { ClaimModule } from './claim/claim.module';
 import { DbModule } from './db/db.module';
 import { IdempotencyModule } from './common/idempotency.module';
@@ -24,6 +25,15 @@ import { StellarModule } from './stellar/stellar.module';
 import { TxModule } from './tx/tx.module';
 import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
+import { SecurityReportsModule } from './security-reports/security-reports.module';
+import { DigestModule } from './digest/digest.module';
+import { OraclePipelineModule } from './oracle/shutdown/oracle-pipeline.module';
+import { ProviderEndpointsModule } from './oracle/endpoints/provider-endpoints.module';
+import { OracleSandboxModule } from './oracle/sandbox/oracle-sandbox.module';
+import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
+import { FeedsModule } from './feeds/feeds.module';
+import { OperatorsModule } from './routes/operators';
+import { StakingModule } from './routes/staking';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -84,6 +94,8 @@ export const isSandboxMode = (): boolean =>
     IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
     CacheModule,
+    // LeaderModule gates oracle polling and claim settlement on the Redis lease.
+    LeaderModule,
     StellarModule,
     DbModule,
     HealthModule,
@@ -93,10 +105,21 @@ export const isSandboxMode = (): boolean =>
     PoolModule,
     RedisModule,
     ClaimsModule,
+    // Global: in-flight tracking, leader lock, and bounded shutdown drain.
+    OraclePipelineModule,
+    // Global: per-adapter endpoint lists with health-based failover.
+    ProviderEndpointsModule,
     OracleModule,
     ConsensusModule,
     ClaimModule,
     TxModule,
+    SecurityReportsModule,
+    DigestModule,
+    FeedsModule,
+    OperatorsModule,
+    StakingModule,
+    // Provider sandbox API (signed readings → corroboration, never on-chain).
+    ...(isOracleSandboxEnabled() ? [OracleSandboxModule] : []),
   ],
   controllers: [AppController],
   providers: [

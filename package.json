@@ -3,32 +3,36 @@
   "version": "0.1.0",
   "private": true,
   "description": "Refract Protocol backend — oracle monitoring, claim processing, premium quoting",
+  "main": "dist/main.js",
   "scripts": {
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
-    "lint": "eslint \"src/**/*.ts\"",
+    "dev": "nodemon --exec ts-node src/main.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
     "test": "jest",
     "migrate:up": "node-pg-migrate up --migrations-dir migrations --config-file database.json",
     "migrate:down": "node-pg-migrate down --migrations-dir migrations --config-file database.json",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
+    "simulate:oracle": "ts-node scripts/simulate-oracle-parameters.ts",
     "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
     "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts",
     "oracle:ops": "ts-node scripts/oracle-ops.ts"
   },
   "jest": {
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "preset": "ts-jest",
+    "testEnvironment": "node",
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
+    "moduleFileExtensions": ["js", "json", "ts"],
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": ["**/*.(t|j)s"],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "coverageDirectory": "../coverage"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1142.0",
@@ -39,6 +43,7 @@
     "@nestjs/platform-ws": "^11.1.28",
     "@nestjs/schedule": "^6.1.3",
     "@nestjs/swagger": "^11.4.7",
+    "@nestjs/throttler": "^6.0.0",
     "@nestjs/websockets": "^11.1.28",
     "@prometheus-io/client": "^0.16.1",
     "@stellar/stellar-sdk": "^16.3.0",

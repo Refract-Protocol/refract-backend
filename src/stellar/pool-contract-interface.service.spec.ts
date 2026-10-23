@@ -1,5 +1,11 @@
-import { contract, xdr } from "@stellar/stellar-sdk";
-import { extractContractSpec, parseContractSpec, validatePoolContractSpec } from "./pool-contract-interface.service";
+import { contract, rpc, xdr } from "@stellar/stellar-sdk";
+import {
+  extractContractSpec,
+  parseContractSpec,
+  PoolContractInterfaceService,
+  validateOracleContractSpec,
+  validatePoolContractSpec,
+} from "./pool-contract-interface.service";
 
 function unsignedLeb128(value: number): Buffer {
   const bytes: number[] = [];
@@ -40,6 +46,19 @@ function processClaimEntry(): xdr.ScSpecEntry {
   );
 }
 
+function updateReadingEntry(
+  coverageType: xdr.ScSpecTypeDef = xdr.ScSpecTypeDef.scSpecTypeU32(),
+  value: xdr.ScSpecTypeDef = xdr.ScSpecTypeDef.scSpecTypeI128(),
+): xdr.ScSpecEntry {
+  const inputs = [
+    new xdr.ScSpecFunctionInputV0({ doc: "", name: "coverage_type", type: coverageType }),
+    new xdr.ScSpecFunctionInputV0({ doc: "", name: "value", type: value }),
+  ];
+  return xdr.ScSpecEntry.scSpecEntryFunctionV0(
+    new xdr.ScSpecFunctionV0({ doc: "", name: "update_reading", inputs, outputs: [] }),
+  );
+}
+
 describe("pool contract interface validation", () => {
   it("extracts the Soroban contract spec custom section from WASM", () => {
     const specBytes = Buffer.from([1, 2, 3, 4]);
@@ -63,5 +82,41 @@ describe("pool contract interface validation", () => {
     const errors = validatePoolContractSpec(new contract.Spec([processClaimEntry()]));
 
     expect(errors).toContain("process_claim arguments expected (policy_id:string, holder:address, payout:i128) but found (policy_id:u64)");
+  });
+
+  it("accepts the exact RefractOracle update_reading publish signature", () => {
+    expect(validateOracleContractSpec(new contract.Spec([updateReadingEntry()]))).toEqual([]);
+  });
+
+  it("reports argument changes in RefractOracle.update_reading", () => {
+    const errors = validateOracleContractSpec(
+      new contract.Spec([
+        updateReadingEntry(xdr.ScSpecTypeDef.scSpecTypeU64(), xdr.ScSpecTypeDef.scSpecTypeI128()),
+      ]),
+    );
+
+    expect(errors).toContain("update_reading arguments expected (coverage_type:u32, value:i128) but found (coverage_type:u64, value:i128)");
+  });
+
+  it("fails startup when the configured oracle contract omits update_reading", async () => {
+    jest.spyOn(rpc.Server.prototype, "getNetwork").mockResolvedValue({
+      passphrase: "Test SDF Network ; September 2015",
+    } as never);
+    jest.spyOn(rpc.Server.prototype, "getContractWasmByContractId").mockResolvedValue(
+      wasmWithCustomSection("contractspecv0", processClaimEntry().toXDR()),
+    );
+
+    const config = {
+      get: () => ({
+        network: "testnet",
+        networkPassphrase: "Test SDF Network ; September 2015",
+        sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+        poolContractId: "",
+        oracleContractId: "configured-oracle-contract",
+      }),
+    };
+    const service = new PoolContractInterfaceService(config as never);
+
+    await expect(service.onModuleInit()).rejects.toThrow(/Oracle contract interface mismatch/);
   });
 });

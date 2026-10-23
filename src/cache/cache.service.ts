@@ -2,6 +2,8 @@ import { Injectable, OnApplicationShutdown, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
+export const ORACLE_TTL = 55;
+
 @Injectable()
 export class CacheService implements OnApplicationShutdown {
   private readonly logger = new Logger(CacheService.name);
@@ -38,6 +40,16 @@ export class CacheService implements OnApplicationShutdown {
 
   async del(key: string): Promise<void> {
     await this.client.del(key);
+  }
+
+  async wrap<T>(key: string, ttlSeconds: number, loader: () => Promise<T>): Promise<T> {
+    const cached = await this.get<T>(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const value = await loader();
+    await this.set(key, value, ttlSeconds);
+    return value;
   }
 
   /**

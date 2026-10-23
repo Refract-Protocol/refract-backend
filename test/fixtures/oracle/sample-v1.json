@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "feed": "rainfall-mm-24h",
+  "recordedAt": "2026-01-01T00:00:00.000Z",
+  "sources": {
+    "provider-a": [
+      {
+        "offsetMs": 0,
+        "value": 100,
+        "observedOffsetMs": 0
+      },
+      {
+        "offsetMs": 60000,
+        "value": 120,
+        "observedOffsetMs": 60000
+      },
+      {
+        "offsetMs": 120000,
+        "value": 150,
+        "observedOffsetMs": 120000
+      }
+    ],
+    "provider-b": [
+      {
+        "offsetMs": 0,
+        "value": 101,
+        "observedOffsetMs": 0
+      },
+      {
+        "offsetMs": 60000,
+        "value": 121,
+        "observedOffsetMs": 60000
+      },
+      {
+        "offsetMs": 120000,
+        "value": 151,
+        "observedOffsetMs": 120000
+      }
+    ],
+    "provider-c": [
+      {
+        "offsetMs": 0,
+        "value": 99,
+        "observedOffsetMs": 0
+      },
+      {
+        "offsetMs": 60000,
+        "value": 119,
+        "observedOffsetMs": 60000
+      },
+      {
+        "offsetMs": 120000,
+        "value": 149,
+        "observedOffsetMs": 120000
+      }
+    ]
+  },
+  "checksum": "069684c15e5c61173cb3e585eee111fc65dc47f245b8d73105a45c3bcf3c4b5c"
+}

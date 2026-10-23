@@ -17,6 +17,10 @@ const EXPECTED_FUNCTIONS: Record<string, ExpectedFunction> = {
   lockup_expires_at: { args: ["provider:address"], result: "option:u64" },
 };
 
+const EXPECTED_ORACLE_FUNCTIONS: Record<string, ExpectedFunction> = {
+  update_reading: { args: ["coverage_type:u32", "value:i128"], result: "void" },
+};
+
 const EXPECTED_STRUCT_FIELDS: Record<string, Record<string, string>> = {
   PolicyParams: {
     coverage_amount: "i128",
@@ -80,10 +84,13 @@ export function extractContractSpec(wasm: Buffer): Buffer {
   throw new Error('Pool contract WASM does not contain the "contractspecv0" section');
 }
 
-export function validatePoolContractSpec(spec: contract.Spec): string[] {
+function validateFunctionInterfaces(
+  spec: contract.Spec,
+  expectedFunctions: Record<string, ExpectedFunction>,
+): string[] {
   const errors: string[] = [];
 
-  for (const [name, expected] of Object.entries(EXPECTED_FUNCTIONS)) {
+  for (const [name, expected] of Object.entries(expectedFunctions)) {
     let actual: ReturnType<contract.Spec["getFunc"]>;
     try {
       actual = spec.getFunc(name);
@@ -103,6 +110,16 @@ export function validatePoolContractSpec(spec: contract.Spec): string[] {
       errors.push(`${name} result expected ${expected.result} but found ${result}`);
     }
   }
+
+  return errors;
+}
+
+export function validateOracleContractSpec(spec: contract.Spec): string[] {
+  return validateFunctionInterfaces(spec, EXPECTED_ORACLE_FUNCTIONS);
+}
+
+export function validatePoolContractSpec(spec: contract.Spec): string[] {
+  const errors = validateFunctionInterfaces(spec, EXPECTED_FUNCTIONS);
 
   for (const [name, expectedFields] of Object.entries(EXPECTED_STRUCT_FIELDS)) {
     const entry = spec.entries.find(
@@ -156,6 +173,7 @@ export class PoolContractInterfaceService implements OnModuleInit {
   private readonly network: AppConfig["stellar"]["network"];
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
+  private readonly oracleContractId: string;
 
   constructor(configService: ConfigService<AppConfig, true>) {
     const stellar = configService.get("stellar", { infer: true });
@@ -163,10 +181,11 @@ export class PoolContractInterfaceService implements OnModuleInit {
     this.network = stellar.network;
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
+    this.oracleContractId = stellar.oracleContractId;
   }
 
   async onModuleInit(): Promise<void> {
-    if (!this.poolContractId) {
+    if (!this.poolContractId && !this.oracleContractId) {
       this.logger.warn("Skipping live pool contract interface validation: no pool contract ID is configured");
       return;
     }
@@ -179,15 +198,26 @@ export class PoolContractInterfaceService implements OnModuleInit {
         );
       }
 
-      const wasm = await this.server.getContractWasmByContractId(this.poolContractId);
-      const errors = validatePoolContractSpec(parseContractSpec(wasm));
-      if (errors.length > 0) {
-        throw new Error(`Pool contract interface mismatch:\n- ${errors.join("\n- ")}`);
+      if (this.poolContractId) {
+        const wasm = await this.server.getContractWasmByContractId(this.poolContractId);
+        const errors = validatePoolContractSpec(parseContractSpec(wasm));
+        if (errors.length > 0) {
+          throw new Error(`Pool contract interface mismatch:\n- ${errors.join("\n- ")}`);
+        }
+        this.logger.log(`Validated pool contract interface against ${this.network} contract ${this.poolContractId}`);
       }
-      this.logger.log(`Validated pool contract interface against ${this.network} contract ${this.poolContractId}`);
+
+      if (this.oracleContractId) {
+        const wasm = await this.server.getContractWasmByContractId(this.oracleContractId);
+        const errors = validateOracleContractSpec(parseContractSpec(wasm));
+        if (errors.length > 0) {
+          throw new Error(`Oracle contract interface mismatch:\n- ${errors.join("\n- ")}`);
+        }
+        this.logger.log(`Validated oracle contract interface against ${this.network} contract ${this.oracleContractId}`);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Stellar pool contract validation failed: ${message}`);
+      throw new Error(`Stellar contract validation failed: ${message}`);
     }
   }
 }
