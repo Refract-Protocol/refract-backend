@@ -12,6 +12,7 @@ import { OracleModule } from './oracle/oracle.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
 import { CacheModule } from './cache/cache.module';
+import { LeaderModule } from './leader/leader.module';
 import { ClaimModule } from './claim/claim.module';
 import { DbModule } from './db/db.module';
 import { IdempotencyModule } from './common/idempotency.module';
@@ -31,6 +32,9 @@ import { OraclePipelineModule } from './oracle/shutdown/oracle-pipeline.module';
 import { ProviderEndpointsModule } from './oracle/endpoints/provider-endpoints.module';
 import { OracleSandboxModule } from './oracle/sandbox/oracle-sandbox.module';
 import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
+import { FeedsModule } from './feeds/feeds.module';
+import { OperatorsModule } from './routes/operators';
+import { StakingModule } from './routes/staking';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -106,6 +110,8 @@ export const isSandboxMode = (): boolean =>
     IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
     CacheModule,
+    // LeaderModule gates oracle polling and claim settlement on the Redis lease.
+    LeaderModule,
     StellarModule,
     DbModule,
     HealthModule,
@@ -124,6 +130,9 @@ export const isSandboxMode = (): boolean =>
     TxModule,
     SecurityReportsModule,
     DigestModule,
+    FeedsModule,
+    OperatorsModule,
+    StakingModule,
     // Provider sandbox API (signed readings → corroboration, never on-chain).
     ...(isOracleSandboxEnabled() ? [OracleSandboxModule] : []),
   ],
