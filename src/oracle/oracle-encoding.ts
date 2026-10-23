@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CoverageType } from "../common/coverage-catalog";
 
 /** Whether a source reads real market data or returns simulated values. */
@@ -37,7 +38,7 @@ export const ORACLE_SOURCE_CAPABILITIES: Record<CoverageType, OracleSourceCapabi
  * OracleReading.value is a JS float whose meaning depends on coverage type:
  *   - StablecoinDepeg: USDC price (e.g. 0.9998)
  *   - MarketCrash: 24h % change (e.g. -30.12)
- *   - LiquidationShield: mock ratio / severity signal (0–1 style)
+ *   - LiquidationShield: NEXUS liquidation signal (0–1 style; see sources/liquidationShield.ts)
  *   - SmartContractRisk: TVL drop % (e.g. -12.5)
  *   - FlightDelay: delay minutes (e.g. 247)
  *
@@ -66,6 +67,16 @@ export function scaleOracleValue(coverageType: string, value: number): bigint {
     default:
       throw new Error(`Unknown coverageType for oracle scaling: ${coverageType}`);
   }
+}
+
+/**
+ * Stable identifier for one consensus decision (feed + policy + observation
+ * window). It deliberately excludes the producing node so every relayer that
+ * observes the same condition derives the same key, which is what makes
+ * duplicate or replayed decisions collide on the settlement unique index.
+ */
+export function buildDecisionId(feed: string, policyId: string, windowStart: number): string {
+  return createHash("sha256").update(`${feed}|${policyId}|${windowStart}`).digest("hex");
 }
 
 /** Stable u32 discriminant matching CoverageType declaration order in the pool. */
