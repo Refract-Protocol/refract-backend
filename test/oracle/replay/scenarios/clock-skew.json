@@ -1,0 +1,43 @@
+{
+  "name": "clock-skew",
+  "description": "Two sources are timestamped in the future: rejected, pause.",
+  "fixture": "sample-v1.json",
+  "seed": 42,
+  "startMs": 1767225600000,
+  "config": {
+    "sources": [
+      "provider-a",
+      "provider-b",
+      "provider-c"
+    ],
+    "maxAgeMs": 90000,
+    "maxFutureSkewMs": 5000,
+    "toleranceBps": 500,
+    "minSources": 2,
+    "triggerThreshold": 140,
+    "maxRetries": 1,
+    "retryBaseMs": 1000
+  },
+  "faults": [
+    {
+      "kind": "clock_skew",
+      "source": "provider-a",
+      "fromMs": 100000,
+      "toMs": 200000,
+      "param": 60000
+    },
+    {
+      "kind": "clock_skew",
+      "source": "provider-b",
+      "fromMs": 100000,
+      "toMs": 200000,
+      "param": 60000
+    }
+  ],
+  "ticks": [
+    120000
+  ],
+  "expect": [
+    "pause"
+  ]
+}

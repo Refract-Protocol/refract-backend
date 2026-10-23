@@ -7,8 +7,9 @@ import { DatabaseService } from "../db/database.service";
  *
  *  1. Proactive creation  — ensures the current and next two calendar months
  *     always have a partition, run daily at 01:00 UTC.
- *  2. Retention sweep     — detaches (and drops) partitions older than
- *     RETENTION_MONTHS (default 6 months), run daily at 02:00 UTC.
+ *  2. Retention sweep     — drops partitions older than RETENTION_MONTHS
+ *     (default 6 months), run daily at 02:00 UTC. A partition is dropped only
+ *     if it has a verified archive and no open dispute pin.
  *  3. Idempotency cleanup — purges committed idempotency_keys older than
  *     24 hours, run daily at 03:00 UTC.
  *
@@ -94,6 +95,24 @@ export class OracleRetentionService implements OnApplicationBootstrap {
         if (!match) continue;
         const partDate = new Date(parseInt(match[1], 10), parseInt(match[2], 10) - 1, 1);
         if (partDate < cutoff) {
+          // Never drop a partition that has not been archived and verified,
+          // or that is pinned by an open dispute. Re-check on each run; the
+          // archive script (scripts/archive-oracle-partitions.ts) is idempotent.
+          const { rows: gate } = await this.db.query<{ archived: boolean; pinned: boolean }>(
+            `SELECT EXISTS (SELECT 1 FROM oracle_partition_archives
+                             WHERE partition_name = $1 AND status = 'verified') AS archived,
+                    EXISTS (SELECT 1 FROM oracle_partition_pins
+                             WHERE partition_name = $1 AND released_at IS NULL) AS pinned`,
+            [row.relname]
+          );
+          if (!gate[0]?.archived) {
+            this.logger.warn(`Skipping drop of ${row.relname}: no verified archive (run scripts/archive-oracle-partitions.ts)`);
+            continue;
+          }
+          if (gate[0]?.pinned) {
+            this.logger.warn(`Skipping drop of ${row.relname}: pinned by an open dispute`);
+            continue;
+          }
           await this.db.query(`DROP TABLE IF EXISTS ${row.relname}`);
           dropped.push(row.relname);
           this.logger.warn(`Dropped oracle_events partition ${row.relname} (older than ${this.retentionMonths} months)`);

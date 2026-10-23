@@ -1,4 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { OracleControlService } from "../oracle/control";
+import { AnomalyDetector } from "../oracle/anomaly";
+import { CircuitBreaker } from "../oracle/circuitBreaker";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
@@ -36,7 +39,10 @@ export class ClaimService {
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
+    private readonly oracleEventRepository: OracleEventRepository,
+    private readonly oracleControl: OracleControlService,
+    private readonly anomalyDetector: AnomalyDetector,
+    private readonly circuitBreaker: CircuitBreaker
   ) {}
 
   async processTriggered(): Promise<ClaimResult[]> {
@@ -50,12 +56,24 @@ export class ClaimService {
       try {
         const fetchedAt = Math.floor(Date.now() / 1000);
         const oracle = await this.fetchOracleData(policy);
+        const anomaly = this.anomalyDetector.evaluate(oracle);
+        if (anomaly.triggered) {
+          await this.tripBreaker(oracle, anomaly.reasons);
+          continue;
+        }
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         if (result.triggered) {
+          // Operator pause: the reading was already polled and logged above, but
+          // no payout is attempted. Checked per policy so a pause issued mid-scan
+          // stops the remaining payouts in this run.
+          if (await this.oracleControl.isPaused(policy.coverageType)) {
+            this.logger.warn(`Settlement skipped for policy ${policy.id}: oracle paused by operator`);
+            continue;
+          }
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result);
+          const settledResult = await this.processPayout(policy, result, oracle.coverageType);
           if (settledResult) settled.push(settledResult);
         }
       } catch (err) {
@@ -129,8 +147,36 @@ export class ClaimService {
     };
   }
 
+  /**
+   * Opens the coverage type's breaker and records the trigger as evidence.
+   * Throws if persistence fails, so the policy is skipped rather than paid.
+   */
+  private async tripBreaker(reading: OracleReading, reasons: string[]): Promise<void> {
+    const reason = reasons.join("; ");
+    const opened = await this.circuitBreaker.open(reading.coverageType, reason, [reading]);
+    if (!opened) return;
+
+    this.logger.error(`Circuit breaker OPENED for ${reading.coverageType}: ${reason}`);
+    await this.oracleEventRepository.record({
+      ...reading,
+      severity: "triggered",
+      message: `Circuit breaker opened: ${reason} [AnomalyDetector]`,
+    });
+  }
+
   /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */
-  private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<ClaimResult | undefined> {
+  private async processPayout(
+    policy: StoredPolicy,
+    result: ClaimResult,
+    coverageType: string
+  ): Promise<ClaimResult | undefined> {
+    // Re-checked here, not only in the scan loop, so a breaker opened after
+    // the value was computed still blocks settlement.
+    if (!(await this.circuitBreaker.isSettlementAllowed(coverageType))) {
+      this.logger.error(`Settlement blocked for policy ${policy.id}: circuit breaker not closed for ${coverageType}`);
+      return undefined;
+    }
+
     this.logger.warn(
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
