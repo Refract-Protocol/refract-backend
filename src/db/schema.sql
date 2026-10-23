@@ -32,6 +32,29 @@ CREATE INDEX IF NOT EXISTS idx_claims_coverage_status
 -- ─── Oracle trust engine ─────────────────────────────────────────────────────
 -- Mirrors migrations/002_oracle_trust_engine.sql. Keep the two in sync.
 
+-- Durable pending-decisions queue for batched oracle publishing
+-- (persist-then-publish). Full definition and indexes:
+-- src/db/migrations/004_oracle_publish_queue.sql
+CREATE TABLE IF NOT EXISTS oracle_publish_queue (
+    id              BIGSERIAL      PRIMARY KEY,
+    decision_key    TEXT           NOT NULL UNIQUE,
+    feed            TEXT           NOT NULL,
+    value_scaled    NUMERIC(40, 0) NOT NULL,
+    priority        SMALLINT       NOT NULL DEFAULT 0,
+    status          TEXT           NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'inflight', 'published', 'failed')),
+    attempts        INTEGER        NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ    NOT NULL DEFAULT now(),
+    last_error      TEXT,
+    tx_hash         TEXT,
+    ledger          BIGINT,
+    created_at      TIMESTAMPTZ    NOT NULL DEFAULT now(),
+    published_at    TIMESTAMPTZ
+);
+
+-- Oracle source registry metadata used for independence modeling (issue #206).
+-- Sources sharing operator, upstream origin, or hosting ASN are clustered together
+-- unless declared_cluster is set.
 CREATE TABLE IF NOT EXISTS oracle_sources (
   id                  UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
   slug                TEXT          NOT NULL UNIQUE,
@@ -40,6 +63,11 @@ CREATE TABLE IF NOT EXISTS oracle_sources (
   independence_group  TEXT          NOT NULL,
   enabled             BOOLEAN       NOT NULL DEFAULT true,
   trust_tier          SMALLINT      NOT NULL DEFAULT 0,
+  operator_id         TEXT,
+  upstream_origin     TEXT,
+  hosting_asn         TEXT,
+  -- Admin-declared independence cluster; NULL means inferred and unverified.
+  declared_cluster    TEXT,
   created_at          TIMESTAMPTZ   NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ   NOT NULL DEFAULT now(),
   CONSTRAINT chk_oracle_source_slug_nonempty
@@ -47,6 +75,29 @@ CREATE TABLE IF NOT EXISTS oracle_sources (
   CONSTRAINT chk_oracle_source_trust_tier_nonneg
     CHECK (trust_tier >= 0)
 );
+
+CREATE INDEX IF NOT EXISTS idx_oracle_sources_operator
+    ON oracle_sources (operator_id)
+    WHERE operator_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_oracle_sources_upstream
+    ON oracle_sources (upstream_origin)
+    WHERE upstream_origin IS NOT NULL;
+
+-- Append-only ledger of cluster overrides. Reverting an override appends a new row
+-- that restores previous_cluster, so the full history stays auditable.
+CREATE TABLE IF NOT EXISTS source_cluster_overrides (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_id         UUID NOT NULL REFERENCES oracle_sources(id) ON DELETE CASCADE,
+    previous_cluster  TEXT,
+    new_cluster       TEXT,
+    actor             TEXT NOT NULL,
+    reason            TEXT NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_cluster_overrides_source
+    ON source_cluster_overrides (source_id, created_at);
 
 CREATE TABLE IF NOT EXISTS oracle_readings (
   id                    UUID           PRIMARY KEY DEFAULT gen_random_uuid(),

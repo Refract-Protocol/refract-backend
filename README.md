@@ -123,10 +123,12 @@ reads, and 60/minute for coverage catalogs.
 > ⚠️ **Oracle data sources**: `StablecoinDepeg`, `MarketCrash`, and
 > `SmartContractRisk` now call real, keyless public APIs — CoinGecko
 > (USDC/XLM price), Stellar Horizon testnet (chain context), and DeFiLlama
-> (protocol TVL). No API key is required for any of them. `LiquidationShield`
-> and `FlightDelay` stay mocked: there's no public API for NEXUS Protocol
-> liquidation events, and AviationStack (flight data) requires a paid key
-> this project doesn't have. See `src/oracle/oracle.service.ts` for details.
+> (protocol TVL). No API key is required for any of them. `FlightDelay` stays
+> mocked: AviationStack (flight data) requires a paid key this project doesn't
+> have. `LiquidationShield` has a confirmation-depth adapter
+> (`src/oracle/sources/liquidationShield.ts`) for NEXUS Protocol on-chain
+> liquidation events, but no live NEXUS feed is wired yet, so it produces no
+> reading. See `src/oracle/oracle.service.ts` for details.
 > **Claim settlement** invokes `pool.process_claim(policy_id: u64)` via
 > `ClaimSettlementService` — a single u64 on-chain policy id (holder/payout
 > are looked up on-chain). Policies start `pending` after `POST /buy`; once
@@ -168,6 +170,20 @@ reads, and 60/minute for coverage catalogs.
 > relayer secret is set. Degraded fail-safe readings are never published.
 > Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
 > `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
+>
+> **Batched publishing** (`OracleBatchPublisherService`) is persist-then-publish:
+> producers `enqueue` decisions into the durable `oracle_publish_queue` table
+> (apply `src/db/migrations/004_oracle_publish_queue.sql`); a single-flight loop
+> submits ordered batches (`ORACLE_PUBLISH_MAX_BATCH_SIZE`,
+> `ORACLE_PUBLISH_MAX_IN_FLIGHT`, `ORACLE_PUBLISH_MAX_PER_FEED_PER_BATCH`). A feed
+> never has two batches in flight, so decisions land in order. Failures retry with
+> jittered backoff (`ORACLE_PUBLISH_BASE_BACKOFF_MS` / `_MAX_BACKOFF_MS`), size/fee
+> errors split the batch, and ambiguous timeouts are reconciled by tx hash before
+> any resubmission. When queue depth (`ORACLE_PUBLISH_BACKPRESSURE_QUEUE_DEPTH`)
+> or RPC latency (`ORACLE_PUBLISH_BACKPRESSURE_RPC_LATENCY_MS`) is exceeded,
+> `pollIntervalMultiplier("low")` slows low-priority polling (payout-triggering
+> feeds are never slowed) and `refract_oracle_publish_*` gauges on `/metrics`
+> show queue depth, backpressure, and RPC latency.
 >
 > **Confirmation polling** uses configurable exponential backoff + jitter
 > (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.

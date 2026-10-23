@@ -1,0 +1,76 @@
+name: Load
+
+on:
+  pull_request:
+  schedule:
+    # Nightly soak profile
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Load profile to run"
+        type: choice
+        options: [smoke, soak]
+        default: smoke
+
+jobs:
+  load:
+    name: load (${{ github.event_name == 'schedule' && 'soak' || inputs.profile || 'smoke' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.profile == 'soak') && 150 || 15 }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: refract_load
+          POSTGRES_USER: refract_load
+          POSTGRES_PASSWORD: refract_load
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U refract_load -d refract_load"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      LOAD_DATABASE_URL: postgresql://refract_load:refract_load@localhost:5432/refract_load
+      LOAD_REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run load profile
+        run: >-
+          npx ts-node --transpile-only test/load/run-load.ts
+          --profile ${{ github.event_name == 'schedule' && 'soak' || inputs.profile || 'smoke' }}
+          --out load-results/result.json
+
+      - name: Enforce budgets and baseline
+        run: >-
+          npx ts-node --transpile-only scripts/load-compare.ts
+          --result load-results/result.json
+          --baseline test/load/baseline.json
+
+      - name: Upload load results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-results-${{ github.run_id }}
+          path: load-results/result.json
