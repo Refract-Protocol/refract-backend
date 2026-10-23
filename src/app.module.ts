@@ -11,15 +11,15 @@ import { ClaimsModule } from './claims/claims.module';
 import { OracleModule } from './oracle/oracle.module';
 import { OracleBootstrapModule } from './oracle/bootstrap/oracle-bootstrap.module';
 import { OracleAdminModule } from './oracle/admin/oracle-admin.module';
+import { ConsensusModule } from './oracle/consensus/consensus.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
 import { CacheModule } from './cache/cache.module';
+import { LeaderModule } from './leader/leader.module';
 import { ClaimModule } from './claim/claim.module';
 import { DbModule } from './db/db.module';
 import { IdempotencyModule } from './common/idempotency.module';
 import { HealthModule } from './health/health.module';
-import { SecurityReportsModule } from './security-reports/security-reports.module';
-import { DigestModule } from './digest/diges
 import { PolicyModule } from './policy/policy.module';
 import { PoolModule } from './pool/pool.module';
 import { QuoteModule } from './quote/quote.module';
@@ -29,6 +29,16 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { OracleIngestionModule } from './oracle/sources/oracle-ingestion.module';
+import { OracleRegionsModule } from './oracle/regions/oracle-regions.module';
+import { ReevaluationModule } from './claim/reevaluation/reevaluation.module';
+import { OraclePipelineModule } from './oracle/shutdown/oracle-pipeline.module';
+import { ProviderEndpointsModule } from './oracle/endpoints/provider-endpoints.module';
+import { OracleSandboxModule } from './oracle/sandbox/oracle-sandbox.module';
+import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
+import { FeedsModule } from './feeds/feeds.module';
+import { OperatorsModule } from './routes/operators';
+import { StakingModule } from './routes/staking';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -86,24 +96,11 @@ export const isSandboxMode = (): boolean =>
           }),
         ]),
     DatabaseModule,
-    Ide
-    ScheduleModule.forRoot(),
-    // In sandbox mode we skip the real Postgres connection entirely so
-    // `npm run dev` works right after `npm install` with no other setup.
-    ...(isSandboxMode()
-      ? []
-      : [
-          TypeOrmModule.forRootAsync({
-            imports: [DatabaseModule],
-            inject: [DatabaseModule],
-            useFactory: (databaseModule: DatabaseModule) =>
-              databaseModule.getTypeOrmConfig(),
-          }),
-        ]),
-    DatabaseModule,
     IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
     CacheModule,
+    // LeaderModule gates oracle polling and claim settlement on the Redis lease.
+    LeaderModule,
     StellarModule,
     DbModule,
     HealthModule,
@@ -113,13 +110,26 @@ export const isSandboxMode = (): boolean =>
     PoolModule,
     RedisModule,
     ClaimsModule,
+    // Global: in-flight tracking, leader lock, and bounded shutdown drain.
+    OraclePipelineModule,
+    // Global: per-adapter endpoint lists with health-based failover.
+    ProviderEndpointsModule,
     OracleModule,
     OracleBootstrapModule,
     OracleAdminModule,
+    ConsensusModule,
     ClaimModule,
     TxModule,
     SecurityReportsModule,
     DigestModule,
+    OracleIngestionModule,
+    OracleRegionsModule,
+    ReevaluationModule,
+    FeedsModule,
+    OperatorsModule,
+    StakingModule,
+    // Provider sandbox API (signed readings → corroboration, never on-chain).
+    ...(isOracleSandboxEnabled() ? [OracleSandboxModule] : []),
   ],
   controllers: [AppController],
   providers: [

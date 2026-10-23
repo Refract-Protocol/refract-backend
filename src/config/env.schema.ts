@@ -147,6 +147,14 @@ export const envSchema = z
       max: 120_000,
       label: "ORACLE_HTTP_TIMEOUT_MS",
     }),
+    HORIZON_FINALITY_DEPTH: intFromEnv({
+      min: 0,
+      max: 1000,
+      label: "HORIZON_FINALITY_DEPTH",
+    }),
+    HORIZON_FINALITY_POLICY: z
+      .enum(["final_only", "allow_provisional"])
+      .optional(),
     POLICY_CONTRACT_ID: strKeyFromEnv("POLICY_CONTRACT_ID", "C"),
     POOL_CONTRACT_ID: strKeyFromEnv("POOL_CONTRACT_ID", "C"),
     CLAIM_CONTRACT_ID: strKeyFromEnv("CLAIM_CONTRACT_ID", "C"),
