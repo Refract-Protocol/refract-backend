@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
  * OracleReading.value is a JS float whose meaning depends on coverage type:
  *   - StablecoinDepeg: USDC price (e.g. 0.9998)
  *   - MarketCrash: 24h % change (e.g. -30.12)
- *   - LiquidationShield: mock ratio / severity signal (0–1 style)
+ *   - LiquidationShield: NEXUS liquidation signal (0–1 style; see sources/liquidationShield.ts)
  *   - SmartContractRisk: TVL drop % (e.g. -12.5)
  *   - FlightDelay: delay minutes (e.g. 247)
  *
