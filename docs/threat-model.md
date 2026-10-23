@@ -102,7 +102,15 @@ reassessed against deployment exposure and on-chain contract controls.
 - [ ] **P1 — Harden oracle decision inputs.** Validate schema, numeric range,
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
-  mocked trigger sources before offering those coverages as live.
+  mocked trigger sources before offering those coverages as live. Secondary
+  price (Kraken) and TVL (Token Terminal) providers are documented in
+  [`oracle-sources.md`](./oracle-sources.md).
+  *Baseline (issue #206):* `src/oracle/independence-graph.ts` clusters sources
+  that share an operator, upstream origin, or hosting ASN, and corroborates
+  by independent cluster rather than by source count. It also flags identical
+  payloads and near-simultaneous observations. Admin cluster declarations are
+  recorded in `source_cluster_overrides`. Still open: the admin route, wiring
+  into the live scheduler, and external verification of operator ownership.
 - [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only
@@ -115,6 +123,52 @@ reassessed against deployment exposure and on-chain contract controls.
   overlap, coordinate scheduled work across replicas, bound per-cycle work,
   use circuit breakers/backoff for dependencies, and alert on stale oracle
   inputs, settlement failures, and backlog age.
+
+## 4A. Degraded-mode policy (fail-closed, issue #195)
+
+Policy of record for payout-triggering feeds. Implemented as the per-feed state
+machine in `src/oracle/degraded-mode.ts` (declarative thresholds in
+`DEGRADED_MODE_POLICY`) and persisted in `oracle_feed_state` with blocked-claim
+reason codes in `claims.block_reason` (`src/db/migrations/004_degraded_mode.sql`).
+
+**Current implementation status:** the corroboration layer itself is not yet in
+this snapshot — `oracle.service.ts`, `oracle-publisher.service.ts` and
+`claim-settlement.service.ts` are empty and single-source readings still drive
+`ClaimService`. The matrix below is the required behaviour once corroboration
+lands. Until the publisher and claim processor consult `isPayoutAllowed`, the
+checklist items in section 4 remain open.
+
+States: `healthy` (publish and settle allowed) → `degraded` (on the first failed
+evaluation; the claim is recorded as blocked) → `paused` (after
+`pauseAfterFailures` consecutive failures; leaves only by operator resume).
+A clean evaluation returns a `degraded` feed to `healthy`.
+
+Decision matrix. Every cell is the same action because a degraded feed must
+never fall back to a single reading. Coverage types are the catalog names in
+`src/common/coverage-catalog.ts`.
+
+| Condition | StablecoinDepeg | MarketCrash | LiquidationShield | SmartContractRisk | FlightDelay |
+|---|---|---|---|---|---|
+| Quorum shortfall (`quorum_shortfall`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+| Zero fresh sources (`no_fresh_sources`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+| All sources divergent (`sources_divergent`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+| Consensus engine unavailable (`consensus_unavailable`) | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` | No publish; claim → `blocked_degraded` |
+
+Rules that apply to every cell:
+
+- **Fail-closed default.** No single-source fallback. A degraded publish would
+  need an explicit, clearly labelled config flag, which is not added here.
+- **Partial staleness is not degradation.** If some sources are stale but quorum
+  is still met, the feed stays `healthy`.
+- **Blocked is not "not triggered".** A blocked claim keeps its trigger evidence
+  and reason code, and it is re-evaluated when the feed returns to `healthy`.
+- **Already-settled claims are never reverted.** Entering degraded mode does not
+  touch a claim that was correctly corroborated and settled earlier.
+- **Idempotent evaluation.** Re-applying the same observation to the resulting
+  state changes nothing, so repeated scheduler runs do not re-write state.
+- **Operator visibility.** Feed state and reason are exposed through logs and
+  status surfaces per coverage type; `paused` requires an explicit operator
+  resume.
 
 ## 5. Assumptions and limitations
 
