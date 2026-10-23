@@ -2,7 +2,9 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Pool } from "pg";
 import { PG_POOL } from "../db/db.module";
 import { OracleDeadLetterRepository } from "./oracle-dead-letter.repository";
+import { CacheService } from "../cache/cache.service";
 import { OracleReading } from "./oracle-reading";
+import { OracleStatusService } from "./oracle-status.service";
 
 /**
  * Persists oracle readings to the `oracle_events` table defined in
@@ -34,6 +36,7 @@ export class OracleEventRepository {
   constructor(
     @Inject(PG_POOL) private readonly db: Pool,
     private readonly deadLetters: OracleDeadLetterRepository,
+    private readonly cache: CacheService
   ) {}
 
   /**
@@ -52,10 +55,18 @@ export class OracleEventRepository {
 
     try {
       await this.db.query(
-        `INSERT INTO oracle_events (coverage_type, value, source, severity)
-         VALUES ($1, $2, $3, $4)`,
-        [coverageType, reading.value, OracleEventRepository.extractSource(reading.message), reading.severity]
+        `INSERT INTO oracle_events (coverage_type, value, source, severity, usable, rejection_reason)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          coverageType,
+          reading.value,
+          OracleEventRepository.extractSource(reading.message),
+          reading.severity,
+          reading.usable ?? true,
+          reading.rejectionReason ?? null,
+        ]
       );
+      await OracleStatusService.invalidate(this.cache);
     } catch (err) {
       this.logger.error(
         `Failed to persist oracle event for ${reading.coverageType}`,
@@ -85,12 +96,20 @@ export class OracleEventRepository {
         }
         valid.push(reading);
         await client.query(
-          `INSERT INTO oracle_events (coverage_type, value, source, severity)
-           VALUES ($1, $2, $3, $4)`,
-          [coverageType, reading.value, OracleEventRepository.extractSource(reading.message), reading.severity]
+          `INSERT INTO oracle_events (coverage_type, value, source, severity, usable, rejection_reason)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            coverageType,
+            reading.value,
+            this.extractSource(reading.message),
+            reading.severity,
+            reading.usable ?? true,
+            reading.rejectionReason ?? null,
+          ]
         );
       }
       await client.query("COMMIT");
+      await OracleStatusService.invalidate(this.cache);
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       this.logger.error(
