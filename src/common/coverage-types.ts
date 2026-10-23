@@ -8,6 +8,12 @@ import { CoverageTypeName } from "../quote/coverage-type";
 export type CoverageTypeStatus = "draft" | "live";
 
 /**
+ * Provenance of a coverage type's trigger data. `mocked` types cannot be
+ * quoted: the backend cannot honestly trigger them, so they are `unavailable`.
+ */
+export type TriggerSource = "live" | "mocked";
+
+/**
  * Auditable record of a coverage-type publish event: who drafted the product
  * and who separately published it, with timestamps for each transition.
  */
@@ -47,6 +53,8 @@ export interface CoverageType {
   maxPoolExposurePct: number;
   trigger: string;
   icon: string;
+  /** Provenance of the trigger data; see `TriggerSource`. */
+  triggerSource: TriggerSource;
   /** Staged-rollout state; only `live` entries are public. */
   status: CoverageTypeStatus;
   /** Present once a draft has been published. */
@@ -74,6 +82,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     maxPoolExposurePct: 40,
     trigger: "USDC price < $0.95 for 15+ minutes",
     icon: "🪙",
+    triggerSource: "live",
     status: "live",
   },
   {
@@ -89,6 +98,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     maxPoolExposurePct: 30,
     trigger: "Market index 24h return < -30%",
     icon: "📉",
+    triggerSource: "live",
     status: "live",
   },
   {
@@ -104,6 +114,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     maxPoolExposurePct: 30,
     trigger: "Collateral ratio drops below maintenance threshold",
     icon: "🛡️",
+    triggerSource: "mocked",
     status: "live",
   },
   {
@@ -119,6 +130,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     maxPoolExposurePct: 30,
     trigger: "Covered protocol TVL drops >50% in <1 hour",
     icon: "🔐",
+    triggerSource: "live",
     status: "live",
   },
   {
@@ -134,6 +146,7 @@ export const COVERAGE_TYPES: readonly CoverageType[] = [
     maxPoolExposurePct: 10,
     trigger: "Flight delayed > 120 minutes per AviationStack data",
     icon: "✈️",
+    triggerSource: "mocked",
     status: "live",
   },
 ];
