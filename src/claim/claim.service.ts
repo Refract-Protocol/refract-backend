@@ -1,4 +1,11 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
+import { ConsensusDecision } from "../oracle/consensus/consensus-decision";
+import { ConsensusService } from "../oracle/consensus/consensus.service";
+import { TRIGGER_SPECS } from "../oracle/consensus/trigger-specs";
+import { ClaimHoldService, COVERAGE_FEEDS } from "../oracle/consensus/claim-hold.service";
+import { OracleControlService } from "../oracle/control";
+import { AnomalyDetector } from "../oracle/anomaly";
+import { CircuitBreaker } from "../oracle/circuitBreaker";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { OracleService } from "../oracle/oracle.service";
@@ -13,22 +20,20 @@ import {
   defaultTriggerConfig,
   triggerOverridesFromEnv,
 } from "./trigger/trigger-stability";
+import { authorizeSettlement, SettlementAuthorization } from "./settlement-authorization";
 
 const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
 
 /**
- * ClaimService scans active policies for triggered conditions and settles
- * payouts. This is a migration of src/services/claimProcessor.ts, with one
- * deliberate fix: the old ClaimProcessor kept its own private
- * `Map<string, Policy>` that nothing ever populated (routes/policies.ts's
- * `POST /buy` never called `registerPolicy()`), so claim scanning never
- * actually saw a real policy. ClaimService now reads directly from
- * PolicyService, so a bought policy is immediately eligible for scanning.
+ * ClaimService scans active policies and settles payouts.
  *
- * It also consolidates two previously-separate mocked "oracle" data
- * sources (OracleMonitor's websocket-feed checks vs. ClaimProcessor's own
- * private mockValues map, which used inconsistent units — e.g. MarketCrash
- * as a fraction here vs. a percentage there) into a single OracleService.
+ * Its only oracle input is a {@link ConsensusDecision} from
+ * ConsensusService. It never reads OracleService readings or anything the
+ * monitor last wrote. A payout needs a SettlementAuthorization, which only
+ * exists for a decision that is actionable (quorum met, sources agree,
+ * confidence high enough, recorded in the evidence trail) and triggered.
+ * Anything else (insufficient, conflicted, unrecorded, or a coverage type
+ * with no live source) leaves the policy active and unpaid.
  */
 /** Returns a feed's current trust state, or null when cross-region quorum isn't configured. */
 export type FeedTrustGate = (feedId: string) => FeedTrustState | null;
@@ -39,9 +44,7 @@ export class ClaimService {
   private readonly logger = new Logger(ClaimService.name);
   private processedCount = 0;
   private payoutTotal = BigInt(0);
-  // In-memory settlement history — same lifetime/limitations as
-  // PolicyService's in-memory store; replaced together once the
-  // Postgres-backed repository lands.
+  // In-memory settlement history; replaced once the Postgres-backed repository lands.
   private readonly history: ClaimResult[] = [];
   // Debounces each policy's threshold check (hysteresis, minimum dwell,
   // flap damping) so a value hovering around the threshold can't toggle
@@ -59,9 +62,15 @@ export class ClaimService {
 
   constructor(
     private readonly policyService: PolicyService,
-    private readonly oracleService: OracleService,
+    private readonly consensus: ConsensusService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
+    private readonly oracleEventRepository: OracleEventRepository,
+    private readonly oracleControl: OracleControlService,
+    private readonly anomalyDetector: AnomalyDetector,
+    private readonly circuitBreaker: CircuitBreaker,
+    // Optional so existing wiring/tests without the consensus layer keep
+    // today's behaviour: no gate, settle directly.
+    @Optional() private readonly claimHoldService?: ClaimHoldService
   ) {
     this.triggerEvaluator.onTransition((e) => {
       const line =
@@ -74,6 +83,10 @@ export class ClaimService {
     });
   }
 
+  /** Scheduler entry point. */
+  async settleClaims(): Promise<ClaimResult[]> {
+    return this.processTriggered();
+  }
 
   async processTriggered(): Promise<ClaimResult[]> {
     const activePolicies = this.policyService.listActive();
@@ -84,22 +97,50 @@ export class ClaimService {
 
     for (const policy of activePolicies) {
       try {
+        const spec = TRIGGER_SPECS[policy.coverageType];
+        if (!spec) throw new Error(`Unknown coverageType ${policy.coverageType}`);
+
         const fetchedAt = Math.floor(Date.now() / 1000);
         const oracle = await this.fetchOracleData(policy);
+        const anomaly = this.anomalyDetector.evaluate(oracle);
+        if (anomaly.triggered) {
+          await this.tripBreaker(oracle, anomaly.reasons);
+          continue;
+        }
+
+        const decision = await this.consensus.decide(policy.coverageType, subjectFor(policy));
+        const outcome = authorizeSettlement(policy, spec.coverageType, decision);
+        if (!outcome.ok) {
+          if (decision.triggered) {
+            // Value looks past the threshold but the decision is not
+            // trustworthy enough to pay on. Worth an operator's attention.
+            this.logger.warn(`Policy ${policy.id} not settled: ${outcome.reason}`);
+          }
+          continue;
+        }
+
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         const feedId = feedIdForPolicy(policy.coverageType, policy.triggerParams);
         const trust = this.trustGate?.(feedId) ?? null;
         const untrusted = trust !== null && trust !== "trusted";
-        if (result.triggered && untrusted && this.holdOnUntrustedFeed) {
-          // Don't pay out on a reading the regions haven't corroborated.
-          // The hold is recorded and re-adjudicated once trust is restored.
-          this.logger.warn(`Holding payout for policy ${policy.id}: feed ${feedId} is ${trust}`);
-          this.emitAdjudication(policy, oracle, feedId, trust, "held", fetchedAt, "0");
-        } else if (result.triggered) {
+        if (result.triggered) {
+          // Operator pause: the reading was already polled and logged above, but
+          // no payout is attempted. Checked per policy so a pause issued mid-scan
+          // stops the remaining payouts in this run.
+          if (await this.oracleControl.isPaused(policy.coverageType)) {
+            this.logger.warn(`Settlement skipped for policy ${policy.id}: oracle paused by operator`);
+            continue;
+          }
+          if (untrusted && this.holdOnUntrustedFeed) {
+            // Don't pay out on a reading the regions haven't corroborated.
+            // The hold is recorded and re-adjudicated once trust is restored.
+            this.logger.warn(`Holding payout for policy ${policy.id}: feed ${feedId} is ${trust}`);
+            this.emitAdjudication(policy, oracle, feedId, trust, "held", fetchedAt, "0");
+          } else {
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result);
+          const settledResult = await this.processPayout(policy, result, oracle.coverageType);
           if (settledResult) settled.push(settledResult);
           if (settledResult && untrusted) {
             this.emitAdjudication(policy, oracle, feedId, trust, "settled", fetchedAt, settledResult.payout, settledResult.settlementTxHash);
@@ -107,6 +148,9 @@ export class ClaimService {
         } else if (untrusted) {
           this.emitAdjudication(policy, oracle, feedId, trust, "skipped", fetchedAt, "0");
         }
+        }
+        const result = await this.processPayout(policy, outcome.authorization);
+        if (result) settled.push(result);
       } catch (err) {
         this.logger.error(`Error scanning policy ${policy.id}`, err instanceof Error ? err.stack : String(err));
       }
@@ -253,11 +297,58 @@ export class ClaimService {
     };
   }
 
+  /**
+   * Opens the coverage type's breaker and records the trigger as evidence.
+   * Throws if persistence fails, so the policy is skipped rather than paid.
+   */
+  private async tripBreaker(reading: OracleReading, reasons: string[]): Promise<void> {
+    const reason = reasons.join("; ");
+    const opened = await this.circuitBreaker.open(reading.coverageType, reason, [reading]);
+    if (!opened) return;
+
+    this.logger.error(`Circuit breaker OPENED for ${reading.coverageType}: ${reason}`);
+    await this.oracleEventRepository.record({
+      ...reading,
+      severity: "triggered",
+      message: `Circuit breaker opened: ${reason} [AnomalyDetector]`,
+    });
+  }
+
   /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */
-  private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<ClaimResult | undefined> {
+  private async processPayout(
+    policy: StoredPolicy,
+    result: ClaimResult,
+    coverageType: string
+  ): Promise<ClaimResult | undefined> {
+    // Re-checked here, not only in the scan loop, so a breaker opened after
+    // the value was computed still blocks settlement.
+    if (!(await this.circuitBreaker.isSettlementAllowed(coverageType))) {
+      this.logger.error(`Settlement blocked for policy ${policy.id}: circuit breaker not closed for ${coverageType}`);
+      return undefined;
+    }
+
     this.logger.warn(
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
+
+    // Evidence-completeness gate (issue #272). A triggered claim whose
+    // evidence is incomplete is put on `payout_held` instead of being paid
+    // or dropped. The policy stays active, so the next scan re-checks it and
+    // a released hold settles here.
+    let holdId: string | undefined;
+    if (this.claimHoldService) {
+      const gate = this.claimHoldService.gate({
+        policyId: policy.id,
+        holder: policy.holder,
+        feedId: COVERAGE_FEEDS[policy.coverageType] ?? `coverage-${policy.coverageType}`,
+        policyExpiresAt: policy.expiresAt * 1000,
+      });
+      if (gate.action === "block") {
+        this.logger.warn(`Payout for policy ${policy.id} not settled: ${gate.reason}`);
+        return undefined;
+      }
+      holdId = gate.holdId;
+    }
 
     const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
     if (!settlement.settled) {
@@ -266,14 +357,26 @@ export class ClaimService {
     }
 
     this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
+    if (holdId) this.claimHoldService?.markSettled(holdId);
     this.policyService.deactivate(policy.id);
     this.triggerEvaluator.forget(policy.id);
     this.policyCoverageTypes.delete(policy.id);
     this.processedCount++;
-    this.payoutTotal += BigInt(result.payout);
-    const settledResult = { ...result, settlementTxHash: settlement.txHash };
-    this.history.push(settledResult);
-    return settledResult;
+    this.payoutTotal += auth.payout;
+    const result: ClaimResult = {
+      policyId: policy.id,
+      holder: policy.holder,
+      coverageType: policy.coverageType,
+      triggered: true,
+      payout: auth.payout.toString(),
+      reason,
+      processedAt: Date.now(),
+      triggerDetectedAt: auth.decision.decidedAt,
+      settlementTxHash: settlement.txHash,
+      decisionId: auth.decision.id,
+    };
+    this.history.push(result);
+    return result;
   }
 
   getStats() {
@@ -281,10 +384,6 @@ export class ClaimService {
       activePolicies: this.policyService.listActive().length,
       processedClaims: this.processedCount,
       totalPayout: this.payoutTotal.toString(),
-      // Surfaces whether ClaimSettlementService actually has a pool
-      // contract ID + relayer secret configured, so ops can tell from the
-      // API whether triggered claims will settle on-chain or just log a
-      // "not configured" error, without digging through env/logs.
       settlementConfigured: this.claimSettlementService.isConfigured(),
     };
   }
@@ -298,4 +397,15 @@ export class ClaimService {
   getRecentSettlements(limit = 10): ClaimResult[] {
     return [...this.history].sort((a, b) => b.processedAt - a.processedAt).slice(0, limit);
   }
+}
+
+function subjectFor(policy: StoredPolicy): string | undefined {
+  const params = policy.triggerParams ?? {};
+  const subject = params.protocolSlug ?? params.flightNumber;
+  return typeof subject === "string" ? subject : undefined;
+}
+
+function describeDecision(d: ConsensusDecision): string {
+  const sources = d.inputs.map((i) => i.sourceId).join(",");
+  return `decision=${d.id} status=${d.status} value=${d.value} threshold=${d.threshold} confidence=${d.confidence} sources=[${sources}]`;
 }
