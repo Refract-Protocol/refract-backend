@@ -102,7 +102,15 @@ reassessed against deployment exposure and on-chain contract controls.
 - [ ] **P1 — Harden oracle decision inputs.** Validate schema, numeric range,
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
-  mocked trigger sources before offering those coverages as live.
+  mocked trigger sources before offering those coverages as live. Secondary
+  price (Kraken) and TVL (Token Terminal) providers are documented in
+  [`oracle-sources.md`](./oracle-sources.md).
+  *Baseline (issue #206):* `src/oracle/independence-graph.ts` clusters sources
+  that share an operator, upstream origin, or hosting ASN, and corroborates
+  by independent cluster rather than by source count. It also flags identical
+  payloads and near-simultaneous observations. Admin cluster declarations are
+  recorded in `source_cluster_overrides`. Still open: the admin route, wiring
+  into the live scheduler, and external verification of operator ownership.
 - [ ] **P1 — Make lifecycle evidence durable.** Store purchase intent,
   transaction hash/status, oracle source/value/time, trigger decision,
   settlement hash/status, and administrative actions in durable append-only
