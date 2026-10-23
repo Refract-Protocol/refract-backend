@@ -28,6 +28,8 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { OperatorsModule } from './routes/operators';
+import { StakingModule } from './routes/staking';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -119,6 +121,8 @@ export const isSandboxMode = (): boolean =>
     TxModule,
     SecurityReportsModule,
     DigestModule,
+    OperatorsModule,
+    StakingModule,
   ],
   controllers: [AppController],
   providers: [
