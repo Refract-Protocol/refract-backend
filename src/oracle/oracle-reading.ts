@@ -1,3 +1,5 @@
+import { FreshnessRejectionReason } from "./freshnessPolicy";
+
 export type Severity = "low" | "medium" | "high" | "triggered";
 
 export interface OracleReading {
@@ -17,4 +19,10 @@ export interface OracleReading {
    * Consensus uses this; readings without it are rejected at ingestion.
    */
   observedAt?: string | Date;
+  /**
+   * False when the freshness guard rejected this reading (issue #186). Such
+   * readings are persisted for audit but excluded from corroboration.
+   */
+  usable?: boolean;
+  rejectionReason?: FreshnessRejectionReason;
 }
