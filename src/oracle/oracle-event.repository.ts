@@ -1,7 +1,9 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Pool } from "pg";
 import { PG_POOL } from "../db/db.module";
+import { CacheService } from "../cache/cache.service";
 import { OracleReading } from "./oracle-reading";
+import { OracleStatusService } from "./oracle-status.service";
 
 /**
  * Persists oracle readings to the `oracle_events` table defined in
@@ -27,7 +29,10 @@ export class OracleEventRepository {
     FlightDelay: "flight_delay",
   };
 
-  constructor(@Inject(PG_POOL) private readonly db: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly db: Pool,
+    private readonly cache: CacheService
+  ) {}
 
   /**
    * Persists one oracle reading. The call is fire-and-forget: errors are
@@ -54,6 +59,7 @@ export class OracleEventRepository {
           reading.rejectionReason ?? null,
         ]
       );
+      await OracleStatusService.invalidate(this.cache);
     } catch (err) {
       this.logger.error(
         `Failed to persist oracle event for ${reading.coverageType}`,
@@ -91,6 +97,7 @@ export class OracleEventRepository {
         );
       }
       await client.query("COMMIT");
+      await OracleStatusService.invalidate(this.cache);
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       this.logger.error(
