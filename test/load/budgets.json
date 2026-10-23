@@ -1,0 +1,38 @@
+{
+  "profiles": {
+    "smoke": {
+      "sources": 8,
+      "feeds": 20,
+      "operators": 4,
+      "payoutFeedRatio": 0.5,
+      "durationSeconds": 60,
+      "sampleIntervalSeconds": 5,
+      "warmupFraction": 0.2
+    },
+    "soak": {
+      "sources": 24,
+      "feeds": 100,
+      "operators": 8,
+      "payoutFeedRatio": 0.3,
+      "durationSeconds": 7200,
+      "sampleIntervalSeconds": 30,
+      "warmupFraction": 0.1
+    }
+  },
+  "budgets": {
+    "payoutLatencyMsP50": { "max": 50 },
+    "payoutLatencyMsP99": { "max": 250 },
+    "latencyMsP99": { "max": 500 },
+    "decisionsPerSecond": { "min": 20 },
+    "dbWritesPerDecision": { "max": 6 },
+    "heapGrowthMbPerHour": { "max": 5, "minDurationSeconds": 3600 }
+  },
+  "regressionTolerance": 0.2,
+  "regressionMetrics": {
+    "payoutLatencyMsP50": "lower",
+    "payoutLatencyMsP99": "lower",
+    "latencyMsP99": "lower",
+    "decisionsPerSecond": "higher",
+    "dbWritesPerDecision": "lower"
+  }
+}
