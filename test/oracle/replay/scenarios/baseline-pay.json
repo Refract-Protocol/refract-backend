@@ -1,0 +1,32 @@
+{
+  "name": "baseline-pay",
+  "description": "All sources healthy and corroborated above threshold: pay.",
+  "fixture": "sample-v1.json",
+  "seed": 42,
+  "startMs": 1767225600000,
+  "config": {
+    "sources": [
+      "provider-a",
+      "provider-b",
+      "provider-c"
+    ],
+    "maxAgeMs": 90000,
+    "maxFutureSkewMs": 5000,
+    "toleranceBps": 500,
+    "minSources": 2,
+    "triggerThreshold": 140,
+    "maxRetries": 1,
+    "retryBaseMs": 1000
+  },
+  "faults": [],
+  "ticks": [
+    0,
+    60000,
+    120000
+  ],
+  "expect": [
+    "no_action",
+    "no_action",
+    "pay"
+  ]
+}

@@ -60,6 +60,31 @@ const urlFromEnv = (label: string) =>
       }
     });
 
+/** Comma-separated list of URLs; every entry must parse. */
+const urlListFromEnv = (label: string) =>
+  z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      if (value === undefined || value.trim() === "") {
+        return undefined;
+      }
+      const urls = value.split(",").map((url) => url.trim()).filter(Boolean);
+      for (const url of urls) {
+        try {
+          // eslint-disable-next-line no-new
+          new URL(url);
+        } catch {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${label} contains an invalid URL: "${url}"`,
+          });
+          return z.NEVER;
+        }
+      }
+      return urls;
+    });
+
 /** StrKey validation for Stellar contract ids (C...) and secret keys (S...). */
 const strKeyFromEnv = (label: string, prefix: "C" | "S") =>
   z
@@ -91,11 +116,45 @@ export const envSchema = z
       .enum(["testnet", "mainnet", "futurenet"])
       .default("testnet"),
     SOROBAN_RPC_URL: urlFromEnv("SOROBAN_RPC_URL"),
+    SOROBAN_RPC_URLS: urlListFromEnv("SOROBAN_RPC_URLS"),
+    SOROBAN_RPC_MAX_LEDGER_LAG: intFromEnv({
+      min: 0,
+      max: 10_000,
+      label: "SOROBAN_RPC_MAX_LEDGER_LAG",
+    }),
+    SOROBAN_RPC_FAILURE_THRESHOLD: intFromEnv({
+      min: 1,
+      max: 100,
+      label: "SOROBAN_RPC_FAILURE_THRESHOLD",
+    }),
+    SOROBAN_RPC_COOLDOWN_MS: intFromEnv({
+      min: 1_000,
+      max: 3_600_000,
+      label: "SOROBAN_RPC_COOLDOWN_MS",
+    }),
+    SOROBAN_RPC_HEALTH_INTERVAL_MS: intFromEnv({
+      min: 0,
+      max: 3_600_000,
+      label: "SOROBAN_RPC_HEALTH_INTERVAL_MS",
+    }),
+    SOROBAN_RPC_HEALTH_TIMEOUT_MS: intFromEnv({
+      min: 100,
+      max: 60_000,
+      label: "SOROBAN_RPC_HEALTH_TIMEOUT_MS",
+    }),
     ORACLE_HTTP_TIMEOUT_MS: intFromEnv({
       min: 100,
       max: 120_000,
       label: "ORACLE_HTTP_TIMEOUT_MS",
     }),
+    HORIZON_FINALITY_DEPTH: intFromEnv({
+      min: 0,
+      max: 1000,
+      label: "HORIZON_FINALITY_DEPTH",
+    }),
+    HORIZON_FINALITY_POLICY: z
+      .enum(["final_only", "allow_provisional"])
+      .optional(),
     POLICY_CONTRACT_ID: strKeyFromEnv("POLICY_CONTRACT_ID", "C"),
     POOL_CONTRACT_ID: strKeyFromEnv("POOL_CONTRACT_ID", "C"),
     CLAIM_CONTRACT_ID: strKeyFromEnv("CLAIM_CONTRACT_ID", "C"),
@@ -170,6 +229,10 @@ export const envSchema = z
       "RELAYER_SECRET_KEY",
     ];
     for (const key of required) {
+      // Any endpoint in the pool satisfies the RPC requirement.
+      if (key === "SOROBAN_RPC_URL" && env.SOROBAN_RPC_URLS !== undefined) {
+        continue;
+      }
       if (env[key] === undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

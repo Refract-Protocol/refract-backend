@@ -1,3 +1,5 @@
+import type { OracleSourceKind, OracleTrustMode } from "../oracle/oracle-encoding";
+
 /**
  * Single source of truth for the five coverage products offered by Refract.
  *
@@ -90,6 +92,16 @@ export interface CoverageProduct {
   status: CoverageStatus;
   /** Present once the product has been published; absent while `draft`. */
   approval?: CoverageApprovalRecord;
+  /**
+   * Declared kind of the trigger source. A `live` product must be backed by a
+   * source whose wired capability is also `live` (issue #203).
+   */
+  sourceKind: OracleSourceKind;
+  /**
+   * Weakest trust mode the backing source may have. Startup fails when the
+   * wired source ranks below it (issue #203).
+   */
+  minTrustMode: OracleTrustMode;
 }
 
 export const COVERAGE_CATALOG = {
@@ -108,6 +120,8 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 500,
     maxPoolExposurePct: 35,
     status: "live",
+    sourceKind: "live",
+    minTrustMode: "single-source",
   },
   MarketCrash: {
     id: "MarketCrash",
@@ -124,7 +138,12 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 3000,
     maxPoolExposurePct: 35,
     status: "live",
+    sourceKind: "live",
+    minTrustMode: "single-source",
   },
+  // Data provenance: NEXUS Protocol on-chain liquidation events, gated by
+  // confirmation depth in src/oracle/sources/liquidationShield.ts. No live
+  // NEXUS feed is wired yet, so this product produces no reading.
   LiquidationShield: {
     id: "LiquidationShield",
     onChainIndex: 2,
@@ -140,6 +159,8 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 500,
     maxPoolExposurePct: 35,
     status: "live",
+    sourceKind: "mocked",
+    minTrustMode: "mocked",
   },
   SmartContractRisk: {
     id: "SmartContractRisk",
@@ -156,6 +177,8 @@ export const COVERAGE_CATALOG = {
     defaultTriggerThreshold: 500,
     maxPoolExposurePct: 30,
     status: "live",
+    sourceKind: "live",
+    minTrustMode: "single-source",
   },
   FlightDelay: {
     id: "FlightDelay",
@@ -171,8 +194,36 @@ export const COVERAGE_CATALOG = {
     icon: "✈️",
     defaultTriggerThreshold: 120,
     status: "live",
+    sourceKind: "mocked",
+    minTrustMode: "mocked",
   },
 } as const satisfies Record<CoverageType, CoverageProduct>;
+
+/**
+ * Multi-source corroboration defaults per coverage type (issue #177). Each
+ * value can be overridden at deploy time via
+ * `ORACLE_CORROBORATION_<TYPE>_{MIN_SOURCES,TOLERANCE_BPS,MAX_AGE_MS}`, where
+ * <TYPE> is the snake_case coverage id (e.g. STABLECOIN_DEPEG).
+ *
+ * - minSources: distinct fresh sources that must agree before a value may be
+ *   published as payout-triggering.
+ * - toleranceBps: max deviation of a reading from the median, relative to the
+ *   median (denominator floored at 1 unit so zero-valued metrics still work).
+ * - maxReadingAgeMs: readings older than this are ignored.
+ */
+export interface CorroborationDefaults {
+  minSources: number;
+  toleranceBps: number;
+  maxReadingAgeMs: number;
+}
+
+export const COVERAGE_CORROBORATION_DEFAULTS: Record<CoverageType, CorroborationDefaults> = {
+  StablecoinDepeg: { minSources: 3, toleranceBps: 50, maxReadingAgeMs: 300_000 },
+  MarketCrash: { minSources: 3, toleranceBps: 200, maxReadingAgeMs: 300_000 },
+  LiquidationShield: { minSources: 3, toleranceBps: 200, maxReadingAgeMs: 300_000 },
+  SmartContractRisk: { minSources: 3, toleranceBps: 500, maxReadingAgeMs: 600_000 },
+  FlightDelay: { minSources: 3, toleranceBps: 1_000, maxReadingAgeMs: 900_000 },
+};
 
 /** List form of the catalog, in on-chain index order. */
 export const COVERAGE_PRODUCTS: readonly CoverageProduct[] = Object.values(COVERAGE_CATALOG);
@@ -256,3 +307,46 @@ export function maxPoolExposureForType(
   }
   return (lockedCapital * product.maxPoolExposurePct) / 100;
 }
+
+/**
+ * Declarative freshness policy for one payout-triggering feed (issue #186).
+ * Every coverage type must declare one; the ingestion guard in
+ * src/oracle/freshnessPolicy.ts rejects readings that violate it before they
+ * can take part in a consensus decision.
+ *
+ * - freshnessWindowSeconds: max age of a reading's source-observed timestamp
+ *   relative to ingestion time.
+ * - maxClockSkewSeconds: how far a source-observed timestamp may sit in the
+ *   future relative to ingestion time before it is rejected as future-dated.
+ * - heartbeatIntervalSeconds: max silence between readings from one source
+ *   before that source is considered down for this feed.
+ *
+ * Defaults are tuned per feed cadence and can be overridden per environment
+ * via ORACLE_FRESHNESS_<FEED>_<FIELD> env vars (see freshnessPolicy.ts).
+ */
+export interface FreshnessPolicy {
+  freshnessWindowSeconds: number;
+  maxClockSkewSeconds: number;
+  heartbeatIntervalSeconds: number;
+}
+
+export const FRESHNESS_POLICY: Record<CoverageType, FreshnessPolicy> = {
+  StablecoinDepeg: { freshnessWindowSeconds: 300, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 120 },
+  MarketCrash: { freshnessWindowSeconds: 900, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 300 },
+  LiquidationShield: { freshnessWindowSeconds: 300, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 120 },
+  SmartContractRisk: { freshnessWindowSeconds: 900, maxClockSkewSeconds: 30, heartbeatIntervalSeconds: 300 },
+  FlightDelay: { freshnessWindowSeconds: 1800, maxClockSkewSeconds: 60, heartbeatIntervalSeconds: 600 },
+};
+
+/**
+ * Feed-to-source mapping (issue #204). Lists the independent providers that
+ * back each corroborated feed; adapters live in `src/oracle/sources/` and are
+ * registered in the source registry, not special-cased in the polling loop.
+ */
+export const COVERAGE_FEED_SOURCES: Partial<
+  Record<CoverageType, { feed: "price" | "tvl"; sources: string[] }>
+> = {
+  StablecoinDepeg: { feed: "price", sources: ["coingecko", "kraken"] },
+  MarketCrash: { feed: "price", sources: ["coingecko", "kraken"] },
+  SmartContractRisk: { feed: "tvl", sources: ["defillama", "tokenterminal"] },
+};
