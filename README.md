@@ -161,6 +161,20 @@ reads, and 60/minute for coverage catalogs.
 > Publish cadence is controlled by `ORACLE_PUBLISH_MODE` /
 > `ORACLE_PUBLISH_MIN_INTERVAL_MS` (see `.env.example`).
 >
+> **Batched publishing** (`OracleBatchPublisherService`) is persist-then-publish:
+> producers `enqueue` decisions into the durable `oracle_publish_queue` table
+> (apply `src/db/migrations/004_oracle_publish_queue.sql`); a single-flight loop
+> submits ordered batches (`ORACLE_PUBLISH_MAX_BATCH_SIZE`,
+> `ORACLE_PUBLISH_MAX_IN_FLIGHT`, `ORACLE_PUBLISH_MAX_PER_FEED_PER_BATCH`). A feed
+> never has two batches in flight, so decisions land in order. Failures retry with
+> jittered backoff (`ORACLE_PUBLISH_BASE_BACKOFF_MS` / `_MAX_BACKOFF_MS`), size/fee
+> errors split the batch, and ambiguous timeouts are reconciled by tx hash before
+> any resubmission. When queue depth (`ORACLE_PUBLISH_BACKPRESSURE_QUEUE_DEPTH`)
+> or RPC latency (`ORACLE_PUBLISH_BACKPRESSURE_RPC_LATENCY_MS`) is exceeded,
+> `pollIntervalMultiplier("low")` slows low-priority polling (payout-triggering
+> feeds are never slowed) and `refract_oracle_publish_*` gauges on `/metrics`
+> show queue depth, backpressure, and RPC latency.
+>
 > **Confirmation polling** uses configurable exponential backoff + jitter
 > (`CONFIRMATION_*` env vars) with distinct HTTP vs settlement deadlines.
 >
