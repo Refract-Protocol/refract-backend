@@ -21,6 +21,8 @@ export interface ClaimResult {
   settledAt?: number;
   /** True when |actual - expected| exceeded the configured tolerance. */
   payoutDiscrepancy?: boolean;
+  /** Consensus decision that authorized the payout, e.g. "StablecoinDepeg@42" (evidence seq). */
+  decisionId?: string;
 }
 
 export interface ClaimScanStats {

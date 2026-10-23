@@ -10,6 +10,9 @@ dist/
 .env.local
 .env.*.local
 
+# Local oracle evidence spool (ORACLE_EVIDENCE_SPOOL_DIR default)
+.data/
+
 # Logs
 logs/
 *.log
