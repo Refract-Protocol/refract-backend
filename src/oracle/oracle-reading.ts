@@ -3,6 +3,14 @@ import { FreshnessRejectionReason } from "./freshnessPolicy";
 
 export type Severity = "low" | "medium" | "high" | "triggered";
 
+export interface OracleEvidenceMetadata {
+  adapter: string;
+  schemaVersion: number;
+  digest: string;
+  attribution: string;
+  sensitivity: "public" | "commercial" | "personal" | "synthetic";
+}
+
 export interface OracleReading {
   readingId?: string;
   coverageType: string;

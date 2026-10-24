@@ -15,7 +15,7 @@ function buildReading(overrides: Partial<OracleReading> = {}): OracleReading {
 }
 
 function mockClient(readyState: number, sendImpl?: () => void): WebSocket {
-  return { readyState, send: jest.fn(sendImpl) } as unknown as WebSocket;
+  return { readyState, on: jest.fn(), send: jest.fn(sendImpl) } as unknown as WebSocket;
 }
 
 describe("OracleGateway", () => {

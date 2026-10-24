@@ -9,6 +9,7 @@
     "refract-frontend",
     "refract-contracts"
   ],
+  "main": "dist/main.js",
   "scripts": {
     "build": "nest build",
     "dev": "nodemon --exec ts-node src/main.ts",
@@ -86,6 +87,7 @@
     "@types/node": "^20.10.0",
     "@types/pg": "^8.10.9",
     "@types/supertest": "^7.2.0",
+    "@types/uuid": "^9.0.7",
     "@types/ws": "^8.5.10",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
