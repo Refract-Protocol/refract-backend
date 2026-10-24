@@ -45,7 +45,7 @@ const PUBLIC_PAYLOADS = {
     reason: z.string().max(256).optional(),
   }),
   'trust.dispute': z.object({
-    kind: z.literal('opened'),
+    kind: z.enum(['opened', 'under_review', 'upheld', 'reversed', 'withdrawn']),
     coverageType: subject.optional(),
     disputeId: subject,
   }),

@@ -7,10 +7,11 @@ import { ClaimRepository } from "./claim.repository";
 import { ClaimScheduler } from "./claim.scheduler";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimService } from "./claim.service";
+import { DisputeModule } from "./dispute/dispute.module";
 import { ReconciliationService } from "./reconciliation.service";
 
 @Module({
-  imports: [PolicyModule, OracleModule, ConsensusModule],
+  imports: [PolicyModule, OracleModule, ConsensusModule, DisputeModule],
   controllers: [ClaimController],
   providers: [
     ClaimRepository,

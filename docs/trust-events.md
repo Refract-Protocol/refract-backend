@@ -32,7 +32,7 @@ Delivery is at-least-once; clients must dedupe by `id`. Breaking changes bump
 | `trust.feed`     | `kind` (`divergence`/`quorum_failure`/`confidence_change`), `feedId`, `coverageType?`, `confidence?` (0-1), `degraded`   |
 | `trust.coverage` | `coverageType`, `degraded`, `confidence?`                                                                                |
 | `trust.pause`    | `kind` (`paused`/`resumed`), `coverageType?`, `reason?`                                                                  |
-| `trust.dispute`  | `kind` (`opened`), `coverageType?`, `disputeId`                                                                          |
+| `trust.dispute`  | `kind` (`opened`/`under_review`/`upheld`/`reversed`/`withdrawn`), `coverageType?`, `disputeId`                           |
 
 ## Authentication and redaction
 
