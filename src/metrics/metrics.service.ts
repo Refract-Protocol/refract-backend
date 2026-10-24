@@ -77,6 +77,12 @@ export class MetricsService implements RelayerMetricsSink {
     registers: [this.registry],
   });
 
+  private readonly openDisputes = new Gauge({
+    name: "refract_claim_disputes_open",
+    help: "Claim disputes currently open or under review.",
+    registers: [this.registry],
+  });
+
   private readonly relayerBalance = new Gauge({
     name: "refract_relayer_balance_stroops",
     help: "Relayer native balance in stroops.",
@@ -159,6 +165,10 @@ export class MetricsService implements RelayerMetricsSink {
     const labels = { feed, stage };
     this.oracleDeadlineBreaches.labels(labels).inc();
     this.oracleDeadlineOverrun.labels(labels).observe(Math.max(0, overrunSeconds));
+  }
+
+  recordOpenDisputes(count: number): void {
+    this.openDisputes.set(count);
   }
 
   recordRelayerBalance(a: BalanceAssessment, spend: FeeSpendSummary): void {
