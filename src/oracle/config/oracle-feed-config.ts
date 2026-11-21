@@ -64,6 +64,33 @@ const feedSchema = z
   })
   .strict();
 
+const KNOWN_TOP_LEVEL_KEYS = ["version", "defaults", "feeds"] as const;
+
+/**
+ * Rejects unknown top-level keys with a message naming the offending key and,
+ * when the document is a feed list, the feed id it was found on.
+ */
+function checkTopLevelKeys(raw: unknown, ctx: z.RefinementCtx): void {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+  const feeds = (raw as { feeds?: unknown }).feeds;
+  const feedIds = Array.isArray(feeds)
+    ? feeds.map((feed, index) =>
+        typeof feed === "object" && feed !== null && typeof (feed as { id?: unknown }).id === "string"
+          ? (feed as { id: string }).id
+          : `feeds[${index}]`
+      )
+    : [];
+  for (const key of Object.keys(raw)) {
+    if ((KNOWN_TOP_LEVEL_KEYS as readonly string[]).includes(key)) continue;
+    const where = feedIds.length > 0 ? ` (feeds: ${feedIds.join(", ")})` : "";
+    ctx.addIssue({
+      code: "custom",
+      path: [key],
+      message: `unknown top-level key "${key}"${where}`,
+    });
+  }
+}
+
 export const oracleConfigSchema = z
   .object({
     version: z.literal(1),
@@ -79,7 +106,8 @@ export const oracleConfigSchema = z
       .optional(),
     feeds: z.array(feedSchema),
   })
-  .strict();
+  .strict()
+  .superRefine(checkTopLevelKeys);
 
 export type OracleConfigFile = z.infer<typeof oracleConfigSchema>;
 export type OracleFeedDefinition = z.infer<typeof feedSchema>;

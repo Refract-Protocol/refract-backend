@@ -23,7 +23,12 @@ Mutating (require --reason; operator from --operator or OPERATOR_ID):
   quarantine <source>           Quarantine a source     (requires --yes)
   unquarantine <source>         Release a source
 
-Flags: --reason <text>  --operator <id>  --dry-run  --yes  --limit <n>  --help`;
+Flags: --reason <text>  --operator <id>  --dry-run  --yes  --limit <n>  --help
+
+Exit codes:
+  0  Success, including --help and --dry-run previews
+  1  Any failure: bad flags or arguments, missing DATABASE_URL, unknown
+     command, missing --yes on a destructive command, or a database error`;
 
 const MUTATIONS: Record<string, { action: MutationAction; destructive: boolean }> = {
   pause: { action: "pause_feed", destructive: true },

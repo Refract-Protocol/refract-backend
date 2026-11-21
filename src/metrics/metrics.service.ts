@@ -200,8 +200,36 @@ export class MetricsService implements RelayerMetricsSink {
     }
   }
 
+  private cachedPayload?: { payload: string; expiresAt: number };
+  private inFlight?: Promise<string>;
+
+  /**
+   * Renders the Prometheus payload, reusing a cached render for
+   * `METRICS_CACHE_TTL_MS` so repeated scrapes within the window do not
+   * rebuild every counter. Concurrent scrapes share one render.
+   */
   metrics(): Promise<string> {
-    return this.registry.metrics();
+    const now = Date.now();
+    if (this.cachedPayload && now < this.cachedPayload.expiresAt) {
+      return Promise.resolve(this.cachedPayload.payload);
+    }
+    if (this.inFlight) return this.inFlight;
+
+    this.inFlight = this.registry
+      .metrics()
+      .then((payload) => {
+        this.cachedPayload = { payload, expiresAt: Date.now() + this.cacheTtlMs };
+        return payload;
+      })
+      .finally(() => {
+        this.inFlight = undefined;
+      });
+    return this.inFlight;
+  }
+
+  private get cacheTtlMs(): number {
+    const raw = Number(process.env.METRICS_CACHE_TTL_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 5_000;
   }
 
   get contentType(): string {
