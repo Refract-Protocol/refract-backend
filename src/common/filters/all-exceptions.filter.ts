@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import { Request, Response } from "express";
 import { DomainError, ErrorDetails } from "../errors";
+import { winstonLogger } from "../logger";
 
 /**
  * Global exception filter (issue #60).
@@ -66,7 +67,9 @@ function toSerializable(value: unknown): unknown {
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
-  private readonly logger = new Logger(AllExceptionsFilter.name);
+  private readonly logger = new Logger(AllExceptionsFilter.name, {
+    logger: winstonLogger,
+  });
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
@@ -89,6 +92,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code = exception.code;
       message = exception.message;
       details = exception.details;
+      if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+        this.logger.error(
+          `Domain error [${correlationId}] ${request.method} ${path}: ${message}`,
+          exception.stack
+        );
+      }
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const body = exception.getResponse();
@@ -111,7 +120,21 @@ export class AllExceptionsFilter implements ExceptionFilter {
           details = b.details as ErrorDetails;
         }
       }
-      code = codeForStatus(status, code);
+      // Pipe/validation failures (BadRequestException, ValidationPipe, custom
+      // pipes such as StellarAddressPipe) are client errors: keep the useful
+      // message and never downgrade them to a 500.
+      if (status === HttpStatus.BAD_REQUEST) {
+        code = "VALIDATION_ERROR";
+        if (!message || message === "Internal server error") {
+          message = "Validation failed";
+        }
+      } else {
+        code = codeForStatus(status, code);
+      }
+      // Client errors are expected; log them without a stack trace.
+      this.logger.warn(
+        `Client error [${correlationId}] ${request.method} ${path}: ${status} ${message}`
+      );
     } else {
       // Unhandled: log the full stack server-side, return a generic message.
       const err = exception instanceof Error ? exception : new Error(String(exception));
