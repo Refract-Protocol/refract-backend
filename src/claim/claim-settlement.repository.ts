@@ -12,6 +12,23 @@ export interface ClaimSettlementRecord {
   lastError?: string;
 }
 
+export type SettlementErrorClass = "transient" | "permanent" | "indeterminate";
+
+export interface SettlementAttemptInput {
+  policyId: string;
+  holder: string;
+  error?: string;
+  errorClass?: SettlementErrorClass;
+  pendingTxHash?: string;
+  attemptedAt?: Date;
+}
+
+export interface SettlementAttemptResult {
+  policyId: string;
+  recorded: boolean;
+  error?: string;
+}
+
 const UNIQUE_VIOLATION = "23505";
 
 /**
@@ -105,6 +122,112 @@ export class ClaimSettlementRepository {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Records many settlement attempts in a single multi-row insert.
+   *
+   * If the batch statement fails, it is retried row by row so a single bad row
+   * cannot silently drop the rest; each row's outcome is reported individually.
+   */
+  async recordAttempts(attempts: SettlementAttemptInput[]): Promise<SettlementAttemptResult[]> {
+    if (attempts.length === 0) return [];
+
+    const values: unknown[] = [];
+    const tuples = attempts.map((attempt, index) => {
+      const base = index * 6;
+      values.push(
+        attempt.policyId,
+        attempt.holder,
+        attempt.error ?? null,
+        attempt.errorClass ?? null,
+        attempt.pendingTxHash ?? null,
+        attempt.attemptedAt ?? new Date()
+      );
+      return `($${base + 1}, $${base + 2}, 1, $${base + 6}, $${base + 6}, $${base + 3}, $${base + 4}, $${base + 5})`;
+    });
+
+    try {
+      await this.db.query(
+        `INSERT INTO settlement_attempts
+           (policy_id, holder, attempt_count, first_attempt_at, last_attempt_at,
+            last_error, last_error_class, pending_tx_hash)
+         VALUES ${tuples.join(", ")}
+         ON CONFLICT (policy_id) DO UPDATE SET
+           holder = EXCLUDED.holder,
+           attempt_count = settlement_attempts.attempt_count + 1,
+           last_attempt_at = EXCLUDED.last_attempt_at,
+           last_error = EXCLUDED.last_error,
+           last_error_class = EXCLUDED.last_error_class,
+           pending_tx_hash = EXCLUDED.pending_tx_hash,
+           error_history = settlement_attempts.error_history ||
+             jsonb_build_array(jsonb_build_object(
+               'at', EXCLUDED.last_attempt_at,
+               'error', EXCLUDED.last_error,
+               'class', EXCLUDED.last_error_class
+             )),
+           updated_at = now()`,
+        values
+      );
+      return attempts.map((attempt) => ({ policyId: attempt.policyId, recorded: true }));
+    } catch (err) {
+      this.logger.warn(`Bulk settlement attempt insert failed; retrying row by row: ${(err as Error).message}`);
+      return this.recordAttemptsIndividually(attempts);
+    }
+  }
+
+  /** Fallback for a failed batch: one statement per row, reporting each error. */
+  private async recordAttemptsIndividually(attempts: SettlementAttemptInput[]): Promise<SettlementAttemptResult[]> {
+    const results: SettlementAttemptResult[] = [];
+    for (const attempt of attempts) {
+      try {
+        await this.insertAttempts([attempt]);
+        results.push({ policyId: attempt.policyId, recorded: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Failed to record settlement attempt for policy ${attempt.policyId}: ${message}`);
+        results.push({ policyId: attempt.policyId, recorded: false, error: message });
+      }
+    }
+    return results;
+  }
+
+  private async insertAttempts(attempts: SettlementAttemptInput[]): Promise<void> {
+    const values: unknown[] = [];
+    const tuples = attempts.map((attempt, index) => {
+      const base = index * 6;
+      values.push(
+        attempt.policyId,
+        attempt.holder,
+        attempt.error ?? null,
+        attempt.errorClass ?? null,
+        attempt.pendingTxHash ?? null,
+        attempt.attemptedAt ?? new Date()
+      );
+      return `($${base + 1}, $${base + 2}, 1, $${base + 6}, $${base + 6}, $${base + 3}, $${base + 4}, $${base + 5})`;
+    });
+
+    await this.db.query(
+      `INSERT INTO settlement_attempts
+         (policy_id, holder, attempt_count, first_attempt_at, last_attempt_at,
+          last_error, last_error_class, pending_tx_hash)
+       VALUES ${tuples.join(", ")}
+       ON CONFLICT (policy_id) DO UPDATE SET
+         holder = EXCLUDED.holder,
+         attempt_count = settlement_attempts.attempt_count + 1,
+         last_attempt_at = EXCLUDED.last_attempt_at,
+         last_error = EXCLUDED.last_error,
+         last_error_class = EXCLUDED.last_error_class,
+         pending_tx_hash = EXCLUDED.pending_tx_hash,
+         error_history = settlement_attempts.error_history ||
+           jsonb_build_array(jsonb_build_object(
+             'at', EXCLUDED.last_attempt_at,
+             'error', EXCLUDED.last_error,
+             'class', EXCLUDED.last_error_class
+           )),
+         updated_at = now()`,
+      values
+    );
   }
 
   /**
