@@ -9,6 +9,8 @@ const LEASE_KEY = 'refract:oracle:leader';
 const FENCING_EPOCH_KEY = 'refract:oracle:leader:epoch';
 const DEFAULT_LEASE_TTL_MS = 15_000;
 const DEFAULT_LEASE_RENEW_MS = 5_000;
+/** Upper bound on the exponential backoff between polls (ms). */
+const MAX_BACKOFF_MS = 60_000;
 
 /** Extend the lease only if this instance still owns it. */
 const RENEW_SCRIPT = `
@@ -49,9 +51,11 @@ export class LeaderElector implements OnModuleInit, OnApplicationShutdown {
   private readonly enabled: boolean;
   private readonly leaseTtlMs: number;
   private readonly renewMs: number;
+  private readonly baseIntervalMs: number;
   private readonly client: Redis | null;
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
+  private backoffMs: number;
   private fencingToken: number | null = null;
   private leaseDeadline = 0;
 
