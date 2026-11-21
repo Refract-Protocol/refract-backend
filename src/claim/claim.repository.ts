@@ -192,6 +192,25 @@ export class ClaimRepository {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * Oldest-first batch of open claims, filtered and limited in SQL so callers
+   * never load more rows than the batch size.
+   */
+  async findOpenClaimsForReevaluation(limit: number): Promise<ClaimRecord[]> {
+    const bounded = Math.min(Math.max(Math.trunc(limit) || 1, 1), 5000);
+    const result = await this.db.query<ClaimRecord>(
+      `SELECT id, policy_id AS "policyId", coverage_type AS "coverageType", status,
+              payout_amount AS "payoutAmount", premium_amount AS "premiumAmount",
+              trigger_detected_at AS "triggerDetectedAt", processed_at AS "processedAt"
+       FROM claims
+       WHERE status = 'open'
+       ORDER BY trigger_detected_at ASC NULLS LAST, id ASC
+       LIMIT $1`,
+      [bounded],
+    );
+    return result.rows;
+  }
+
   async insertFromChain(input: OnChainClaimInput): Promise<void> {
     const coverageType = COVERAGE_TYPE_DB[input.coverageType];
     if (!coverageType) {
