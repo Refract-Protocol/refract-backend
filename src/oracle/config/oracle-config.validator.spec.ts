@@ -232,6 +232,22 @@ describe("assertOracleConfigAtStartup", () => {
     );
   });
 
+  it("names the offending feed id and failed field in the startup error", () => {
+    const bad = JSON.stringify(config({ quorum: { minSources: 9 } }));
+    expect(() => assertOracleConfigAtStartup({ ORACLE_FEEDS_JSON: bad })).toThrow(/feed "depeg"/);
+    expect(() => assertOracleConfigAtStartup({ ORACLE_FEEDS_JSON: bad })).toThrow(
+      /field QUORUM_EXCEEDS_INDEPENDENT_SOURCES/
+    );
+  });
+
+  it("warns and continues on invalid feeds in sandbox mode", () => {
+    const bad = JSON.stringify(config({ quorum: { minSources: 9 } }));
+    const logger = { log: jest.fn(), warn: jest.fn() };
+    const result = assertOracleConfigAtStartup({ ORACLE_FEEDS_JSON: bad, SANDBOX_MODE: "true" }, logger);
+    expect(result.report.errors).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("QUORUM_EXCEEDS_INDEPENDENT_SOURCES"));
+  });
+
   it("throws on malformed config", () => {
     expect(() => assertOracleConfigAtStartup({ ORACLE_FEEDS_JSON: "[]" })).toThrow(OracleConfigInvalidError);
   });

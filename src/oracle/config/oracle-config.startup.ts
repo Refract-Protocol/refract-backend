@@ -27,8 +27,9 @@ const truthy = (value: string | undefined): boolean =>
  * created, so a bad config stops the process before any poller, publisher,
  * or claim settler starts.
  *
- * Throws {@link OracleConfigInvalidError} on any error, or on any warning
- * when `ORACLE_CONFIG_STRICT=true`.
+ * Throws {@link OracleConfigInvalidError} on any error (unless
+ * `SANDBOX_MODE=true`, which warns and continues), or on any warning when
+ * `ORACLE_CONFIG_STRICT=true`.
  */
 export function assertOracleConfigAtStartup(
   env: NodeJS.ProcessEnv = process.env,
@@ -47,15 +48,23 @@ export function assertOracleConfigAtStartup(
   });
   const summary = formatReport(report, loaded.origin);
   const strict = truthy(env.ORACLE_CONFIG_STRICT);
+  const sandbox = truthy(env.SANDBOX_MODE);
 
-  if (report.errors.length > 0 || (strict && report.warnings.length > 0)) {
+  if (report.errors.length > 0 && !sandbox) {
     throw new OracleConfigInvalidError(
-      `Refusing to start: oracle feed config is invalid${strict && report.errors.length === 0 ? " (ORACLE_CONFIG_STRICT treats warnings as errors)" : ""}.\n${summary}`,
+      `Refusing to start: oracle feed config is invalid (feed "${report.errors[0].feed}", field ${report.errors[0].code}).\n${summary}`,
       report
     );
   }
 
-  if (report.warnings.length > 0) logger?.warn(summary);
+  if (strict && report.warnings.length > 0) {
+    throw new OracleConfigInvalidError(
+      `Refusing to start: oracle feed config is invalid (ORACLE_CONFIG_STRICT treats warnings as errors).\n${summary}`,
+      report
+    );
+  }
+
+  if (report.errors.length > 0 || report.warnings.length > 0) logger?.warn(summary);
   else logger?.log(summary);
 
   return { ...loaded, report };
