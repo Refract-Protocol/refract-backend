@@ -184,6 +184,12 @@ describe("validateOracleConfig", () => {
     expect(validateOracleConfig(BUILT_IN_ORACLE_CONFIG, { network: "mainnet" }).errors.length).toBeGreaterThan(0);
   });
 
+  it("rejects an unknown top-level key and names the key and feed id", () => {
+    const raw = { ...config(), unexpectedKey: true };
+    expect(() => parseOracleConfig(raw, "test")).toThrow(/unknown top-level key "unexpectedKey"/);
+    expect(() => parseOracleConfig(raw, "test")).toThrow(/depeg/);
+  });
+
   it("accepts the documented example config", () => {
     const example = parseOracleConfig(JSON.parse(readFileSync(EXAMPLE_PATH, "utf8")), "example");
     expect(validateOracleConfig(example, { network: "testnet" }).errors).toEqual([]);
