@@ -65,10 +65,10 @@ export function validateOracleConfig(
   const seenFeedIds = new Set<string>();
   feeds.forEach((feed, index) => {
     const label = feed.id || `feeds[${index}]`;
-    if (seenFeedIds.has(feed.id)) {
+    if (feed.id && seenFeedIds.has(feed.id)) {
       add("error", "DUPLICATE_FEED_ID", label, `Feed id "${feed.id}" is defined more than once`);
     }
-    seenFeedIds.add(feed.id);
+    if (feed.id) seenFeedIds.add(feed.id);
 
     if (!coverageTypes.has(feed.coverageType)) {
       add(
