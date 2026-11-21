@@ -4,6 +4,12 @@
  * Run after an intentional ABI / encoder change:
  *   npx ts-node scripts/regenerate-xdr-fixtures.ts
  *
+ * CI / pre-commit check (writes nothing, exits non-zero on drift):
+ *   npx ts-node scripts/regenerate-xdr-fixtures.ts --check
+ *
+ * --check compares the generated output against the fixtures on disk and names
+ * every file that would change. It never writes; a clean tree exits 0.
+ *
  * Do NOT regenerate to silence a failing test without first confirming whether
  * the contract ABI changed or the encoding regressed.
  */
@@ -380,12 +386,30 @@ const header =
   "// A mismatch means either the contract ABI changed or the encoding regressed —\n" +
   "// check both before regenerating.\n";
 
-function writeB64(name: string, scVal: xdr.ScVal, note?: string): void {
-  const body = header + (note ? `// ${note}\n` : "") + scVal.toXDR("base64") + "\n";
-  fs.writeFileSync(path.join(outDir, name), body);
+const checkMode = process.argv.includes("--check");
+const drifted: string[] = [];
+
+function emit(name: string, body: string): void {
+  const target = path.join(outDir, name);
+  if (checkMode) {
+    let current: string | null = null;
+    try {
+      current = fs.readFileSync(target, "utf8");
+    } catch {
+      current = null;
+    }
+    if (current !== body) drifted.push(name);
+    return;
+  }
+  fs.writeFileSync(target, body);
 }
 
-fs.mkdirSync(outDir, { recursive: true });
+function writeB64(name: string, scVal: xdr.ScVal, note?: string): void {
+  const body = header + (note ? `// ${note}\n` : "") + scVal.toXDR("base64") + "\n";
+  emit(name, body);
+}
+
+if (!checkMode) fs.mkdirSync(outDir, { recursive: true });
 
 const amounts = [
   10_000n * 10_000_000n,
@@ -430,8 +454,8 @@ const [, sharesSc] = encodeWithdrawCapitalArgs(kp.publicKey(), 5_000_000_000n);
 writeB64("provide-capital-provider.xdr.b64", providerSc);
 writeB64("provide-capital-amount.xdr.b64", amountSc);
 writeB64("withdraw-capital-shares.xdr.b64", sharesSc);
-fs.writeFileSync(
-  path.join(outDir, "provide-capital-meta.json"),
+emit(
+  "provide-capital-meta.json",
   JSON.stringify({ providerPubkey: kp.publicKey(), amount: "10000000000", shares: "5000000000" }, null, 2) + "\n"
 );
 
@@ -454,7 +478,18 @@ writeB64("oracle-update-reading-provenance.xdr.b64", provenance, "u128 provenanc
 void Address;
 void nativeToScVal;
 
-console.log(`Regenerated fixtures in ${outDir}`);
+if (checkMode) {
+  if (drifted.length > 0) {
+    console.error(`XDR fixtures are out of date (${drifted.length} file(s) would change):`);
+    for (const name of drifted) console.error(`  - ${path.join(outDir, name)}`);
+    console.error("Run `npx ts-node scripts/regenerate-xdr-fixtures.ts` to regenerate.");
+    process.exitCode = 1;
+  } else {
+    console.log(`XDR fixtures are up to date (${outDir})`);
+  }
+} else {
+  console.log(`Regenerated fixtures in ${outDir}`);
+}
 
 // ---------------------------------------------------------------------------
 // Reference data importer (issue #287)

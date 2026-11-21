@@ -339,7 +339,7 @@ export default (): AppConfig => {
     database: {
       url:
         env.DATABASE_URL ??
-        "postgres://refract:refract@localhost:5432/refract",
+        "postgres://refract:refract_dev@localhost:5432/refract",
       poolMax: env.DB_POOL_MAX ?? 10,
       poolMin: env.DB_POOL_MIN ?? 2,
       poolIdleTimeoutMs: env.DB_POOL_IDLE_TIMEOUT_MS ?? 30000,
