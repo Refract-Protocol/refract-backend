@@ -3,9 +3,28 @@ import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { resolveProcessRole } from './runtime/process-role';
 import { installGracefulShutdown } from './runtime/graceful-shutdown';
+import { isSandboxMode } from './config/configuration';
+
+/**
+ * Sandbox mode banner. Written through the Nest logger (stderr) rather than
+ * console.log so CLI scripts that emit JSON on stdout stay parseable.
+ */
+export function logSandboxBanner(logger: Logger): void {
+  if (!isSandboxMode()) {
+    return;
+  }
+  logger.warn(
+    '============================================================\n' +
+      '  SANDBOX MODE ACTIVE — in-memory data, no Postgres/Redis/RPC\n' +
+      '  Local contributor onboarding only. Never use in production.\n' +
+      '============================================================',
+  );
+}
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
+
+  logSandboxBanner(logger);
 
   // API entrypoint. With PROCESS_ROLE=api this process only serves reads and
   // the WebSocket feed; the payout pipeline runs in src/worker.ts. Unset
