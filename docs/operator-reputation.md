@@ -90,6 +90,15 @@ Each decision stamps the `weight` and `components` of every operator it used, al
 | `MAX_CONSENSUS_WEIGHT_BPS` | 2000 | Weight cap |
 | `MIN_QUORUM_OPERATORS` | 3 | Minimum eligible operators for `ok` |
 
+## Operator CLI exit codes
+
+`scripts/operator-cli.ts` exits with one of two codes:
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Success, including `--help` and `--dry-run` previews. |
+| `1` | Any failure: bad flags or arguments, missing `DATABASE_URL`, unknown command, missing `--yes` on a destructive command, or a database error. |
+
 ## Out of scope
 
 - Staking or slashing mechanics (external contract).
