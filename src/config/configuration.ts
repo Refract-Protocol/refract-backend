@@ -139,6 +139,8 @@ export interface AppConfig {
   oracleTrustMode: "strict" | "quorum" | "development";
   /** Pending off-chain policies that never get submitted expire after this many ms. */
   policyPendingTtlMs: number;
+  /** TTL (ms) for the cached rendered Prometheus payload served by /metrics. */
+  metricsCacheTtlMs: number;
 }
 
 const NETWORK_CONFIG: Record<
@@ -283,6 +285,7 @@ const appConfigSchema = z.object({
     catalog: z.object({ ttl: z.number().int(), limit: z.number().int() }),
   }),
   policyPendingTtlMs: z.number().int(),
+  metricsCacheTtlMs: z.number().int().min(0),
 });
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
@@ -473,6 +476,7 @@ export default (): AppConfig => {
     },
     oracleTrustMode: parseTrustMode(env.ORACLE_TRUST_MODE),
     policyPendingTtlMs: numberFromEnv("POLICY_PENDING_TTL_MS", 3_600_000),
+    metricsCacheTtlMs: numberFromEnv("METRICS_CACHE_TTL_MS", 5_000),
   };
 };
 
