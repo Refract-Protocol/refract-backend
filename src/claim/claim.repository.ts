@@ -122,6 +122,16 @@ export interface FeedRowCount {
   settledClaimCount: number;
 }
 
+export interface ClaimStatsAggregate {
+  processedClaims: number;
+  totalPayout: string;
+}
+
+interface ClaimStatsAggregateRow {
+  processed_claims: string | number | null;
+  total_payout: string | number | null;
+}
+
 interface FeedRowCountRow {
   feed_id: string;
   claim_count: string | number;
@@ -398,6 +408,24 @@ export class ClaimRepository {
       missingDecisionClaimIds,
       missingEvidenceClaimIds,
       ok: claimsMissingDecision === 0 && claimsMissingEvidence === 0,
+    };
+  }
+
+  /**
+   * Single-query aggregate for the public stats summary. Counts settled claims
+   * and sums their payouts in the database so the endpoint does not load rows.
+   */
+  async getClaimStats(): Promise<ClaimStatsAggregate> {
+    const rows = await this.db.query<ClaimStatsAggregateRow>(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'settled') AS processed_claims,
+         COALESCE(SUM(payout_amount) FILTER (WHERE status = 'settled'), 0) AS total_payout
+       FROM claims`,
+    );
+    const row = rows.rows[0];
+    return {
+      processedClaims: toNumber(row?.processed_claims),
+      totalPayout: toNumber(row?.total_payout).toString(),
     };
   }
 
