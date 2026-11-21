@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } fro
 import { ConfigService } from "@nestjs/config";
 import { Pool, PoolClient, PoolConfig, QueryResult, QueryResultRow } from "pg";
 import { AppConfig } from "../config/configuration";
+import { isSandboxMode } from "../config/configuration";
 
 /**
  * Thin wrapper around `pg.Pool` that adds:
@@ -31,6 +32,13 @@ export class DatabaseService implements OnApplicationBootstrap, OnApplicationShu
 
   async onApplicationBootstrap(): Promise<void> {
     const db = this.config.get("database", { infer: true });
+
+    // Sandbox mode has no Postgres: skip pool creation and the startup
+    // probe so `SANDBOX_MODE=true npm run dev` works on a fresh clone.
+    if (isSandboxMode(process.env) || !db.url) {
+      this.logger.warn("Sandbox mode — skipping Postgres pool (in-memory only)");
+      return;
+    }
 
     const poolConfig: PoolConfig = {
       connectionString: db.url,
