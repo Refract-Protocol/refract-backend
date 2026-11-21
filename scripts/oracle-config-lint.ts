@@ -4,6 +4,8 @@
  *   npx ts-node scripts/oracle-config-lint.ts --file config/oracle-feeds.json --network mainnet
  *   npx ts-node scripts/oracle-config-lint.ts --file config/oracle-feeds.json --strict
  *
+ * Example config to copy from: docs/oracle-feeds.example.json
+ *
  * In a built image, run the compiled entry point directly:
  *   node dist/oracle/config/oracle-config-lint.cli.js --help
  *

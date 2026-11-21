@@ -3,6 +3,12 @@ import { z } from "zod";
 import { CoverageTypeName } from "../../common/coverage-type.map";
 
 /**
+ * Schema and loader for the oracle feed / quorum config.
+ *
+ * See `docs/oracle-feeds.example.json` for a complete example config.
+ */
+
+/**
  * How a feed combines its sources into one reading.
  *
  *  - `single_source`   — one source is trusted outright. Only acceptable off
