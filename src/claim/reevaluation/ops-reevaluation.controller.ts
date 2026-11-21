@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpException, HttpStatus, Inject, Param, Post, 
 import type { Request } from "express";
 import { OpsAuthGuard } from "../../common/guards/ops-auth.guard";
 import { DEFAULT_APPLY_BATCH, FeedStillUntrustedError, ReevaluationService, ReevaluationSettlementExecutor } from "./reevaluation.service";
+import { paginateOffset } from "../../common/pagination";
 
 const MAX_PAGE = 500;
 
@@ -58,8 +59,9 @@ export class OpsReevaluationController {
     const offset = boundedInt(offsetRaw, 0, Number.MAX_SAFE_INTEGER);
     const limit = Math.max(1, boundedInt(limitRaw, 100, MAX_PAGE));
     const filtered = run.items.filter((i) => !onlyChanged || i.changed);
-    const items = filtered.slice(offset, offset + limit).map((i) => ({ ...i, ...run.itemStatus[i.recordId] }));
-    return { ...run, items, itemStatus: undefined, page: { offset, limit, total: filtered.length } };
+    const { items: pageItems, page: pageNumber } = paginateOffset(filtered, offset, limit);
+    const items = pageItems.map((i) => ({ ...i, ...run.itemStatus[i.recordId] }));
+    return { ...run, items, itemStatus: undefined, page: { page: pageNumber, offset, limit, total: filtered.length } };
   }
 
   /** Manually plan a run, e.g. with operator-supplied backfill readings for a gap in quorum data. */

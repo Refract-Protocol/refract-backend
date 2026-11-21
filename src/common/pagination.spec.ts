@@ -6,7 +6,7 @@ import { ClaimResult } from "../claim/claim-result";
 import { ClaimService } from "../claim/claim.service";
 import { PolicyController } from "../policy/policy.controller";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
-import { PageKey, decodeCursor, encodeCursor, paginateDesc } from "./pagination";
+import { PageKey, decodeCursor, encodeCursor, paginateDesc, paginateOffset } from "./pagination";
 
 interface Row {
   id: string;
