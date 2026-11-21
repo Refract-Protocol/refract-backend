@@ -6,6 +6,14 @@ import { canonicalizeSubmission, OBSERVATION_RULES } from "../src/oracle/submiss
  * Minimal client for POST /api/v1/oracle/submissions. Signs each reading with
  * the provider's Ed25519 private key over the canonical payload described in
  * docs/oracle-submissions.md. Requires Node 18+ for the global fetch.
+ *
+ * Sandbox mode: this client has no sandbox branch. It never reads
+ * SANDBOX_MODE and never substitutes a mock transport, so every method below
+ * behaves identically whether or not SANDBOX_MODE=true:
+ * - `sign()` is pure local crypto; it contacts no endpoint in any mode.
+ * - `submit()` always POSTs to `${baseUrl}/api/v1/oracle/submissions` with the
+ *   global fetch. In sandbox mode point `baseUrl` at a sandbox backend (or a
+ *   local stub) yourself; the client will not do it for you.
  */
 
 export interface SubmissionClientOptions {

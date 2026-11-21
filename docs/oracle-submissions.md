@@ -199,3 +199,25 @@ await publishUsdcPrice(0.9998);
 `unit` and `observed_at` are filled in automatically. Pass `observedAt` and
 `nonce` to control them explicitly. Use `client.sign(...)` to build the signed
 body without sending it.
+
+## Sandbox mode (`SANDBOX_MODE=true`)
+
+The SDK has **no sandbox branch**. `sdk/submission-client.ts` never reads
+`SANDBOX_MODE` and never swaps in a mock transport, so its behaviour is the
+same in every mode. Verified against the code:
+
+| Public method | Sandbox behaviour | Real endpoint? |
+|---------------|-------------------|----------------|
+| `constructor(options)` | Parses `privateKeyPem` with `createPrivateKey`. No I/O. | No |
+| `sign(reading)` | Builds the canonical payload and signs it locally with Ed25519. No I/O. | No |
+| `submit(reading)` | Calls `sign()` then `fetch(`${baseUrl}/api/v1/oracle/submissions`)`. | Yes — always |
+
+Consequences:
+
+- `submit()` always performs a real HTTP request to whatever `baseUrl` you
+  configured. In sandbox mode, point `baseUrl` at a sandbox backend or a local
+  stub yourself; the client will not redirect or mock it.
+- `SANDBOX_MODE` is a backend-side flag (it makes the API run with in-memory
+  backing services and is refused when `NODE_ENV=production`). It does not
+  change the SDK's wire behaviour.
+- If you need offline submissions, use `sign()` and deliver the body yourself.

@@ -176,14 +176,14 @@ export class PoolEventIngestionService implements OnModuleDestroy {
       const checkpoint = cursorResult.rows[0];
       if (!checkpoint) throw new Error("Failed to load the pool event ingestion cursor");
 
-      const response = await this.rpcClient.call((server) =>
-        server.getEvents({
-          filters: [{ type: "contract", contractIds: [this.poolContractId] }],
-          limit: EVENT_PAGE_SIZE,
-          ...(checkpoint.cursor
-            ? { cursor: checkpoint.cursor }
-            : { startLedger: Number(checkpoint.next_start_ledger) }),
-        }),
+      const range = this.computeEventRange(checkpoint);
+      const response = await this.rpcClient.call(
+        (server) =>
+          server.getEvents({
+            filters: [{ type: "contract", contractIds: [this.poolContractId] }],
+            limit: EVENT_PAGE_SIZE,
+            ...range,
+          }),
         "events"
       );
 
@@ -214,6 +214,14 @@ export class PoolEventIngestionService implements OnModuleDestroy {
     } finally {
       client.release();
     }
+  }
+
+  private computeEventRange(checkpoint: { cursor: string | null; next_start_ledger: string }): {
+    cursor: string;
+  } | { startLedger: number } {
+    return checkpoint.cursor
+      ? { cursor: checkpoint.cursor }
+      : { startLedger: Number(checkpoint.next_start_ledger) };
   }
 
   private async insertEvent(client: PoolClient, event: NormalizedPoolEvent): Promise<void> {

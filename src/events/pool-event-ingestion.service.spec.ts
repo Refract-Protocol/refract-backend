@@ -141,6 +141,46 @@ describe("PoolEventIngestionService", () => {
     expect(databaseClient.release).toHaveBeenCalledTimes(1);
   });
 
+  it("reads the ingestion cursor only once per batch", async () => {
+    const holder = Keypair.random().publicKey();
+    const event = contractEvent("PROVIDE", holder, [
+      nativeToScVal(100_000_000n, { type: "i128" }),
+      nativeToScVal(90_000_000n, { type: "i128" }),
+    ]);
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    const databaseClient = {
+      query: jest.fn(async (text: string, values?: unknown[]) => {
+        queries.push({ text, values });
+        if (text.includes("SELECT cursor")) {
+          return { rows: [{ cursor: "cursor-74-event-9", next_start_ledger: "50" }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 1 };
+      }),
+      release: jest.fn(),
+    };
+    const databasePool = {
+      connect: jest.fn().mockResolvedValue(databaseClient),
+      end: jest.fn(),
+    };
+    const service = new PoolEventIngestionService(buildConfig());
+    Object.defineProperty(service, "pool", { value: databasePool });
+    const getEvents = jest.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValue({
+      latestLedger: 80,
+      events: [event],
+    });
+
+    await service.pollPoolEvents();
+
+    expect(queries.filter(({ text }) => text.includes("SELECT cursor"))).toHaveLength(1);
+    expect(getEvents).toHaveBeenCalledTimes(1);
+    expect(getEvents.mock.calls[0][0]).toMatchObject({ cursor: "cursor-74-event-9" });
+    expect(queries.find(({ text }) => text.includes("UPDATE soroban_event_cursors"))?.values).toEqual([
+      POOL_CONTRACT_ID,
+      null,
+      81,
+    ]);
+  });
+
   it("rolls back the cursor when the RPC request fails", async () => {
     const queries: string[] = [];
     const databaseClient = {
