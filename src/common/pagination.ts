@@ -86,3 +86,84 @@ export function paginateDesc<T>(
     nextCursor: hasMore ? encodeCursor(keyOf(items[items.length - 1])) : null,
   };
 }
+
+/** `?offset=&limit=` accepted by offset-paginated list endpoints. */
+export interface OffsetPageQuery {
+  offset?: number;
+  limit?: number;
+}
+
+/** Page metadata returned alongside the items of an offset-paginated list. */
+export interface OffsetPageMeta {
+  offset: number;
+  limit: number;
+  /**
+   * 0-based page index derived from the offset: `Math.floor(offset / limit)`.
+   * Never mix this with page-number semantics — the rows served are always
+   * `[offset, offset + limit)`, so an unaligned offset (15 with limit 10)
+   * still lands on page 1 (0-based) while serving rows 15..24.
+   */
+  page: number;
+  /** 1-based page number, for display and next/prev links. */
+  pageNumber: number;
+  total: number;
+  totalPages: number;
+  hasMore: boolean;
+  hasPrev: boolean;
+  /** Offset to request the next page, or null on the last page. */
+  nextOffset: number | null;
+  /** Offset to request the previous page, or null on the first page. */
+  prevOffset: number | null;
+}
+
+export interface OffsetPage<T> {
+  items: T[];
+  page: OffsetPageMeta;
+}
+
+function assertPageParam(name: "offset" | "limit", value: number, min: number): void {
+  if (!Number.isInteger(value) || value < min) {
+    throw new BadRequestException({ error: `Invalid pagination ${name}: must be an integer >= ${min}` });
+  }
+}
+
+/**
+ * Offset-paginates `rows` in their given order. The page index is derived
+ * with `Math.floor(offset / limit)` and the rows are sliced from the raw
+ * `offset` — the two must never be conflated (e.g. by feeding a page number
+ * back in as an offset), or unaligned offsets skip/duplicate rows.
+ */
+export function paginateOffset<T>(
+  rows: readonly T[],
+  query: OffsetPageQuery = {},
+  defaultLimit: number = 20,
+  maxLimit: number = MAX_PAGE_LIMIT,
+): OffsetPage<T> {
+  const offset = query.offset ?? 0;
+  const rawLimit = query.limit ?? defaultLimit;
+  assertPageParam("offset", offset, 0);
+  assertPageParam("limit", rawLimit, 1);
+  const limit = Math.min(rawLimit, Math.max(1, maxLimit));
+
+  const total = rows.length;
+  const page = Math.floor(offset / limit);
+  const items = rows.slice(offset, offset + limit);
+  const hasMore = offset + limit < total;
+  const hasPrev = offset > 0;
+
+  return {
+    items,
+    page: {
+      offset,
+      limit,
+      page,
+      pageNumber: page + 1,
+      total,
+      totalPages: Math.ceil(total / limit),
+      hasMore,
+      hasPrev,
+      nextOffset: hasMore ? offset + limit : null,
+      prevOffset: hasPrev ? Math.max(0, offset - limit) : null,
+    },
+  };
+}

@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpException, HttpStatus, Inject, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
 import { OpsAuthGuard } from "../../common/guards/ops-auth.guard";
+import { paginateOffset } from "../../common/pagination";
 import { DEFAULT_APPLY_BATCH, FeedStillUntrustedError, ReevaluationService, ReevaluationSettlementExecutor } from "./reevaluation.service";
 
 const MAX_PAGE = 500;
@@ -56,10 +57,14 @@ export class OpsReevaluationController {
     if (!run) throw new HttpException({ error: "Unknown run" }, HttpStatus.NOT_FOUND);
     const onlyChanged = changedOnly === "true" || changedOnly === "1";
     const offset = boundedInt(offsetRaw, 0, Number.MAX_SAFE_INTEGER);
-    const limit = Math.max(1, boundedInt(limitRaw, 100, MAX_PAGE));
+    const limit = boundedInt(limitRaw, 100, MAX_PAGE);
     const filtered = run.items.filter((i) => !onlyChanged || i.changed);
-    const items = filtered.slice(offset, offset + limit).map((i) => ({ ...i, ...run.itemStatus[i.recordId] }));
-    return { ...run, items, itemStatus: undefined, page: { offset, limit, total: filtered.length } };
+    // Single source of truth for offset/limit math: rows are sliced from the
+    // raw offset and the page index is Math.floor(offset / limit), so unaligned
+    // offsets (e.g. offset=15&limit=10) can never skip or duplicate rows.
+    const page = paginateOffset(filtered, { offset, limit }, 100, MAX_PAGE);
+    const items = page.items.map((i) => ({ ...i, ...run.itemStatus[i.recordId] }));
+    return { ...run, items, itemStatus: undefined, page: page.page };
   }
 
   /** Manually plan a run, e.g. with operator-supplied backfill readings for a gap in quorum data. */
