@@ -1,5 +1,10 @@
 import { LoadedOracleConfig, loadOracleConfig } from "./oracle-feed-config";
-import { OracleConfigReport, formatReport, validateOracleConfig } from "./oracle-config.validator";
+import {
+  OracleConfigReport,
+  formatReport,
+  primeOracleConfigCache,
+  validateOracleConfig,
+} from "./oracle-config.validator";
 
 export class OracleConfigInvalidError extends Error {
   constructor(
@@ -36,7 +41,7 @@ export function assertOracleConfigAtStartup(
 ): ValidatedOracleConfig {
   let loaded: LoadedOracleConfig;
   try {
-    loaded = loadOracleConfig(env);
+    loaded = primeOracleConfigCache(loadOracleConfig(env));
   } catch (error) {
     throw new OracleConfigInvalidError(error instanceof Error ? error.message : String(error));
   }
