@@ -2,7 +2,7 @@ import { AllEndpointsFailedError, ProviderEndpointSet, redactUrl } from "./provi
 import { loadEndpointDeclarations, loadEndpointOptions, parseEndpointList } from "./provider-endpoints.config";
 import { ProviderEndpointRegistry } from "./provider-endpoint.registry";
 
-const OPTIONS = { failureThreshold: 2, cooldownMs: 1_000, maxCooldownMs: 4_000, slowMs: 500, attemptTimeoutMs: 50 };
+const OPTIONS = { failureThreshold: 2, successThreshold: 1, cooldownMs: 1_000, maxCooldownMs: 4_000, slowMs: 500, attemptTimeoutMs: 50 };
 const ENDPOINTS = [
   { label: "primary", url: "https://primary.example" },
   { label: "mirror", url: "https://mirror.example" },

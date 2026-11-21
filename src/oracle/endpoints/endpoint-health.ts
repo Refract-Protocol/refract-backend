@@ -1,6 +1,8 @@
 export interface EndpointHealthOptions {
   /** Consecutive failures that take an endpoint out of rotation. */
   failureThreshold: number;
+  /** Consecutive successes required before an endpoint counts as healthy again. */
+  successThreshold: number;
   /** First cooldown once out of rotation. Doubles on each trip up to maxCooldownMs. */
   cooldownMs: number;
   maxCooldownMs: number;
@@ -27,6 +29,7 @@ const EWMA_ALPHA = 0.3;
  */
 export class EndpointHealth {
   private consecutiveFailures = 0;
+  private consecutiveSuccesses = 0;
   private trips = 0;
   private openUntil = 0;
   private latencyEwmaMs: number | null = null;
@@ -40,6 +43,7 @@ export class EndpointHealth {
 
   recordSuccess(latencyMs: number, now: number): void {
     this.successes++;
+    this.consecutiveSuccesses++;
     this.consecutiveFailures = 0;
     this.trips = 0;
     this.openUntil = 0;
@@ -50,6 +54,7 @@ export class EndpointHealth {
 
   recordFailure(error: string, now: number): void {
     this.failures++;
+    this.consecutiveSuccesses = 0;
     this.consecutiveFailures++;
     this.lastError = error;
     this.lastFailureAt = now;
@@ -67,6 +72,7 @@ export class EndpointHealth {
     if (this.consecutiveFailures > 0 && recent(this.lastFailureAt)) return "degraded";
     const slow = this.latencyEwmaMs !== null && this.latencyEwmaMs > this.options.slowMs;
     if (slow && recent(this.lastSuccessAt)) return "degraded";
+    if (this.consecutiveSuccesses < this.options.successThreshold) return "degraded";
     return "healthy";
   }
 
@@ -79,6 +85,7 @@ export class EndpointHealth {
     return {
       status: this.status(now),
       consecutiveFailures: this.consecutiveFailures,
+      consecutiveSuccesses: this.consecutiveSuccesses,
       latencyEwmaMs: this.latencyEwmaMs === null ? null : Math.round(this.latencyEwmaMs),
       successes: this.successes,
       failures: this.failures,

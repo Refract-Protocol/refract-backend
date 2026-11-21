@@ -77,6 +77,7 @@ export function loadEndpointDeclarations(
 export function loadEndpointOptions(env: NodeJS.ProcessEnv = process.env): ProviderEndpointOptions {
   return {
     failureThreshold: num(env, "ORACLE_ENDPOINT_FAILURE_THRESHOLD", 3),
+    successThreshold: num(env, "ORACLE_ENDPOINT_SUCCESS_THRESHOLD", 2),
     cooldownMs: num(env, "ORACLE_ENDPOINT_COOLDOWN_MS", 30_000),
     maxCooldownMs: num(env, "ORACLE_ENDPOINT_MAX_COOLDOWN_MS", 300_000),
     slowMs: num(env, "ORACLE_ENDPOINT_SLOW_MS", 2_000),
