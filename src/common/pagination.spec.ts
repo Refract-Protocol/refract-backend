@@ -135,7 +135,18 @@ describe("paginated list endpoints", () => {
         { provide: PolicyService, useValue: { findByHolder: () => policies } },
         {
           provide: ClaimService,
-          useValue: { getHistoryForHolder: () => claims, getRecentSettlements: () => claims },
+          useValue: {
+            getHistoryForHolder: () => claims,
+            getRecentSettlements: () => claims,
+            getStats: () => ({
+              activePolicies: 3,
+              processedClaims: 12,
+              totalPayout: "12",
+              settlementConfigured: true,
+              deadLetterClaims: 1,
+              settlementRetries: 2,
+            }),
+          },
         },
       ],
     }).compile();

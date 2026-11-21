@@ -1,4 +1,5 @@
 import { Controller, Get, Param, Query } from "@nestjs/common";
+import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { plainToInstance } from "class-transformer";
 import { PageKey, PageQueryDto, paginateDesc } from "../common/pagination";
 import { ClaimResult } from "./claim-result";
@@ -20,12 +21,15 @@ const claimKey = (c: ClaimResult): PageKey => ({ at: c.processedAt, id: c.policy
  * ops/observability, so it's kept as a small honest addition rather than
  * a pure like-for-like port.
  */
+@ApiTags("claims")
 @Controller("api/v1/claims")
 export class ClaimController {
   constructor(private readonly claimService: ClaimService) {}
 
   @Get("stats")
-  getStats() {
+  @ApiOperation({ summary: "Aggregate claim statistics" })
+  @ApiOkResponse({ description: "Aggregate claim statistics", type: ClaimStatsResponseDto })
+  getStats(): ClaimStatsResponseDto {
     return plainToInstance(ClaimStatsResponseDto, this.claimService.getStats(), {
       excludeExtraneousValues: true,
     });
@@ -37,7 +41,9 @@ export class ClaimController {
    * route above. Authentication for this route is handled separately.
    */
   @Get("stats/ops")
-  getOpsStats() {
+  @ApiOperation({ summary: "Ops-only claim statistics" })
+  @ApiOkResponse({ description: "Ops-only claim statistics", type: ClaimStatsOpsResponseDto })
+  getOpsStats(): ClaimStatsOpsResponseDto {
     return plainToInstance(
       ClaimStatsOpsResponseDto,
       this.claimService.getStats(),
