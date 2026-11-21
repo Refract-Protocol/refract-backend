@@ -13,7 +13,8 @@ ORACLE_FEEDS_JSON, or falls back to the built-in feeds.
   --strict          Treat warnings as errors
   --json            Print the report as JSON
 
-Exit codes: 0 valid, 1 invalid, 2 usage error or unreadable/malformed config.`;
+Exit codes: 0 clean, 1 findings (errors always; warnings only with --strict),
+2 usage error or unreadable/malformed config.`;
 
 export interface LintIo {
   out(line: string): void;
@@ -79,10 +80,8 @@ export function runOracleConfigLint(
 }
 
 if (require.main === module) {
-  process.exit(
-    runOracleConfigLint(process.argv.slice(2), {
-      out: (line) => process.stdout.write(`${line}\n`),
-      err: (line) => process.stderr.write(`${line}\n`),
-    })
-  );
+  process.exitCode = runOracleConfigLint(process.argv.slice(2), {
+    out: (line) => process.stdout.write(`${line}\n`),
+    err: (line) => process.stderr.write(`${line}\n`),
+  });
 }
