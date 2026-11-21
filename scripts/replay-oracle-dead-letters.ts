@@ -36,9 +36,21 @@ async function main(): Promise<void> {
       case "replay": {
         const id = flag("--id");
         if (id) {
-          console.log(await deadLetters.replay(id));
+          const outcome = await deadLetters.replay(id);
+          console.log(outcome);
+          const succeeded = outcome === "inserted" || outcome === "duplicate";
+          console.log(`Replay summary: succeeded=${succeeded ? 1 : 0} failed=${succeeded ? 0 : 1}`);
+          if (!succeeded) {
+            process.exitCode = 1;
+          }
         } else {
-          console.log(await deadLetters.replayPending(parseInt(flag("--limit") ?? "100", 10)));
+          const counts = await deadLetters.replayPending(parseInt(flag("--limit") ?? "100", 10));
+          console.log(counts);
+          const succeeded = counts.inserted + counts.duplicate;
+          console.log(`Replay summary: succeeded=${succeeded} failed=${counts.failed}`);
+          if (counts.failed > 0) {
+            process.exitCode = 1;
+          }
         }
         break;
       }
