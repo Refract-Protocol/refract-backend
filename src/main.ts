@@ -3,6 +3,7 @@ import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { resolveProcessRole } from './runtime/process-role';
 import { installGracefulShutdown } from './runtime/graceful-shutdown';
+import { closeHttpAgents } from './oracle/adapters/http-json';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -35,7 +36,11 @@ async function bootstrap(): Promise<void> {
   // app.close() stops accepting new connections, drains in-flight HTTP
   // requests, and invokes onApplicationShutdown on all providers so
   // schedulers finish their current run and pools close cleanly.
-  installGracefulShutdown(() => app.close(), logger);
+  installGracefulShutdown(async () => {
+    await app.close();
+    // Release the shared oracle keep-alive sockets.
+    closeHttpAgents();
+  }, logger);
 }
 
 bootstrap().catch((err) => {

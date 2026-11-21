@@ -4,6 +4,7 @@ import { resolveProcessRole } from "./runtime/process-role";
 import { installGracefulShutdown } from "./runtime/graceful-shutdown";
 import { PipelineHeartbeat } from "./runtime/pipeline-heartbeat";
 import { startWorkerHealthServer } from "./worker/worker-health.server";
+import { closeHttpAgents } from "./oracle/adapters/http-json";
 
 /**
  * Worker entrypoint: runs the payout pipeline (oracle polling, consensus,
@@ -52,6 +53,8 @@ async function bootstrap(): Promise<void> {
     // Stops schedulers (ClaimScheduler waits for an in-flight settlement),
     // closes the reading bus and connection pools.
     await app.close();
+    // Release the shared oracle keep-alive sockets.
+    closeHttpAgents();
   }, logger);
 }
 
