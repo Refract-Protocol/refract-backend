@@ -1,8 +1,49 @@
 import { createHash } from "crypto";
 import axios, { AxiosInstance } from "axios";
+import { Agent as HttpAgent } from "http";
+import { Agent as HttpsAgent } from "https";
 import { ObservationEvidence } from "./source-adapter";
 
 const EXCERPT_CHARS = 512;
+
+/**
+ * Process-wide keep-alive agents so consecutive oracle fetches reuse the same
+ * socket instead of paying a TLS handshake per request. Created lazily on first
+ * use and closed by `closeHttpAgents()` on shutdown.
+ */
+let httpAgent: HttpAgent | undefined;
+let httpsAgent: HttpsAgent | undefined;
+
+function getHttpAgent(): HttpAgent {
+  if (!httpAgent) {
+    httpAgent = new HttpAgent({ keepAlive: true });
+  }
+  return httpAgent;
+}
+
+function getHttpsAgent(): HttpsAgent {
+  if (!httpsAgent) {
+    httpsAgent = new HttpsAgent({ keepAlive: true });
+  }
+  return httpsAgent;
+}
+
+/** Shared axios client bound to the keep-alive agents. */
+const sharedHttp: AxiosInstance = axios.create({
+  httpAgent: getHttpAgent(),
+  httpsAgent: getHttpsAgent(),
+});
+
+/**
+ * Close the shared keep-alive agents. Safe to call more than once; a later
+ * request recreates them.
+ */
+export function closeHttpAgents(): void {
+  httpAgent?.destroy();
+  httpsAgent?.destroy();
+  httpAgent = undefined;
+  httpsAgent = undefined;
+}
 
 export interface JsonResponse<T> {
   data: T;
@@ -17,7 +58,7 @@ export async function getJsonWithEvidence<T>(
   url: string,
   params: Record<string, string | number | boolean> | undefined,
   timeoutMs: number,
-  http: AxiosInstance = axios,
+  http: AxiosInstance = sharedHttp,
 ): Promise<JsonResponse<T>> {
   const res = await http.get<string>(url, {
     params,

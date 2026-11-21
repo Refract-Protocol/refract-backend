@@ -1,10 +1,12 @@
 import { CoverageTypeName } from "../../common/coverage-type.map";
 import {
   KNOWN_ADAPTERS,
+  LoadedOracleConfig,
   OracleConfigFile,
   ResolvedFeed,
   TRUST_MODES,
   TrustMode,
+  loadOracleConfig,
   resolveFeeds,
 } from "./oracle-feed-config";
 
@@ -33,6 +35,37 @@ export interface ValidationContext {
 
 /** Below this, upstream API rate limits are at risk and scheduler jitter dominates. */
 export const MIN_POLL_INTERVAL_MS = 1_000;
+
+/**
+ * Process-wide cache of the parsed feed config.
+ *
+ * The config file is read and parsed once — at startup, by
+ * `assertOracleConfigAtStartup` — and every later caller (request handlers
+ * included) reuses the parsed result, so serving a request never touches the
+ * filesystem. A config change therefore requires a process restart.
+ */
+let cachedConfig: LoadedOracleConfig | undefined;
+
+/** Stores the parsed config for the lifetime of the process. */
+export function primeOracleConfigCache(loaded: LoadedOracleConfig): LoadedOracleConfig {
+  cachedConfig = loaded;
+  return loaded;
+}
+
+/** Drops the cached config; the next accessor call re-reads the source. */
+export function resetOracleConfigCache(): void {
+  cachedConfig = undefined;
+}
+
+/**
+ * Returns the parsed feed config, loading it on first use only. Callers on the
+ * request path get the cached value and never read the filesystem. A config
+ * change requires a restart.
+ */
+export function getOracleConfig(env: NodeJS.ProcessEnv = process.env): LoadedOracleConfig {
+  if (!cachedConfig) cachedConfig = loadOracleConfig(env);
+  return cachedConfig;
+}
 
 /** Distinct operators among enabled sources; same-operator sources are one source for quorum. */
 export function independentSourceCount(feed: ResolvedFeed): number {
