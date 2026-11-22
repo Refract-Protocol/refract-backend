@@ -154,7 +154,9 @@ export class LeaderElector implements OnModuleInit, OnApplicationShutdown {
     this.fencingToken = await this.redis().incr(FENCING_EPOCH_KEY);
     this.leaseDeadline = startedAt + this.leaseTtlMs;
     this.metrics.setOracleLeader(true);
-    this.logger.log(`Acquired oracle leadership (fencing token ${this.fencingToken})`);
+    this.logger.log(
+      `Acquired oracle leadership (fencing token ${this.fencingToken}, instance=${this.instanceId})`,
+    );
   }
 
   private async renew(): Promise<void> {
@@ -173,7 +175,9 @@ export class LeaderElector implements OnModuleInit, OnApplicationShutdown {
     }
     try {
       await this.client.eval(RELEASE_SCRIPT, 1, LEASE_KEY, this.instanceId);
-      this.logger.log(`Released oracle leadership on shutdown${signal ? ` (signal: ${signal})` : ''}`);
+      this.logger.log(
+        `Released oracle leadership on shutdown${signal ? ` (signal: ${signal})` : ''} (instance=${this.instanceId})`,
+      );
     } catch (error) {
       this.logger.error(`Failed to release oracle lease: ${(error as Error).message}`);
     } finally {
@@ -195,7 +199,9 @@ export class LeaderElector implements OnModuleInit, OnApplicationShutdown {
     this.fencingToken = null;
     this.leaseDeadline = 0;
     this.metrics.setOracleLeader(false);
-    this.logger.warn(`Stepped down from oracle leadership: ${reason}. Publishing is suspended.`);
+    this.logger.warn(
+      `Lost oracle leadership: ${reason}. Publishing is suspended (instance=${this.instanceId}).`,
+    );
   }
 
   private redis(): Redis {

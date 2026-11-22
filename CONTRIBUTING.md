@@ -47,7 +47,14 @@ services.
 
 1. Fork the repository and create a feature branch.
 2. Make your changes, keeping them focused and scoped.
-3. Run the test suite before opening a pull request.
+3. Run the test suite before opening a pull request:
+
+   ```bash
+   npm run test:unit
+   ```
+
+   `npm test` runs `test:unit` followed by `test:contracts`; `npm run test:property`
+   runs only the property-based suites.
 4. Open a pull request describing what you changed and why.
 
 ## Consumer-driven contract tests

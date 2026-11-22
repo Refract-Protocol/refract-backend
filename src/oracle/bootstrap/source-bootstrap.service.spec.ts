@@ -342,4 +342,49 @@ describe("bootstrap CLI", () => {
     expect(lines.some((l) => l.startsWith("f/a: warm"))).toBe(true);
     expect(lines.some((l) => l.startsWith("f/b: insufficient_history"))).toBe(true);
   });
+
+  it("prints a single-line error naming the source and exits non-zero when the source throws", async () => {
+    const lines: string[] = [];
+    const io = { out: (l: string) => lines.push(l), err: (l: string) => lines.push(l) };
+    const providers = new HistoryProviderRegistry([
+      new FakeProvider("fake", { a: new Error("upstream unreachable") }),
+    ]);
+    const store = new InMemoryBootstrapStore();
+    store.saveRecord = async () => {
+      throw new Error("upstream unreachable");
+    };
+
+    const code = await runBootstrapCli(["--feed", "f", "--source", "a:fake", "--dry-run"], io, {}, {
+      providers,
+      store,
+    });
+
+    expect(code).not.toBe(0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("a");
+    expect(lines[0]).toContain("upstream unreachable");
+    expect(lines[0]).not.toContain("\n");
+  });
+
+  it("restores the stack trace with --verbose", async () => {
+    const lines: string[] = [];
+    const io = { out: (l: string) => lines.push(l), err: (l: string) => lines.push(l) };
+    const providers = new HistoryProviderRegistry([new FakeProvider("fake", {})]);
+    const store = new InMemoryBootstrapStore();
+    store.saveRecord = async () => {
+      throw new Error("upstream unreachable");
+    };
+
+    const code = await runBootstrapCli(
+      ["--feed", "f", "--source", "a:fake", "--dry-run", "--verbose"],
+      io,
+      {},
+      { providers, store }
+    );
+
+    expect(code).not.toBe(0);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.some((l) => l.includes("upstream unreachable"))).toBe(true);
+    expect(lines.some((l) => /^\s+at /.test(l))).toBe(true);
+  });
 });
