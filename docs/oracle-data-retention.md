@@ -1,5 +1,7 @@
 # Oracle data retention, archival, and restore
 
+Old raw oracle readings are archived to files, not deleted. A partition leaves the live database only after a verified archive of it exists.
+
 ## Retention matrix
 
 | Data class | Storage | Retention window | Dropped by retention job? | Notes |
@@ -10,16 +12,31 @@
 | Evidence ledger | Not present in this repo yet | n/a | n/a | Append-only. The retention job must never update or delete it |
 | Idempotency keys (`idempotency_keys`) | Plain table | 24 hours | Yes (`purgeStaleIdempotencyKeys`) | Clients are not expected to retry a write after 24 hours |
 
+## Retention window
+
+- **Setting:** `DB_ORACLE_RETENTION_MONTHS`, default `6`. It is read directly from `process.env` in two places that must agree: `OracleRetentionService` (`src/oracle/oracle-retention.service.ts`) and `scripts/archive-oracle-partitions.ts`. It is not in `src/config/env.schema.ts`, so it is not validated.
+- **Meaning:** a partition is eligible when its month is strictly older than the current UTC month minus the window.
+- **Failure mode:** a non-numeric value makes the cutoff `NaN`. The archive script then archives nothing and exits 0, and the drop job drops nothing. Nothing is lost, but retention silently stops. Check the value after any deploy.
+- `--cutoff YYYY-MM` on the archive script overrides the window for that run only. The drop job has no override.
+
 ## Lifecycle
 
-1. **Partition maintenance** (`OracleRetentionService.ensureUpcomingPartitions`, daily 01:00 UTC) creates the current and next two monthly partitions.
-2. **Archive** (`scripts/archive-oracle-partitions.ts`, run by an operator or scheduler) exports every closed partition older than the cutoff. It writes a gzip'd JSONL artifact, re-reads it, and records a `verified` row in `oracle_partition_archives`.
-3. **Drop** (`OracleRetentionService.pruneOldPartitions`, daily 02:00 UTC) drops a partition only if:
+1. **Partition maintenance** (`OracleRetentionService.ensureUpcomingPartitions`, `@Cron("0 1 * * *")`, also run at app bootstrap) creates the current and next two monthly partitions.
+2. **Archive** (`scripts/archive-oracle-partitions.ts`, run by an operator or scheduler; nothing in this repo schedules it) exports every closed partition older than the cutoff to `<out>/oracle_events_YYYY_MM.jsonl.gz`. It re-reads the file, checks it, and then writes a `verified` row to `oracle_partition_archives`. The row holds the absolute path, SHA-256, and row count.
+3. **Drop** (`OracleRetentionService.pruneOldPartitions`, `@Cron("0 2 * * *")`) runs `DROP TABLE` on a partition only if all three hold:
    - it is older than the retention window,
    - it has a `verified` row in `oracle_partition_archives`, and
    - it has no open pin in `oracle_partition_pins` (`released_at IS NULL`).
 
-   Any other partition is logged and kept. Nothing is dropped without an archive.
+   Any other partition is logged and kept. Nothing is dropped without an archive. The drop job never deletes an archive file or a manifest row.
+
+**Schedule time zone:** the `@Cron` decorators set no `timeZone`, so the jobs run at the server's local time, not UTC. They are UTC only if the host clock is UTC. The drop job's month cutoff also uses local time, while the archive script uses UTC. A mismatch can only delay drops, because the drop job still requires a verified archive.
+
+## Where archives go and how long they are kept
+
+- **Location:** the directory passed to `--out`. There is no default and no storage config in this repo. The manifest records the absolute path, but `--verify` checks whatever file you pass it and does not compare the path.
+- **Not deleted by this repo:** no job here deletes an archive file or an `oracle_partition_archives` row.
+- **Duration:** not defined here. There is no expiry in code, so how long archives are kept is an operator policy. Once a partition is dropped, its archive is the only copy of those readings. Keep archives for at least as long as the disputes they support, and back them up.
 
 ### Dispute pins
 
@@ -48,11 +65,14 @@ When a decision is stored, it must be reproducible after raw readings expire. Ch
 
 - File: `<out>/oracle_events_YYYY_MM.jsonl.gz`
 - One JSON object per line, with keys `id, coverage_type, value, source, severity, recorded_at`, ordered by `(recorded_at, id)`.
+- **Only those six columns are exported.** Columns added by later migrations are not in the artifact: `seq`, `kind`, `payload`, `ingested_at`, `observed_at`, `payload_digest`, `usable`, `rejection_reason`, and `replayed_from_dead_letter_id`. The artifact is a reading export, not a full row dump.
 - Timestamps are rendered in UTC. The gzip header has no timestamp, so the same partition exports to the same bytes.
-- Integrity: SHA-256 of the artifact file, row count, and parse check of every line. Both values are stored in `oracle_partition_archives`.
+- Integrity: SHA-256 of the artifact file, row count, and a parse check on every line, which only confirms each line is JSON with `id` and `recorded_at`. Both values are stored in `oracle_partition_archives`.
 - Signing is not implemented. If required, sign the `sha256` column with an operator key and store the signature alongside the manifest.
 
 ## Running the archive job
+
+`DATABASE_URL` is required for every mode, including `--verify`, because the script reads the manifest from that database.
 
 Dry run (no files written, no manifest rows):
 
@@ -82,21 +102,22 @@ DATABASE_URL=postgresql://... npx ts-node scripts/archive-oracle-partitions.ts -
 
 ## Restore runbook
 
-1. Confirm the artifact against its manifest. This checks the checksum and row count:
+Restores go to a scratch database. Production `oracle_events` is not changed by this procedure.
+
+1. Confirm the artifact against its manifest row. This checks the checksum and row count. Run it against the database that holds the manifest, which is production or a copy of it:
 
    ```sh
-   npx ts-node scripts/archive-oracle-partitions.ts --verify /var/archives/oracle/oracle_events_2026_01.jsonl.gz
+   DATABASE_URL=postgresql://... npx ts-node scripts/archive-oracle-partitions.ts --verify /var/archives/oracle/oracle_events_2026_01.jsonl.gz
    ```
 
-2. Restore into a scratch database. Do not restore into production `oracle_events` unless the partition has been detached:
+2. Create a scratch database with an `oracle_events` table that has at least the six exported columns. The partitioned schema is not in this checkout: `src/db/schema.sql` and `src/db/migrations/001_idempotency_and_oracle_partitioning.sql` are empty files. The table itself comes from the node-pg-migrate baseline (`migrations/1748476800000_baseline-schema.ts`), which defines a plain, unpartitioned `oracle_events` with those six columns. I have not run this path, so confirm it creates a usable table before relying on it:
 
    ```sh
    createdb refract_restore
-   psql refract_restore -f src/db/schema.sql
-   psql refract_restore -f src/db/migrations/001_idempotency_and_oracle_partitioning.sql
+   DATABASE_URL=postgresql://.../refract_restore npm run migrate:up
    ```
 
-3. Load the rows. `oracle_events` is partitioned by `recorded_at`, so the partition for the archived month is created by the scratch schema's range rules (`ensureUpcomingPartitions` creates it for current and future months; create the archived month manually if it is missing). Stage the JSONL as text, then insert:
+3. Load the rows. Stage the JSONL as text, then insert the six columns. The other columns take their defaults, and the archive does not carry them (see the format section):
 
    ```sh
    zcat /var/archives/oracle/oracle_events_2026_01.jsonl.gz > /tmp/oracle_events_2026_01.jsonl
@@ -111,7 +132,9 @@ DATABASE_URL=postgresql://... npx ts-node scripts/archive-oracle-partitions.ts -
    SQL
    ```
 
-4. Compare the restored row count with the manifest:
+   **Fidelity limit:** the restored rows lack the evidence fields listed above, so `seq` and `payload` are lost and the evidence chain cannot be rebuilt from this restore. Rejected readings also come back `usable = true`, because `usable` is not in the artifact and takes its default. Treat the restore as a restore of readings only, and do not use it to answer questions that depend on rejection status.
+
+4. Compare the restored row count with the manifest, on the scratch database:
 
    ```sql
    SELECT COUNT(*) FROM oracle_events WHERE recorded_at >= '2026-01-01' AND recorded_at < '2026-02-01';
@@ -119,9 +142,9 @@ DATABASE_URL=postgresql://... npx ts-node scripts/archive-oracle-partitions.ts -
 
    The result must equal `row_count` in `oracle_partition_archives`.
 
-5. Once the restore is confirmed, drop the scratch database. Production partitions are not changed by the restore.
+5. Once the restore is confirmed, drop the scratch database.
 
 ## Migration notes
 
-- `src/db/migrations/004_oracle_partition_archive_lifecycle.sql` creates two new tables and takes no lock on `oracle_events`.
+- `src/db/migrations/004_oracle_partition_archive_lifecycle.sql` creates two new tables and takes no lock on `oracle_events`. It assumes the partitioned `oracle_events` from `001_idempotency_and_oracle_partitioning.sql`, which is empty in this checkout.
 - Deploying the retention change without running the archive job first means partitions older than the window are kept and logged as "no verified archive". This is intended. Run the archive job, then the drop cron will proceed.
