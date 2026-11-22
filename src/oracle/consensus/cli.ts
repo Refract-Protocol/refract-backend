@@ -40,6 +40,9 @@ Commands (all read-only; they read the persisted evidence ledger):
 
 Common options:
   --ledger-file <path>   Evidence ledger JSONL (default: $EVIDENCE_LEDGER_PATH)
+  --json                 Machine-readable errors: keeps the raw "error: <message>"
+                         line that scripts parse. Successful output is always JSON.
+                         Default errors are one plain sentence: "<command>: <message> (hint: ...)".
 `;
 
 export function parseFlags(argv: string[]): { command?: string; flags: Record<string, string> } {
@@ -100,7 +103,10 @@ export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): Cl
 
     return { exitCode: 1, stdout: "", stderr: `unknown command: ${command}\n\n${USAGE}` };
   } catch (err) {
-    return { exitCode: 1, stdout: "", stderr: `error: ${err instanceof Error ? err.message : String(err)}\n` };
+    const message = err instanceof Error ? err.message : String(err);
+    if (argv.includes("--json")) return { exitCode: 1, stdout: "", stderr: `error: ${message}\n` };
+    const operation = argv[0] && !argv[0].startsWith("--") ? argv[0] : "oracle-ops";
+    return { exitCode: 1, stdout: "", stderr: `${operation}: ${message} (hint: run oracle-ops --help for usage)\n` };
   }
 }
 
