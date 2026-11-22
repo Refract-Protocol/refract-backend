@@ -35,7 +35,7 @@ const BOND_ON_RESOLUTION: Partial<Record<DisputeStatus, Exclude<BondStatus, "pos
 
 const DEFAULT_WINDOW_HOURS = 72;
 const UNIQUE_VIOLATION = "23505";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface DisputeRecord {
   id: string;
