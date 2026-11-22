@@ -4,6 +4,10 @@ import { DbService } from "../db/db.service";
 import { OracleTrustService } from "../oracle/oracle-trust.service";
 import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 
+// Resolved at runtime: dist/health and src/health both sit two levels below package.json,
+// and the Dockerfile copies it into the image. A TS import would break rootDir: src.
+const APP_VERSION: string = require("../../package.json").version;
+
 @Injectable()
 export class HealthService {
   private readonly logger = new Logger(HealthService.name);
@@ -16,8 +20,8 @@ export class HealthService {
     @Optional() private readonly cache?: CacheService,
   ) {}
 
-  getLiveness(): { status: "ok" } {
-    return { status: "ok" };
+  getLiveness(): { status: "ok"; version: string } {
+    return { status: "ok", version: APP_VERSION };
   }
 
   async getReadiness(): Promise<{
