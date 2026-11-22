@@ -87,7 +87,11 @@ export class OpsReevaluationController {
   @Post(":runId/apply")
   async apply(@Param("runId") runId: string, @Query("limit") limitRaw: string | undefined, @Req() req: OpsRequest) {
     if (!this.service.getRun(runId)) throw new HttpException({ error: "Unknown run" }, HttpStatus.NOT_FOUND);
-    const limit = Math.max(1, boundedInt(limitRaw, DEFAULT_APPLY_BATCH, MAX_PAGE));
+    const requested = limitRaw === undefined ? DEFAULT_APPLY_BATCH : Number(limitRaw);
+    if (!Number.isInteger(requested) || requested < 1) {
+      throw new HttpException({ message: "limit must be an integer >= 1", field: "limit" }, HttpStatus.BAD_REQUEST);
+    }
+    const limit = Math.min(requested, MAX_PAGE);
     try {
       const run = await this.service.apply(runId, this.executor, actorOf(req), Date.now(), limit);
       return { ...run, items: undefined };
