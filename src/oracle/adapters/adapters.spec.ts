@@ -61,6 +61,15 @@ describe("HorizonAdapter", () => {
     expect(raw.observedAt).toBe(Date.parse("2026-01-01T00:00:00Z"));
   });
 
+  it("rejects a ledger record whose price field is not numeric", async () => {
+    const { http } = fakeHttp({
+      _embedded: { records: [{ sequence: 123, closed_at: "2026-01-01T00:00:00Z", price: "0.1" }] },
+    });
+    await expect(
+      new HorizonAdapter("https://h.test", http).fetch({ metric: "stellar.ledger.latest" }, ctx),
+    ).rejects.toBeInstanceOf(AdapterSchemaError);
+  });
+
   it("rejects an empty ledger page", async () => {
     const { http } = fakeHttp({ _embedded: { records: [] } });
     await expect(

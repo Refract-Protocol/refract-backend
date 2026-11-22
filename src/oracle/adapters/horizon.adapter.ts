@@ -10,7 +10,7 @@ import {
 } from "./source-adapter";
 
 interface LedgersPage {
-  _embedded?: { records?: Array<{ sequence?: unknown; closed_at?: unknown }> };
+  _embedded?: { records?: Array<{ sequence?: unknown; closed_at?: unknown; price?: unknown }> };
 }
 
 /**
@@ -43,6 +43,11 @@ export class HorizonAdapter implements OracleSourceAdapter {
     if (typeof record?.sequence !== "number") {
       throw new AdapterSchemaError(this.id, "ledgers[0].sequence is not a number");
     }
+    // A missing price must never be coerced to zero: that would publish a
+    // fabricated reading. Reject the sample instead.
+    if (record.price !== undefined && record.price !== null && typeof record.price !== "number") {
+      throw new AdapterSchemaError(this.id, "ledgers[0].price is not a number");
+    }
     const closedAt = typeof record.closed_at === "string" ? Date.parse(record.closed_at) : NaN;
     if (Number.isNaN(closedAt)) {
       throw new AdapterSchemaError(this.id, "ledgers[0].closed_at is not an ISO timestamp");
@@ -51,7 +56,7 @@ export class HorizonAdapter implements OracleSourceAdapter {
       value: record.sequence,
       observedAt: closedAt,
       evidence,
-      context: { closedAt: record.closed_at as string },
+      context: { closedAt: record.closed_at as string, ...(typeof record.price === "number" ? { price: record.price } : {}) },
     };
   }
 }
