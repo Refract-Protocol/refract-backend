@@ -393,6 +393,16 @@ export async function verifyAttestation(
       { teeType, measurement },
     );
   }
+  // A verifier that returns anything but a boolean did not verify anything:
+  // report it as an error, not as an invalid signature.
+  if (typeof signatureValid !== 'boolean') {
+    return failure(
+      'verifier-error',
+      'signature verifier returned a non-boolean result',
+      policyVersion,
+      { teeType, measurement },
+    );
+  }
   if (!signatureValid) {
     return failure(
       'invalid-quote-signature',
