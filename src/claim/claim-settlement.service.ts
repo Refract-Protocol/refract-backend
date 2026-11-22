@@ -5,12 +5,17 @@ import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } f
 import { decodeSorobanError } from "../common/soroban-error";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
+import { DEFAULT_MAX_SETTLEMENT_ATTEMPTS, isAttemptCapReached } from "./settlement-attempt";
 
 export interface SettlementResult {
   settled: boolean;
   txHash?: string;
   error?: string;
   code?: string;
+  /** Number of attempts consumed so far for this claim. */
+  attemptCount?: number;
+  /** True when the retry budget is exhausted and the claim is terminal. */
+  terminal?: boolean;
 }
 
 /**

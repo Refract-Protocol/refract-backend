@@ -52,6 +52,25 @@ export interface DeadLetterAdminActionRecord {
   error?: string;
 }
 
+/** Default retry budget for a settlement attempt record. */
+export const DEFAULT_MAX_SETTLEMENT_ATTEMPTS = 3;
+
+/**
+ * Returns true once the attempt counter has reached the configured cap, i.e.
+ * no further retry may be scheduled. The counter is 1-based (it is incremented
+ * after each failed attempt), so the cap is reached when
+ * `attemptCount >= maxAttempts` — not when it exceeds it.
+ */
+export function isAttemptCapReached(
+  attemptCount: number,
+  maxAttempts: number = DEFAULT_MAX_SETTLEMENT_ATTEMPTS,
+): boolean {
+  const cap = Number.isFinite(maxAttempts) && maxAttempts > 0
+    ? Math.floor(maxAttempts)
+    : DEFAULT_MAX_SETTLEMENT_ATTEMPTS;
+  return attemptCount >= cap;
+}
+
 /**
  * Builds the ordered attempt log for a dead-lettered claim from its recorded
  * error history, so admins can inspect the full failure trail.

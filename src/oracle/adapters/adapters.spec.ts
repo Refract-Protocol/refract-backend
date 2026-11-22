@@ -4,6 +4,7 @@ import { CoinGeckoAdapter } from "./coingecko.adapter";
 import { DefiLlamaAdapter } from "./defillama.adapter";
 import { HorizonAdapter } from "./horizon.adapter";
 import { AdapterSchemaError } from "./source-adapter";
+import { HttpJsonError } from "./http-json";
 
 /** Minimal axios stand-in: returns `body` as text for any GET and records calls. */
 function fakeHttp(body: unknown, status = 200) {
@@ -59,6 +60,15 @@ describe("HorizonAdapter", () => {
     const raw = await new HorizonAdapter("https://h.test", http).fetch({ metric: "stellar.ledger.latest" }, ctx);
     expect(raw.value).toBe(123);
     expect(raw.observedAt).toBe(Date.parse("2026-01-01T00:00:00Z"));
+  });
+
+  it("rejects a ledger record whose price field is not numeric", async () => {
+    const { http } = fakeHttp({
+      _embedded: { records: [{ sequence: 123, closed_at: "2026-01-01T00:00:00Z", price: "0.1" }] },
+    });
+    await expect(
+      new HorizonAdapter("https://h.test", http).fetch({ metric: "stellar.ledger.latest" }, ctx),
+    ).rejects.toBeInstanceOf(AdapterSchemaError);
   });
 
   it("rejects an empty ledger page", async () => {

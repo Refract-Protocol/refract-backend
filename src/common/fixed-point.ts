@@ -12,6 +12,8 @@
  * is documented here once and reused everywhere via `divRoundUp`.
  */
 
+import { ValidationError } from "./errors";
+
 /** Number of decimal places in the fixed-point representation. */
 export const FIXED_POINT_DECIMALS = 7;
 
@@ -85,19 +87,21 @@ export function formatFixed(value: bigint, decimals = FIXED_POINT_DECIMALS): str
 
 /**
  * Parses a decimal string (e.g. "123.4567891") into a 1e7 fixed-point
- * BigInt, truncating beyond 7 decimal places. Throws on malformed input.
+ * BigInt, truncating beyond 7 decimal places.
+ *
+ * Rejects malformed input, non-finite values (NaN, Infinity, -Infinity)
+ * and negative amounts with a typed `ValidationError`.
  */
 export function parseFixed(value: string): bigint {
-  const trimmed = value.trim();
-  if (!/^-?\d+(\.\d+)?$/.test(trimmed)) {
-    throw new RangeError(`parseFixed: invalid decimal string "${value}"`);
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new ValidationError(`parseFixed: invalid decimal string "${String(value)}"`, {
+      value: String(value),
+    });
   }
-  const negative = trimmed.startsWith("-");
-  const unsigned = negative ? trimmed.slice(1) : trimmed;
-  const [wholePart, fractionPart = ""] = unsigned.split(".");
+  const [wholePart, fractionPart = ""] = trimmed.split(".");
   const paddedFraction = fractionPart.padEnd(FIXED_POINT_DECIMALS, "0").slice(0, FIXED_POINT_DECIMALS);
-  const result = BigInt(wholePart) * FIXED_POINT_ONE + BigInt(paddedFraction || "0");
-  return negative ? -result : result;
+  return BigInt(wholePart) * FIXED_POINT_ONE + BigInt(paddedFraction || "0");
 }
 
 /**
