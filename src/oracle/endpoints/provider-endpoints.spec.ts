@@ -1,5 +1,5 @@
 import { AllEndpointsFailedError, ProviderEndpointSet, redactUrl } from "./provider-endpoints";
-import { loadEndpointDeclarations, loadEndpointOptions, parseEndpointList } from "./provider-endpoints.config";
+import { loadEndpointDeclarations, loadEndpointOptions, parseEndpointList, assertKnownProviderIds } from "./provider-endpoints.config";
 import { ProviderEndpointRegistry } from "./provider-endpoint.registry";
 
 const OPTIONS = { failureThreshold: 2, cooldownMs: 1_000, maxCooldownMs: 4_000, slowMs: 500, attemptTimeoutMs: 50 };
@@ -208,5 +208,13 @@ describe("endpoint configuration", () => {
     expect(redactUrl("https://user:pw@api.example/v3?x_cg_pro_api_key=secret")).toBe("https://api.example/v3");
     const registry = new ProviderEndpointRegistry({ COINGECKO_BASE_URL: "https://api.example/v3?key=secret" });
     expect(JSON.stringify(registry.snapshot())).not.toContain("secret");
+  });
+
+  it("accepts the known provider ids", () => {
+    expect(() => assertKnownProviderIds(loadEndpointDeclarations({}))).not.toThrow();
+  });
+
+  it("rejects an unknown provider id, naming it", () => {
+    expect(() => assertKnownProviderIds({ coingecko: [], chainlink: [] })).toThrow(/chainlink/);
   });
 });
