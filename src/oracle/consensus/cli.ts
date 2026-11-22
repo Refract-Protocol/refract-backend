@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as util from "util";
 import { canonicalJson } from "./canonical";
 import { foldHolds, HoldStatus } from "./claim-hold.service";
 import { EvidenceLedger } from "./evidence-ledger";
@@ -40,6 +41,7 @@ Commands (all read-only; they read the persisted evidence ledger):
 
 Common options:
   --ledger-file <path>   Evidence ledger JSONL (default: $EVIDENCE_LEDGER_PATH)
+  --verbose              On error, also print the full error object
 `;
 
 export function parseFlags(argv: string[]): { command?: string; flags: Record<string, string> } {
@@ -100,7 +102,10 @@ export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): Cl
 
     return { exitCode: 1, stdout: "", stderr: `unknown command: ${command}\n\n${USAGE}` };
   } catch (err) {
-    return { exitCode: 1, stdout: "", stderr: `error: ${err instanceof Error ? err.message : String(err)}\n` };
+    const message = err instanceof Error ? err.message : String(err);
+    const command = argv[0] && !argv[0].startsWith("--") ? ` (command: ${argv[0]})` : "";
+    const detail = argv.includes("--verbose") ? `\n${util.inspect(err, { depth: 5 })}` : "";
+    return { exitCode: 1, stdout: "", stderr: `error: ${message}${command}${detail}\n` };
   }
 }
 
