@@ -1,8 +1,25 @@
 # Operator Reputation Scoring and Consensus Weighting
 
 Model version: `operator-reputation/v1`. Implementation: `src/oracle/reputation.ts`.
+Wider design: [oracle trust architecture](./oracle-trust-architecture.md).
 
 Reputation weights each oracle operator's contribution to a corroborated value instead of counting every source equally. A long-running accurate operator outweighs a new or mediocre one, and a new operator has no influence on payout-triggering feeds until it has earned it.
+
+## Storage and schema
+
+Reputation is not stored in the database. `src/oracle/reputation.ts` has no I/O: the caller builds an `OperatorHistory` and passes it to `scoreOperator` or `weightOperators`.
+
+No migration creates an operator or reputation table. `src/db/migrations/002_oracle_trust_engine.sql` creates these tables, none of which holds reputation or operator history:
+
+| Table | Role |
+|---|---|
+| `oracle_sources` | Registered feeds, with `independence_group` for quorum counting |
+| `oracle_readings` | Append-only per-source readings (immutable by trigger) |
+| `oracle_decisions` | One row per consensus outcome, with `trust_mode` |
+| `oracle_decision_readings` | Join table from a decision to the readings it used |
+| `oracle_source_health` | Per-source failure and quarantine state. Per source, not per operator. |
+
+No table or column in migration 002 is deprecated or removed. If a reputation table existed in an earlier revision, this tree has no migration that creates or drops one, so there is nothing in this repository to mark as deprecated. Persisting `OperatorHistory` and the scores is not yet implemented (see [Out of scope](#out-of-scope)).
 
 ## Inputs
 
@@ -52,7 +69,7 @@ An operator is **eligible** only if both hold:
 - It has at least `MIN_HISTORY_OBSERVATIONS = 30` non-excused observations.
 - Its score is at least `ELIGIBILITY_THRESHOLD_BPS = 5000`.
 
-Operators that are not eligible are on probation. They are recorded, but read-only, and excluded from quorum.
+Operators that are not eligible are on probation. `weightOperators` gives them weight `0` and does not count them toward `eligibleCount`. Nothing in `reputation.ts` makes them read-only; enforcing that is the caller's job.
 
 ## Consensus weight
 
@@ -76,7 +93,7 @@ Ineligible operators get weight `0`.
 
 ## Auditability
 
-Each decision stamps the `weight` and `components` of every operator it used, along with `asOf` and `REPUTATION_MODEL_VERSION`. A past decision can therefore be explained from its snapshot without recomputing from current history.
+Each `ReputationScore` carries `weight`, `components`, and `asOf`. `REPUTATION_MODEL_VERSION` is exported, but the score object does not include it. The caller must persist the score and the model version with each decision. No consensus code does this yet. Once it does, a past decision can be explained from its snapshot without recomputing from current history.
 
 ## Parameters
 
@@ -90,7 +107,13 @@ Each decision stamps the `weight` and `components` of every operator it used, al
 | `MAX_CONSENSUS_WEIGHT_BPS` | 2000 | Weight cap |
 | `MIN_QUORUM_OPERATORS` | 3 | Minimum eligible operators for `ok` |
 
+## Related code that is not reputation
+
+- `src/oracle/consistency/rules.ts` defines cross-feed consistency rules (for example, a liquidation spike must coincide with a price or TVL move). It has no reputation scoring. Nothing in this document maps to it.
+- `src/oracle/consistency/evaluate.ts` evaluates those rules. It does not compile against `rules.ts`: it imports `rulesForCoverage` and reads fields such as `dependentCoverage` and `triggerThreshold`, none of which `rules.ts` exports or defines (it exports `rulesForFeed` and uses `dependentFeed`). Nothing imports either file. Treat it as unfinished until it is reconciled.
+- `src/oracle/oracle-status.service.ts` computes a per-source `reputation` from deviation off the per-minute median. It is a different heuristic from the operator model above.
+
 ## Out of scope
 
 - Staking or slashing mechanics (external contract).
-- Persistence of snapshots, the scheduled recomputation job, and the consensus layer that consumes weights. These depend on operator registry, observation, and dispute data that does not yet exist in this repository.
+- Persistence of `OperatorHistory` inputs and scores, the scheduled recomputation job, and the consensus layer that consumes weights. These depend on operator registry, observation, and dispute data that does not yet exist in this repository. The source-level state that does exist is in `oracle_source_health` (migration 002).
