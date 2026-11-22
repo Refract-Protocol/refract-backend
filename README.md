@@ -159,9 +159,18 @@ environment or `.env`; configure secrets and production service settings
 separately before deployment. Contract IDs and the relayer key can be added to
 `.env` when exercising configured on-chain operations.
 
-To run the API directly on the host, start PostgreSQL and Redis yourself,
-copy `.env.example` to `.env`, install Node.js 22 dependencies, apply
-`src/db/schema.sql` once, and run `npm run dev`.
+For a first run with no Postgres or Redis, use sandbox mode after `npm install`:
+
+```bash
+SANDBOX_MODE=true npm run dev
+```
+
+Sandbox mode swaps Postgres, Redis, and Soroban RPC for in-memory equivalents
+and is refused when `NODE_ENV=production`. See `CONTRIBUTING.md` for details.
+
+To run the API directly on the host against real infrastructure, start
+PostgreSQL and Redis yourself, copy `.env.example` to `.env`, install Node.js 22
+dependencies, apply `src/db/schema.sql` once, and run `npm run dev`.
 
 Stop the stack with `docker compose down`. Persistent database and Redis data
 remain in Docker volumes; `docker compose down -v` removes them.
