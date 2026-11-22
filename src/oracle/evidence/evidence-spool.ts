@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 import { promises as fs } from "fs";
 import * as path from "path";
+import { winstonLogger } from "../../common/logger";
 import { EvidenceRecord } from "./evidence-record";
 
 const SPOOL_FILE = "spool.ndjson";
@@ -12,6 +13,11 @@ export class SpoolFullError extends Error {
     this.name = "SpoolFullError";
   }
 }
+
+/** Typed result of an append: either the records were fsync'd, or capacity was exhausted. */
+export type SpoolAppendResult =
+  | { ok: true; bytesWritten: number }
+  | { ok: false; reason: "full"; bytes: number; maxBytes: number; droppedRecords: number };
 
 export interface SpoolRecovery {
   pending: EvidenceRecord[];
@@ -34,7 +40,7 @@ export interface SpoolRecovery {
  * All file operations are serialized on one promise chain.
  */
 export class EvidenceSpool {
-  private readonly logger = new Logger(EvidenceSpool.name);
+  private readonly logger = winstonLogger;
   private readonly spoolPath: string;
   private readonly ackPath: string;
   private handle: fs.FileHandle | null = null;
@@ -91,18 +97,26 @@ export class EvidenceSpool {
     });
   }
 
-  /** Appends records and fsyncs. Rejects with SpoolFullError when the size cap would be exceeded. */
-  append(records: EvidenceRecord[]): Promise<void> {
-    return this.serial(async () => {
+  /**
+   * Appends records and fsyncs. Returns a typed overflow result (instead of
+   * throwing) when the size cap would be exceeded, so callers can surface
+   * backpressure rather than silently losing records.
+   */
+  append(records: EvidenceRecord[]): Promise<SpoolAppendResult> {
+    return this.serial(async (): Promise<SpoolAppendResult> => {
       if (!this.handle) throw new Error("evidence spool is not open");
       const data = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
       const size = Buffer.byteLength(data);
       if (this.bytes + size > this.maxBytes) {
-        throw new SpoolFullError(this.bytes, this.maxBytes);
+        this.logger.warn(
+          `Evidence spool at capacity (${this.bytes} of ${this.maxBytes} bytes); rejecting ${records.length} record(s)`,
+        );
+        return { ok: false, reason: "full", bytes: this.bytes, maxBytes: this.maxBytes, droppedRecords: records.length };
       }
       await this.handle.write(data);
       await this.handle.datasync();
       this.bytes += size;
+      return { ok: true, bytesWritten: size };
     });
   }
 

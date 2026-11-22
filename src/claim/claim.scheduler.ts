@@ -5,8 +5,29 @@ import { ProtocolParametersService } from '../parameters/protocol-parameters.ser
 import { runsPipeline } from '../runtime/process-role';
 import { PipelineHeartbeat } from '../runtime/pipeline-heartbeat';
 import { LeaderElector } from '../leader/leader-elector.service';
+import { isSandboxMode } from '../config/configuration';
 
 export const CLAIM_PIPELINE_STAGE = 'claim-settlement';
+
+/**
+ * Settings that must be present before the settlement loop can sign and submit
+ * Soroban transactions. A relayer key is either the raw secret or the AWS
+ * Secrets Manager id it is loaded from.
+ */
+export const RELAYER_KEY_SETTINGS = ['ORACLE_RELAYER_SECRET', 'ORACLE_RELAYER_SECRET_ID'] as const;
+
+/**
+ * Returns the name of the missing relayer setting, or null when one is
+ * configured. Kept pure so the startup check is trivially testable.
+ */
+export function missingRelayerSetting(env: NodeJS.ProcessEnv = process.env): string | null {
+  const hasSecret = Boolean((env.ORACLE_RELAYER_SECRET ?? '').trim());
+  const hasSecretId = Boolean((env.ORACLE_RELAYER_SECRET_ID ?? '').trim());
+  if (hasSecret || hasSecretId) {
+    return null;
+  }
+  return RELAYER_KEY_SETTINGS.join(' / ');
+}
 
 /**
  * Upper bound (ms) we are willing to wait for an in-flight settlement run to
@@ -32,6 +53,12 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
    */
   private shuttingDown = false;
 
+  /**
+   * Set when the relayer key is missing at startup so the settlement loop is
+   * disabled instead of failing opaquely on every cycle.
+   */
+  private disabledReason: string | null = null;
+
   constructor(
     private readonly claimService: ClaimService,
     private readonly protocolParameters: ProtocolParametersService,
@@ -45,6 +72,19 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
       return;
     }
     this.heartbeat?.expect(CLAIM_PIPELINE_STAGE);
+
+    const missing = missingRelayerSetting();
+    if (missing) {
+      this.disabledReason = missing;
+      const sandbox = isSandboxMode();
+      this.logger.warn(
+        `Claim scheduler disabled: missing relayer key setting ${missing}. ` +
+          `Settlements will not run until ${missing} is configured` +
+          (sandbox ? ' (sandbox mode: no on-chain settlement expected).' : '.'),
+      );
+      return;
+    }
+
     const interval = await this.getIntervalSeconds();
     this.logger.log(`Claim scheduler initialized with interval ${interval}s`);
   }
@@ -87,6 +127,13 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
   async handleClaimSettlement(): Promise<void> {
     // Settlement triggers payouts, so it only runs in the worker tier.
     if (!runsPipeline()) {
+      return;
+    }
+
+    if (this.disabledReason) {
+      this.logger.debug(
+        `Skipping claim settlement run: scheduler disabled (missing ${this.disabledReason}).`,
+      );
       return;
     }
 
