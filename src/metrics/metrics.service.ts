@@ -6,6 +6,7 @@ import { BalanceAssessment, FeeSpendSummary, tierRank } from "../stellar/relayer
 
 type Outcome = "success" | "failure";
 type OracleOutcome = Outcome | "mocked";
+export type OracleTickOutcome = "success" | "no_consensus" | "provider_error";
 
 @Injectable()
 export class MetricsService implements RelayerMetricsSink {
@@ -54,6 +55,12 @@ export class MetricsService implements RelayerMetricsSink {
     help: "Oracle check duration in seconds.",
     labelNames: ["coverage_type"],
     buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [this.registry],
+  });
+  private readonly oracleTicks = new Counter<"outcome">({
+    name: "refract_oracle_ticks_total",
+    help: "Oracle refresh ticks completed, labeled by outcome.",
+    labelNames: ["outcome"],
     registers: [this.registry],
   });
   private readonly oracleStageDuration = new Histogram<"feed" | "stage">({
@@ -155,6 +162,10 @@ export class MetricsService implements RelayerMetricsSink {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  recordOracleTick(outcome: OracleTickOutcome): void {
+    this.oracleTicks.labels({ outcome }).inc();
   }
 
   recordOracleStage(feed: string, stage: string, durationSeconds: number): void {

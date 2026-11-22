@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from "@nestjs/common";
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { CronJob } from "cron";
-import { MetricsService } from "../metrics/metrics.service";
+import { MetricsService, OracleTickOutcome } from "../metrics/metrics.service";
 import { HealthService } from "../health/health.service";
 import { OracleGateway } from "./oracle.gateway";
 import { OraclePublisherService } from "./oracle-publisher.service";
@@ -82,10 +82,23 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
     this.polling = true;
     const startedAt = Date.now();
     let outcome: "success" | "failure" = "success";
+    let tickOutcome: OracleTickOutcome = "success";
 
     try {
-      const result: unknown = await this.oracleService.refreshPrices();
+      let result: unknown;
+      try {
+        result = await this.oracleService.refreshPrices();
+      } catch (error) {
+        tickOutcome = "provider_error";
+        throw error;
+      }
       const readings = Array.isArray(result) ? (result as OracleReading[]) : [];
+      const live = readings.filter((reading) => !reading.degraded);
+      if (readings.length > 0 && live.length === 0) {
+        tickOutcome = "provider_error";
+      } else if (live.length > 0 && live.every((reading) => !reading.provenance)) {
+        tickOutcome = "no_consensus";
+      }
 
       const infrastructure = await this.healthService?.getInfrastructureReadiness();
       if (infrastructure && !infrastructure.ready) {
@@ -110,6 +123,7 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
         outcome,
         (Date.now() - startedAt) / 1000,
       );
+      this.metricsService?.recordOracleTick(tickOutcome);
     }
   }
 
