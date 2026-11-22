@@ -200,7 +200,8 @@ and a burst of API traffic cannot delay a payout.
 | `npm run start:worker` / `start:worker:prod` | Run the worker tier (dev / compiled) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint over `src/` |
-| `npm test` | Jest unit tests (includes property-based tests) |
+| `npm run test:unit` | Jest unit tests (includes property-based tests) |
+| `npm test` | Full suite: `test:unit` followed by `test:contracts` |
 | `npm run test:property` | Only the property-based / fuzz suites (`*.property.spec.ts`); set `FC_NUM_RUNS=20000` for a deeper soak, `FC_SEED=<seed>` to replay a failure |
 
 ## Operator CLI
