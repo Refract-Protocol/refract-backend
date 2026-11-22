@@ -30,6 +30,7 @@ function pollIntervalMs(): number {
 export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OracleScheduler.name);
   private polling = false;
+  private consecutiveFailures = 0;
 
   constructor(
     private readonly oracleService: OracleService,
@@ -100,9 +101,14 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
       // Hand readings to the API tier for the WebSocket feed and reads.
       await this.readingBus.publishAll(readings);
       this.heartbeat?.beat(ORACLE_PIPELINE_STAGE);
+      this.consecutiveFailures = 0;
     } catch (error) {
       outcome = "failure";
-      this.logger.error("Oracle refresh failed", error instanceof Error ? error.stack : String(error));
+      this.consecutiveFailures++;
+      this.logger.error(
+        `Oracle refresh failed (consecutive failures: ${this.consecutiveFailures})`,
+        error instanceof Error ? error.stack : String(error),
+      );
     } finally {
       this.polling = false;
       this.metricsService?.recordSchedulerRun(

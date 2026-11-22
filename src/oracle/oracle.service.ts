@@ -185,7 +185,12 @@ export class OracleService {
           `${this.horizonUrl}/ledgers`,
           { params: { order: "desc", limit: 1 }, timeout: this.timeoutMs }
         )
-        .catch(() => null);
+        .catch((err: unknown) => {
+          this.logger.warn(
+            `Horizon ledger lookup failed for MarketCrash (feed=coingecko-stellar, provider=horizon): ${err instanceof Error ? err.message : String(err)}`
+          );
+          return null;
+        });
 
       const [priceRes, ledgerRes] = await Promise.all([priceRequest, ledgerRequest]);
       const change24h = priceRes.data.stellar.usd_24h_change;
@@ -353,9 +358,8 @@ export class OracleService {
    * never itself cause a false claim trigger.
    */
   private degraded(coverageType: string, threshold: number, source: string, err: unknown): OracleReading {
-    this.logger.error(
-      `${source} request failed for ${coverageType} check`,
-      err instanceof Error ? err.message : String(err)
+    this.logger.warn(
+      `${source} request failed for ${coverageType} check (feed=${feedIdForCoverage(coverageType) ?? "none"}, provider=${source.toLowerCase()}): ${err instanceof Error ? err.message : String(err)}`
     );
     return {
       readingId: randomUUID(),
