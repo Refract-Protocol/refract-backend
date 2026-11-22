@@ -11,15 +11,17 @@ import { StrKey } from '@stellar/stellar-sdk';
  */
 @Injectable()
 export class StellarAddressPipe implements PipeTransform<string, string> {
-  transform(value: string, _metadata: ArgumentMetadata): string {
+  transform(value: string, metadata: ArgumentMetadata): string {
+    // Screen readers announce the message verbatim, so it must name the field.
+    const field = metadata.data ?? 'address';
+    const message = `${field} must be a valid Stellar address`;
+
     if (typeof value !== 'string' || value.length !== 56) {
-      throw new BadRequestException('address must be exactly 56 characters long');
+      throw new BadRequestException(message);
     }
 
     if (!StrKey.isValidEd25519PublicKey(value)) {
-      throw new BadRequestException(
-        'address is not a valid Stellar public key (bad version byte or checksum)',
-      );
+      throw new BadRequestException(message);
     }
 
     return value;
