@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SEVERITIES } from "../oracle/oracle-reading";
 
 /** Bumped whenever a response shape changes incompatibly. */
 export const ORACLE_STATUS_API_VERSION = "v1";
@@ -48,7 +49,7 @@ export const decisionSchema = z
     /** Opaque reference into the evidence ledger; never raw contents. */
     evidenceRef: z.string(),
     value: z.number(),
-    severity: z.string(),
+    severity: z.enum(SEVERITIES),
     method: z.enum(["multi_source_median", "single_source"]),
     quorum: quorumSchema,
     divergenceBps: z.number().nonnegative(),

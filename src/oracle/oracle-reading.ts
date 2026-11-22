@@ -1,7 +1,8 @@
 import type { ReadingProvenance } from "./oracle-encoding";
 import { FreshnessRejectionReason } from "./freshnessPolicy";
 
-export type Severity = "low" | "medium" | "high" | "triggered";
+export const SEVERITIES = ["low", "medium", "high", "triggered"] as const;
+export type Severity = (typeof SEVERITIES)[number];
 
 export interface OracleEvidenceMetadata {
   adapter: string;
