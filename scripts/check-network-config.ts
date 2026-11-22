@@ -6,9 +6,16 @@
  *   npx ts-node scripts/check-network-config.ts [--live]
  */
 import "dotenv/config";
-import { validateNetworkConsistency, verifyNetworkLive } from "../src/config/network-consistency";
+import { STELLAR_NETWORKS, validateNetworkConsistency, verifyNetworkLive } from "../src/config/network-consistency";
+
+const ACCEPTED_NETWORKS = Object.keys(STELLAR_NETWORKS).join(", ");
 
 async function main(): Promise<void> {
+  if (!process.env.STELLAR_NETWORK?.trim()) {
+    console.error(`error: STELLAR_NETWORK is not set. Set it to one of: ${ACCEPTED_NETWORKS}`);
+    process.exit(1);
+  }
+
   const report = validateNetworkConsistency(process.env);
   report.warnings.forEach((w) => console.warn(`warn: ${w}`));
   report.errors.forEach((e) => console.error(`error: ${e}`));
@@ -23,4 +30,7 @@ async function main(): Promise<void> {
   console.log(`ok: configured for ${report.resolved!.network} only`);
 }
 
-void main();
+void main().catch((err) => {
+  console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+});

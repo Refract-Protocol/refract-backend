@@ -337,9 +337,13 @@ export default (): AppConfig => {
     port: env.PORT ?? 4001,
     frontendUrl: env.FRONTEND_URL ?? "http://localhost:3000",
     database: {
+      // Sandbox mode runs against in-memory/mocked services, so no real
+      // Postgres is required; the URL is only mandatory outside sandbox.
       url:
         env.DATABASE_URL ??
-        "postgres://refract:refract@localhost:5432/refract",
+        (isSandboxMode(process.env)
+          ? ""
+          : "postgres://refract:refract@localhost:5432/refract"),
       poolMax: env.DB_POOL_MAX ?? 10,
       poolMin: env.DB_POOL_MIN ?? 2,
       poolIdleTimeoutMs: env.DB_POOL_IDLE_TIMEOUT_MS ?? 30000,

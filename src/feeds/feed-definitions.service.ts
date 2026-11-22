@@ -7,6 +7,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
+import { CacheService } from "../cache/cache.service";
 import { DatabaseService } from "../db/database.service";
 import {
   CreateFeedInput,
@@ -29,6 +30,17 @@ const DEFAULT_RELOAD_INTERVAL_MS = 15_000;
 const UNIQUE_VIOLATION = "23505";
 
 /**
+ * Cache key + TTL for the active feed list.
+ *
+ * TTL is 15 s (one reload interval), so a stale entry can never outlive a feed
+ * change by more than one oracle tick. Write paths (create/update/disable) and
+ * startup invalidate the key immediately, so in practice the TTL only bounds
+ * staleness for changes made by another instance.
+ */
+export const ACTIVE_FEEDS_CACHE_KEY = "feeds:active";
+export const ACTIVE_FEEDS_TTL_SECONDS = 15;
+
+/**
  * Source of truth for oracle feed definitions is the append-only
  * `oracle_feed_definitions` table. This service writes new versions, serves
  * admin reads from the database, and keeps an in-process copy of the latest
@@ -45,9 +57,13 @@ export class FeedDefinitionsService implements OnModuleInit, OnModuleDestroy {
   private cache = new Map<string, FeedDefinitionRecord>();
   private reloadTimer?: NodeJS.Timeout;
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly cacheService: CacheService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
+    await this.invalidateActiveCache();
     await this.safeRefresh();
     this.reloadTimer = setInterval(() => void this.safeRefresh(), this.reloadIntervalMs);
     this.reloadTimer.unref();
@@ -64,6 +80,37 @@ export class FeedDefinitionsService implements OnModuleInit, OnModuleDestroy {
 
   getCachedFeed(feedKey: string): FeedDefinitionRecord | undefined {
     return this.cache.get(feedKey);
+  }
+
+  /**
+   * Active (enabled) feed definitions, served from the shared cache.
+   *
+   * Oracle ticks call this on every iteration; the cached list is reused for
+   * up to ACTIVE_FEEDS_TTL_SECONDS (15 s) and invalidated on every write path,
+   * so a tick with N feeds issues zero SELECTs against
+   * `oracle_feed_definitions` while the entry is warm.
+   */
+  async getActive(): Promise<FeedDefinitionRecord[]> {
+    return this.cacheService.wrap<FeedDefinitionRecord[]>(
+      ACTIVE_FEEDS_CACHE_KEY,
+      ACTIVE_FEEDS_TTL_SECONDS,
+      () => this.loadActive(),
+    );
+  }
+
+  /** Drops the cached active feed list (best-effort; cache is fail-open). */
+  async invalidateActiveCache(): Promise<void> {
+    await this.cacheService.del(ACTIVE_FEEDS_CACHE_KEY);
+  }
+
+  private async loadActive(): Promise<FeedDefinitionRecord[]> {
+    const result = await this.db.query<FeedRow>(
+      `SELECT DISTINCT ON (feed_key) feed_key, version, definition, previous_definition,
+              change_type, changed_by, changed_at
+         FROM oracle_feed_definitions
+        ORDER BY feed_key, version DESC`,
+    );
+    return result.rows.map(toRecord).filter((record) => record.definition.enabled);
   }
 
   async listLatest(): Promise<FeedDefinitionRecord[]> {
@@ -109,6 +156,7 @@ export class FeedDefinitionsService implements OnModuleInit, OnModuleDestroy {
   async create(input: CreateFeedInput, actor: string): Promise<FeedDefinitionRecord> {
     const { feedKey, ...definition } = input;
     const record = await this.insertVersion(feedKey, 1, definition, null, "create", actor);
+    await this.invalidateActiveCache();
     await this.safeRefresh();
     return record;
   }
@@ -143,6 +191,7 @@ export class FeedDefinitionsService implements OnModuleInit, OnModuleDestroy {
       "update",
       actor,
     );
+    await this.invalidateActiveCache();
     await this.safeRefresh();
     return record;
   }
