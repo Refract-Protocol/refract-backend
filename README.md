@@ -42,6 +42,9 @@ Compose; Docker Compose initializes the database schema on first startup:
 docker compose up --build
 ```
 
+To run without Docker, PostgreSQL, or Redis, follow the
+[Keyboard-only sandbox walkthrough](#keyboard-only-sandbox-walkthrough).
+
 `STELLAR_NETWORK` selects `testnet`, `futurenet`, or `mainnet`; the matching
 Soroban RPC URL, Horizon URL, and network passphrase are selected together.
 Set the network-suffixed contract IDs for the selected network (for example,
@@ -190,6 +193,65 @@ and a burst of API traffic cannot delay a payout.
   locally, but deployed environments should split.
 
 `docker compose up` starts both tiers.
+
+### Keyboard-only sandbox walkthrough
+
+Sandbox mode runs the API with in-memory stand-ins for Postgres, Redis, and
+Soroban RPC. It needs only Node.js 18 or newer. Every step below is a typed
+command, so no mouse or GUI is required. Use two terminal windows or tabs; the
+steps say which one to use.
+
+Terminal A (server):
+
+1. Move into the repository root:
+   ```bash
+   cd path/to/refract-backend
+   ```
+2. Confirm Node.js 18 or newer is installed:
+   ```bash
+   node --version
+   ```
+3. Install dependencies:
+   ```bash
+   npm install
+   ```
+4. Start the server in sandbox mode:
+   ```bash
+   SANDBOX_MODE=true npm run dev
+   ```
+   Wait until the terminal prints `Application listening on port 3000` (the
+   line also shows `PROCESS_ROLE=all`) and a sandbox startup banner. The server stays in the foreground and keeps
+   running until you stop it.
+
+Terminal B (check):
+
+5. Open a second terminal window or tab. Keyboard shortcut: `Cmd+T` in macOS
+   Terminal, or `Ctrl+Shift+T` in most Linux terminals. Then move into the
+   repository root again:
+   ```bash
+   cd path/to/refract-backend
+   ```
+6. Confirm the API responds:
+   ```bash
+   curl http://localhost:3000/health/live
+   ```
+   A JSON response means the app is running. If you set `PORT`, replace `3000`
+   with that value.
+
+Stop the server:
+
+7. Switch back to Terminal A with the keyboard (for example, `Cmd+Tab` or
+   `Alt+Tab`, or the window shortcut in your terminal).
+8. Press `Ctrl+C` once. The process exits and your shell prompt returns.
+9. To confirm it stopped, run this in Terminal B. `curl` reports that it could
+   not connect:
+   ```bash
+   curl http://localhost:3000/health/live
+   ```
+
+Sandbox data lives only in memory and resets on each start. Sandbox mode
+refuses to start when `NODE_ENV=production`.
+
 ## Scripts
 
 | Command | Purpose |
