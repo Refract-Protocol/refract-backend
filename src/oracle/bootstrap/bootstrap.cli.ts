@@ -21,6 +21,7 @@ Options:
   --force                   Re-run sources that are already warm
   --dry-run                 Keep results in memory; do not write to Postgres
   --json                    Print the reports as JSON
+  --verbose                 Print the full stack trace on failure
 
 Example:
   oracle-bootstrap --feed stablecoin-depeg \\
@@ -41,6 +42,7 @@ export interface ParsedArgs {
   force: boolean;
   dryRun: boolean;
   json: boolean;
+  verbose: boolean;
 }
 
 /** Parses `<sourceId>:<adapter>[:key=value,...]`. */
@@ -69,6 +71,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     force: false,
     dryRun: false,
     json: false,
+    verbose: false,
   };
   const positiveInt = (flag: string, value: string | undefined): number => {
     const n = Number(value);
@@ -105,6 +108,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--json":
         parsed.json = true;
+        break;
+      case "--verbose":
+        parsed.verbose = true;
         break;
       default:
         throw new Error(`Unknown argument "${arg}"`);
@@ -182,6 +188,12 @@ export async function runBootstrapCli(
       }
     }
     return reports.every((r) => r.status === "warm") ? 0 : 1;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const sources = args.sources.map((s) => s.sourceId).join(", ");
+    io.err(`oracle-bootstrap: failed to bootstrap ${args.feedId} from ${sources}: ${message}`);
+    if (args.verbose && error instanceof Error && error.stack) io.err(error.stack);
+    return 1;
   } finally {
     await pool?.end();
   }
