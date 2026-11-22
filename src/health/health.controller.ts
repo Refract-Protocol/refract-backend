@@ -1,5 +1,5 @@
-import { Controller, Get, HttpCode, HttpStatus, Res } from "@nestjs/common";
-import { Response } from "express";
+import { Controller, Get, HttpCode, HttpStatus, Req, Res } from "@nestjs/common";
+import { Request, Response } from "express";
 import { Public } from "../auth/public.decorator";
 import { HealthService } from "./health.service";
 
@@ -13,13 +13,13 @@ export class HealthController {
    */
   @Public()
   @Get()
-  getHealth() {
-    return {
+  getHealth(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return respond(req, res, {
       status: "ok",
       protocol: "Refract",
       deprecated: true,
       message: "Use /health/live or /health/ready",
-    };
+    });
   }
 
   /**
@@ -39,10 +39,10 @@ export class HealthController {
    */
   @Public()
   @Get("ready")
-  async getReadiness(@Res({ passthrough: true }) res: Response) {
+  async getReadiness(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const result = await this.healthService.getReadiness();
     res.status(result.ready ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE);
-    return result;
+    return respond(req, res, result);
   }
 
   /**
@@ -53,4 +53,21 @@ export class HealthController {
   async getDetail() {
     return this.healthService.getDetail();
   }
+}
+
+/** JSON by default; `Accept: text/plain` gets one `name: value` line per check. */
+function respond(req: Request, res: Response, body: object) {
+  if (req.accepts(["application/json", "text/plain"]) !== "text/plain") return body;
+  res.type("text/plain");
+  return toPlainText(body);
+}
+
+function toPlainText(value: object, prefix = ""): string {
+  return Object.entries(value)
+    .map(([key, v]) => {
+      const name = `${prefix}${key}`;
+      if (v !== null && typeof v === "object" && !Array.isArray(v)) return toPlainText(v, `${name}.`);
+      return `${name}: ${v !== null && typeof v === "object" ? JSON.stringify(v) : String(v)}`;
+    })
+    .join("\n");
 }
