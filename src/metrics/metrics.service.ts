@@ -77,6 +77,13 @@ export class MetricsService implements RelayerMetricsSink {
     registers: [this.registry],
   });
 
+  private readonly alertWebhookFailures = new Counter<"alert">({
+    name: "refract_alert_webhook_failures_total",
+    help: "Alert webhook deliveries that failed (network error or non-2xx), labeled by alert title.",
+    labelNames: ["alert"],
+    registers: [this.registry],
+  });
+
   private readonly openDisputes = new Gauge({
     name: "refract_claim_disputes_open",
     help: "Claim disputes currently open or under review.",
@@ -165,6 +172,10 @@ export class MetricsService implements RelayerMetricsSink {
     const labels = { feed, stage };
     this.oracleDeadlineBreaches.labels(labels).inc();
     this.oracleDeadlineOverrun.labels(labels).observe(Math.max(0, overrunSeconds));
+  }
+
+  recordAlertWebhookFailure(alert: string): void {
+    this.alertWebhookFailures.labels({ alert }).inc();
   }
 
   recordOpenDisputes(count: number): void {

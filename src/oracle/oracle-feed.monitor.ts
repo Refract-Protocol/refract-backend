@@ -98,6 +98,12 @@ export class OracleFeedMonitor {
   private postWebhook(payload: Record<string, unknown>): void {
     if (!this.webhookUrl) return;
 
+    const title = String(payload.title);
+    const fail = (reason: string): void => {
+      this.metrics.recordAlertWebhookFailure(title);
+      this.logger.error(`Oracle alert webhook delivery failed for "${title}": ${reason}`);
+    };
+
     // Fire-and-forget so webhook latency never blocks the publish path. The URL
     // is deliberately not logged: it may embed a delivery token.
     fetch(this.webhookUrl, {
@@ -105,9 +111,12 @@ export class OracleFeedMonitor {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...payload, at: new Date().toISOString() }),
       signal: AbortSignal.timeout(5_000),
-    }).catch(() => {
-      this.logger.warn(`Oracle alert webhook delivery failed for "${String(payload.title)}"`);
-    });
+    })
+      .then((res) => {
+        // fetch resolves on HTTP errors too, so a 4xx/5xx must be checked explicitly.
+        if (!res.ok) fail(`HTTP ${res.status}`);
+      })
+      .catch((err: Error) => fail(err.message));
   }
 }
 
