@@ -33,6 +33,28 @@ Some files under `src/` are empty or missing in parts of the tree; see the
 snapshot caveat in
 [`docs/oracle-trust-architecture.md`](./docs/oracle-trust-architecture.md).
 
+## Oracle submission client
+
+Providers that push readings to `POST /api/v1/oracle/submissions` can use the
+small SDK client in [`sdk/submission-client.ts`](./sdk/submission-client.ts).
+It signs each reading with the provider's Ed25519 key over the canonical
+payload described in [`docs/oracle-submissions.md`](./docs/oracle-submissions.md).
+
+```ts
+import { RefractSubmissionClient } from "./sdk/submission-client";
+
+const client = new RefractSubmissionClient({
+  baseUrl: "https://api.refract.example",
+  providerId: "acme-weather",
+  privateKeyPem: process.env.ORACLE_PROVIDER_PRIVATE_KEY_PEM!,
+});
+
+await client.submit({ coverageType: "StablecoinDepeg", value: "0.9998" });
+```
+
+See the header comment of the file for the full example, including offline
+signing with `sign()` and handling `SubmissionRejectedError`.
+
 ## Quick start
 
 Start the backend and its PostgreSQL and Redis dependencies with Docker

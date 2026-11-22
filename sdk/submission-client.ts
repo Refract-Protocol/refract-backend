@@ -6,6 +6,35 @@ import { canonicalizeSubmission, OBSERVATION_RULES } from "../src/oracle/submiss
  * Minimal client for POST /api/v1/oracle/submissions. Signs each reading with
  * the provider's Ed25519 private key over the canonical payload described in
  * docs/oracle-submissions.md. Requires Node 18+ for the global fetch.
+ *
+ * Usage:
+ *
+ * ```ts
+ * import { RefractSubmissionClient, SubmissionRejectedError } from "./submission-client";
+ *
+ * const client = new RefractSubmissionClient({
+ *   baseUrl: "https://api.refract.example",
+ *   providerId: "acme-weather",
+ *   privateKeyPem: process.env.ORACLE_PROVIDER_PRIVATE_KEY_PEM!,
+ * });
+ *
+ * // Sign only (offline / tests):
+ * const signed = client.sign({ coverageType: "StablecoinDepeg", value: "0.9998" });
+ *
+ * // Sign and POST:
+ * try {
+ *   const result = await client.submit({
+ *     coverageType: "StablecoinDepeg",
+ *     value: "0.9998",
+ *     observedAt: new Date(),
+ *   });
+ *   console.log(result);
+ * } catch (error) {
+ *   if (error instanceof SubmissionRejectedError) {
+ *     console.error(error.status, error.code, error.message);
+ *   }
+ * }
+ * ```
  */
 
 export interface SubmissionClientOptions {
