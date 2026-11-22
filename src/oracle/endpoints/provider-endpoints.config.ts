@@ -74,6 +74,23 @@ export function loadEndpointDeclarations(
   return out;
 }
 
+/**
+ * Fails fast when the configured endpoint lists reference a provider id that
+ * the registry does not know about, naming every unknown id.
+ */
+export function assertKnownProviderIds(
+  declarations: Record<string, unknown>,
+  known: readonly string[] = PROVIDER_ADAPTERS,
+): void {
+  const unknown = Object.keys(declarations).filter((id) => !known.includes(id));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown oracle provider id(s) in endpoint configuration: ${unknown.join(", ")}. ` +
+        `Known provider ids: ${known.join(", ")}`,
+    );
+  }
+}
+
 export function loadEndpointOptions(env: NodeJS.ProcessEnv = process.env): ProviderEndpointOptions {
   return {
     failureThreshold: num(env, "ORACLE_ENDPOINT_FAILURE_THRESHOLD", 3),

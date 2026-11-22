@@ -1,4 +1,6 @@
-import { Body, Controller, Get, HttpException, HttpStatus, Inject, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpException, HttpStatus, Inject, Param, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from "@nestjs/common";
+import { Type } from "class-transformer";
+import { ArrayMaxSize, IsArray, IsInt, IsNumber, IsOptional, IsString, MaxLength, MinLength, ValidateNested } from "class-validator";
 import type { Request } from "express";
 import { OpsAuthGuard } from "../../common/guards/ops-auth.guard";
 import { DEFAULT_APPLY_BATCH, FeedStillUntrustedError, ReevaluationService, ReevaluationSettlementExecutor } from "./reevaluation.service";
@@ -19,11 +21,41 @@ function actorOf(req: OpsRequest): string {
   return req.apiKey?.name ?? "ops";
 }
 
-interface PlanBody {
-  feedId?: string;
-  restoredAt?: number;
-  backfill?: Array<{ observedAt: number; value: number }>;
+export class PlanBackfillDto {
+  @IsNumber()
+  observedAt!: number;
+
+  @IsNumber()
+  value!: number;
 }
+
+export class PlanBody {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  feedId!: string;
+
+  @IsOptional()
+  @IsNumber()
+  restoredAt?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10_000)
+  @ValidateNested({ each: true })
+  @Type(() => PlanBackfillDto)
+  backfill?: PlanBackfillDto[];
+}
+
+export class ApproveReversalBody {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(1000)
+  note!: string;
+}
+
+/** Shared body validation: malformed input becomes a 400 naming the invalid field. */
+const OPS_BODY_PIPE = new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true });
 
 /**
  * Operator view of re-evaluation runs: what was decided under an untrusted
@@ -64,12 +96,9 @@ export class OpsReevaluationController {
 
   /** Manually plan a run, e.g. with operator-supplied backfill readings for a gap in quorum data. */
   @Post()
+  @UsePipes(OPS_BODY_PIPE)
   plan(@Body() body: PlanBody) {
-    if (!body?.feedId || typeof body.feedId !== "string") throw new HttpException({ error: "feedId required" }, HttpStatus.BAD_REQUEST);
     const backfill = body.backfill ?? [];
-    if (!Array.isArray(backfill) || backfill.some((b) => !Number.isFinite(b?.observedAt) || !Number.isFinite(b?.value))) {
-      throw new HttpException({ error: "backfill must be [{observedAt, value}] with finite numbers" }, HttpStatus.BAD_REQUEST);
-    }
     const now = Date.now();
     const restoredAt = Number.isFinite(body.restoredAt) ? (body.restoredAt as number) : now;
     let run;
@@ -98,15 +127,13 @@ export class OpsReevaluationController {
 
   /** Records explicit approval to reverse a flagged overpayment. Nothing is reversed automatically. */
   @Post(":runId/items/:recordId/approve-reversal")
+  @UsePipes(OPS_BODY_PIPE)
   approveReversal(
     @Param("runId") runId: string,
     @Param("recordId") recordId: string,
-    @Body() body: { note?: string },
+    @Body() body: ApproveReversalBody,
     @Req() req: OpsRequest,
   ) {
-    if (!body?.note || typeof body.note !== "string" || body.note.length > 1000) {
-      throw new HttpException({ error: "note (1-1000 chars) required" }, HttpStatus.BAD_REQUEST);
-    }
     try {
       const run = this.service.approveReversal(runId, recordId, actorOf(req), body.note, Date.now());
       return { runId, recordId, status: run.itemStatus[recordId].status, audit: run.audit };

@@ -35,7 +35,11 @@ export class SetQuorumPolicyDto {
   @IsInt() @Min(1) minSources!: number;
   @IsOptional() @IsInt() @Min(1) expectedSources?: number;
   @IsNumber() @Min(0) minTotalWeight!: number;
-  @IsInt() @Min(1) maxReadingAgeMs!: number;
+  /**
+   * Maximum age (ms) of a reading for it to count toward quorum.
+   * Defaults to 300000 (5 minutes) when omitted.
+   */
+  @IsOptional() @IsInt() @Min(1) maxReadingAgeMs?: number;
   @ValidateNested() @Type(() => TriggerRuleDto) trigger!: TriggerRuleDto;
 }
 

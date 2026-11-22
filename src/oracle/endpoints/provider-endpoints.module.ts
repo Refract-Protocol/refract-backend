@@ -1,5 +1,6 @@
 import { Controller, Get, Global, Module } from "@nestjs/common";
 import { ProviderEndpointRegistry } from "./provider-endpoint.registry";
+import { assertKnownProviderIds, loadEndpointDeclarations } from "./provider-endpoints.config";
 
 @Controller("api/v1/oracle/endpoints")
 export class ProviderEndpointsController {
@@ -15,7 +16,15 @@ export class ProviderEndpointsController {
 @Global()
 @Module({
   controllers: [ProviderEndpointsController],
-  providers: [{ provide: ProviderEndpointRegistry, useFactory: () => new ProviderEndpointRegistry() }],
+  providers: [
+    {
+      provide: ProviderEndpointRegistry,
+      useFactory: () => {
+        assertKnownProviderIds(loadEndpointDeclarations());
+        return new ProviderEndpointRegistry();
+      },
+    },
+  ],
   exports: [ProviderEndpointRegistry],
 })
 export class ProviderEndpointsModule {}

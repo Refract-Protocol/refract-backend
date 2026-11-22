@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from "@nestjs/common";
+import { Controller, Get, Param, Query, UsePipes, ValidationPipe } from "@nestjs/common";
 import { plainToInstance } from "class-transformer";
 import { PageKey, PageQueryDto, paginateDesc } from "../common/pagination";
 import { ClaimResult } from "./claim-result";
@@ -21,6 +21,7 @@ const claimKey = (c: ClaimResult): PageKey => ({ at: c.processedAt, id: c.policy
  * a pure like-for-like port.
  */
 @Controller("api/v1/claims")
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class ClaimController {
   constructor(private readonly claimService: ClaimService) {}
 

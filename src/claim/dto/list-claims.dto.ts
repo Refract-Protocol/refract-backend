@@ -4,6 +4,14 @@ import { IsIn, IsInt, IsOptional, Max, Min } from "class-validator";
 /**
  * Query-parameter DTO for GET /api/v1/claims/holder/:address
  * and GET /api/v1/claims/recent.
+ *
+ * Unknown query parameters are rejected (400 naming the offending
+ * parameter, e.g. `limt=10`) by the `ValidationPipe` applied on the
+ * controller with `forbidNonWhitelisted: true`. This is deliberate: a
+ * silently ignored typo would return a default-sized page and look like
+ * a correct response. Callers that send harmless extras (cache-busters,
+ * tracking params) must drop them; the accepted set is exactly the
+ * properties declared below.
  */
 export class ListClaimsDto {
   /** 1-based page number. */

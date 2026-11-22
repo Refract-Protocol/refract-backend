@@ -177,6 +177,20 @@ describe("paginated list endpoints", () => {
     expect(res.body.nextCursor).toBeNull();
   });
 
+  it("rejects an unknown query param on /recent with 400 naming it", async () => {
+    const res = await request(app.getHttpServer()).get("/api/v1/claims/recent?limt=10");
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain("limt");
+  });
+
+  it("accepts a known query param on /recent", async () => {
+    const res = await request(app.getHttpServer()).get("/api/v1/claims/recent?limit=10");
+
+    expect(res.status).toBe(200);
+    expect(res.body.claims).toHaveLength(10);
+  });
+
   it.each([
     ["limit=0", "/api/v1/claims/recent?limit=0"],
     ["limit=101", "/api/v1/claims/recent?limit=101"],
