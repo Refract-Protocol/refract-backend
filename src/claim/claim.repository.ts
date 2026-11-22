@@ -40,10 +40,10 @@ const COVERAGE_TYPE_DB = [
 export interface SettlementLatencyStats {
   coverageType: string;
   sampleSize: number;
-  p50LatencySeconds: number | null;
-  p90LatencySeconds: number | null;
-  p99LatencySeconds: number | null;
-  avgLatencySeconds: number | null;
+  p50LatencySeconds: number;
+  p90LatencySeconds: number;
+  p99LatencySeconds: number;
+  avgLatencySeconds: number;
   totalClaims: number;
   settledClaims: number;
   totalPayoutAmount: number;
@@ -256,10 +256,10 @@ export class ClaimRepository {
        SELECT
          t.coverage_type,
          COALESCE(l.sample_size, 0) AS sample_size,
-         l.p50_latency_seconds,
-         l.p90_latency_seconds,
-         l.p99_latency_seconds,
-         l.avg_latency_seconds,
+         COALESCE(l.p50_latency_seconds, 0) AS p50_latency_seconds,
+         COALESCE(l.p90_latency_seconds, 0) AS p90_latency_seconds,
+         COALESCE(l.p99_latency_seconds, 0) AS p99_latency_seconds,
+         COALESCE(l.avg_latency_seconds, 0) AS avg_latency_seconds,
          t.total_claims,
          t.settled_claims,
          t.total_payout_amount,
@@ -275,10 +275,10 @@ export class ClaimRepository {
       return {
         coverageType: row.coverage_type,
         sampleSize: toNumber(row.sample_size),
-        p50LatencySeconds: toNullableNumber(row.p50_latency_seconds),
-        p90LatencySeconds: toNullableNumber(row.p90_latency_seconds),
-        p99LatencySeconds: toNullableNumber(row.p99_latency_seconds),
-        avgLatencySeconds: toNullableNumber(row.avg_latency_seconds),
+        p50LatencySeconds: toNumber(row.p50_latency_seconds),
+        p90LatencySeconds: toNumber(row.p90_latency_seconds),
+        p99LatencySeconds: toNumber(row.p99_latency_seconds),
+        avgLatencySeconds: toNumber(row.avg_latency_seconds),
         totalClaims: toNumber(row.total_claims),
         settledClaims: toNumber(row.settled_claims),
         totalPayoutAmount: totalPayout,
@@ -439,7 +439,10 @@ function toNumber(value: string | number | null | undefined): number {
   if (value === null || value === undefined) {
     return 0;
   }
-  return typeof value === 'number' ? value : Number(value);
+  const parsed = typeof value === 'number' ? value : Number(value);
+  // Aggregates over an empty result set (e.g. AVG with no rows) surface as
+  // NaN; report them as 0 so callers never see NaN in a stats response.
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function toNullableNumber(value: string | number | null | undefined): number | null {
