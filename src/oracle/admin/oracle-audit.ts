@@ -68,7 +68,15 @@ export interface OracleAuditEvent {
 }
 
 export interface AuditSink {
-  write(event: OracleAuditEvent): void;
+  write(event: OracleAuditEvent): void | Promise<void>;
+}
+
+/** Raised when the audit trail could not be written; the admin action must fail. */
+export class AuditWriteError extends Error {
+  constructor(readonly cause: unknown) {
+    super(`Audit write failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "AuditWriteError";
+  }
 }
 
 export class WinstonAuditSink implements AuditSink {
@@ -90,16 +98,36 @@ export class WinstonAuditSink implements AuditSink {
  */
 export class OracleAuditLog {
   private readonly recent: OracleAuditEvent[] = [];
+  private readonly logger = winston.createLogger({
+    level: "info",
+    format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
+    transports: [new winston.transports.Console()],
+  });
 
   constructor(
     private readonly sink: AuditSink = new WinstonAuditSink(),
     private readonly capacity = 1_000
   ) {}
 
-  write(event: OracleAuditEvent): void {
+  /**
+   * Writes the event to the sink. A failed write is logged at error level and
+   * rethrown as an AuditWriteError so the caller's admin action fails instead
+   * of silently losing the audit record.
+   */
+  async write(event: OracleAuditEvent): Promise<void> {
+    try {
+      await this.sink.write(event);
+    } catch (error) {
+      this.logger.error("oracle_operator_audit_write_failed", {
+        action: event.action,
+        requestId: event.requestId,
+        actor: event.actor.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new AuditWriteError(error);
+    }
     this.recent.push(event);
     if (this.recent.length > this.capacity) this.recent.splice(0, this.recent.length - this.capacity);
-    this.sink.write(event);
   }
 
   /** Most recent first. */

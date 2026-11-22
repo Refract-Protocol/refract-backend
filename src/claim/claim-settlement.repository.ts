@@ -15,6 +15,24 @@ export interface ClaimSettlementRecord {
 const UNIQUE_VIOLATION = "23505";
 
 /**
+ * Raised when a settlement read fails at the database layer. Distinct from a
+ * null return, which means the row genuinely does not exist.
+ */
+export class ClaimSettlementReadError extends Error {
+  readonly code = "CLAIM_SETTLEMENT_READ_FAILED";
+
+  constructor(readonly decisionId: string, readonly cause?: unknown) {
+    super(
+      `Failed to read claim settlement for decision ${decisionId}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`
+    );
+    this.name = "ClaimSettlementReadError";
+    Object.setPrototypeOf(this, ClaimSettlementReadError.prototype);
+  }
+}
+
+/**
  * Durable settlement state machine keyed by consensus decision id
  * (see buildDecisionId in src/oracle/oracle-encoding.ts).
  *
@@ -58,14 +76,28 @@ export class ClaimSettlementRepository {
     }
   }
 
+  /**
+   * Returns the settlement row for a decision, or null when no row exists.
+   * A failed query is never reported as "not found": it is logged and rethrown
+   * as a ClaimSettlementReadError so callers can distinguish the two.
+   */
   async findByDecisionId(decisionId: string): Promise<ClaimSettlementRecord | null> {
-    const result = await this.db.query<ClaimSettlementRecord>(
-      `SELECT decision_id AS "decisionId", policy_id AS "policyId", amount::text AS amount,
-              status, tx_hash AS "txHash", last_error AS "lastError"
-       FROM claim_settlements WHERE decision_id = $1`,
-      [decisionId]
-    );
-    return result.rows[0] ?? null;
+    try {
+      const result = await this.db.query<ClaimSettlementRecord>(
+        `SELECT decision_id AS "decisionId", policy_id AS "policyId", amount::text AS amount,
+                status, tx_hash AS "txHash", last_error AS "lastError"
+         FROM claim_settlements WHERE decision_id = $1`,
+        [decisionId]
+      );
+      return result.rows[0] ?? null;
+    } catch (err) {
+      this.logger.error(
+        `Failed to read claim_settlements for decision ${decisionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      throw new ClaimSettlementReadError(decisionId, err);
+    }
   }
 
   /** Records the transaction hash before broadcast, so a crash can be reconciled. */

@@ -33,6 +33,17 @@ export class IdempotencyService {
   constructor(private readonly db: DatabaseService) {}
 
   /**
+   * Compose the storage key from the caller's `Idempotency-Key` header value
+   * and the request route (method + path). Scoping per route means the same
+   * client key reused on a different endpoint cannot replay another route's
+   * cached response.
+   */
+  static scopedKey(key: string, method: string, path: string): string {
+    const route = `${method.toUpperCase()} ${path}`;
+    return `${route}:${key}`;
+  }
+
+  /**
    * Attempt to acquire an idempotency lock for `key`.
    *
    * Returns `{ hit: false }` if the key is new (proceed with the write).
@@ -43,8 +54,11 @@ export class IdempotencyService {
    */
   async acquire(
     key: string,
-    endpoint: string
+    endpoint: string,
+    method = "POST",
+    path = endpoint
   ): Promise<{ hit: false } | { hit: true; record: IdempotencyRecord }> {
+    const scopedKey = IdempotencyService.scopedKey(key, method, path);
     const existing = await this.db.query<{
       key: string;
       endpoint: string;
@@ -56,7 +70,7 @@ export class IdempotencyService {
       `SELECT key, endpoint, response_body, status_code, created_at, committed
          FROM idempotency_keys
         WHERE key = $1 AND endpoint = $2`,
-      [key, endpoint]
+      [scopedKey, endpoint]
     );
 
     if (existing.rows.length > 0) {
@@ -87,14 +101,14 @@ export class IdempotencyService {
       // Stale lock — the original request crashed before committing.
       // Delete and let this request proceed as fresh.
       this.logger.warn(`Stale idempotency lock for key=${key} (age=${ageMs}ms). Proceeding as new request.`);
-      await this.db.query(`DELETE FROM idempotency_keys WHERE key = $1 AND endpoint = $2`, [key, endpoint]);
+      await this.db.query(`DELETE FROM idempotency_keys WHERE key = $1 AND endpoint = $2`, [scopedKey, endpoint]);
     }
 
     // Insert a pending lock row.
     await this.db.query(
       `INSERT INTO idempotency_keys (key, endpoint, committed) VALUES ($1, $2, false)
        ON CONFLICT (key, endpoint) DO NOTHING`,
-      [key, endpoint]
+      [scopedKey, endpoint]
     );
 
     return { hit: false };

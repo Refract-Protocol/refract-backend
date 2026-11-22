@@ -5,6 +5,7 @@ import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } f
 import { decodeSorobanError } from "../common/soroban-error";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
+import { ClaimSettlementReadError } from "./claim-settlement.repository";
 
 export interface SettlementResult {
   settled: boolean;
@@ -102,6 +103,19 @@ export class ClaimSettlementService {
       return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof ClaimSettlementReadError) {
+        // A failed settlement read is a data-layer failure, not a missing row:
+        // surface it distinctly so callers do not treat it as "not found".
+        this.logger.error(
+          `Settlement state read failed for policy ${policyId} (decision ${err.decisionId})`,
+          message
+        );
+        return {
+          settled: false,
+          code: err.code,
+          error: "Could not read settlement state. Please retry later or contact support.",
+        };
+      }
       this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
       return {
         settled: false,

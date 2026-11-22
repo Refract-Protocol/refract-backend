@@ -214,6 +214,9 @@ export class DisputeService implements OnApplicationBootstrap {
         )
       ).rows[0];
       if (!row) throw new NotFoundException(`Unknown dispute ${id}`);
+      if (TRANSITIONS[row.status].length === 0) {
+        throw new ConflictException(`Dispute ${id} is already ${row.status} and cannot be resolved again`);
+      }
       if (!TRANSITIONS[row.status].includes(input.to)) {
         throw new ConflictException(`Cannot move dispute from ${row.status} to ${input.to}`);
       }

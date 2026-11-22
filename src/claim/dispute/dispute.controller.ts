@@ -1,4 +1,14 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  ConflictException,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from "@nestjs/common";
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { Request } from "express";
 import { OpsAuthGuard } from "../../common/guards/ops-auth.guard";
@@ -54,7 +64,7 @@ export class DisputeController {
       "The original settlement and evidence are not modified.",
   })
   @Post(":id/transitions")
-  transition(
+  async transition(
     @Req() req: OpsRequest,
     @Param("id") id: string,
     @Body() body: { to?: unknown; note?: unknown; replacementDecisionId?: unknown },
@@ -69,6 +79,11 @@ export class DisputeController {
       replacementDecisionId: optionalString(body.replacementDecisionId, "replacementDecisionId", 256),
       actor: req.apiKey?.name ?? "ops",
     };
-    return this.disputes.transition(id, input);
-  }
+    try {
+      return await this.disputes.transition(id, input);
+    } catch (err) {
+      // A dispute that is already final (upheld/reversed/withdrawn) cannot be resolved again.
+      if (err instanceof ConflictException) throw new ConflictException(err.message);
+      throw err;
+    }  }
 }
