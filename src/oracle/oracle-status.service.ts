@@ -17,6 +17,7 @@ import {
   feedKeySchema,
   feedListResponseSchema,
 } from "../common/oracle-status.schemas";
+import type { Severity } from "./oracle-reading";
 
 /** Responses are cached briefly; new decisions invalidate immediately. */
 export const ORACLE_STATUS_CACHE_TTL_SECONDS = 15;
@@ -36,7 +37,7 @@ interface DecisionRow {
   coverage_type: string;
   id: string;
   value: string;
-  severity: string;
+  severity: Severity;
   recorded_at: Date;
   source_count: string;
   min_value: string;
