@@ -33,9 +33,16 @@ export class FixedWindowLimiter {
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  /** Counts a hit against `identity` and reports whether it is within budget. */
+  /**
+   * Counts a hit against `identity` and reports whether it is within budget.
+   * The limit is checked before counting so rejected hits do not consume
+   * budget from the current window.
+   */
   hit(identity: string, budget: RateLimitBudget): RateLimitDecision {
     const window = this.current(identity, budget);
+    if (window.count >= budget.limit) {
+      return this.decision(window, budget);
+    }
     window.count += 1;
     return this.decision(window, budget);
   }

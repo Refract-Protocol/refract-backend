@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { LoadedOracleConfig, OracleConfigParseError, loadOracleConfig } from "./oracle-feed-config";
+import { LoadedOracleConfig, OracleConfigFile, OracleConfigParseError, loadOracleConfig } from "./oracle-feed-config";
 import { formatReport, validateOracleConfig } from "./oracle-config.validator";
 
 const USAGE = `Usage: oracle-config-lint [--file <path>] [--network <testnet|futurenet|mainnet>] [--strict] [--json]
@@ -18,6 +18,18 @@ Exit codes: 0 valid, 1 invalid, 2 usage error or unreadable/malformed config.`;
 export interface LintIo {
   out(line: string): void;
   err(line: string): void;
+}
+
+/** Feed ids that appear more than once in the raw config, in first-seen order. */
+function duplicateFeedIds(config: OracleConfigFile): string[] {
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const feed of config.feeds) {
+    if (!feed.id) continue;
+    if (seen.has(feed.id) && !duplicates.includes(feed.id)) duplicates.push(feed.id);
+    seen.add(feed.id);
+  }
+  return duplicates;
 }
 
 export function runOracleConfigLint(

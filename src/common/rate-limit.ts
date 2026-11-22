@@ -104,15 +104,13 @@ export function rateLimit(options: RateLimitOptions) {
       buckets.set(identity, bucket);
     }
 
-    bucket.count += 1;
-
-    const remaining = Math.max(0, max - bucket.count);
-    res.setHeader('X-RateLimit-Limit', String(max));
-    res.setHeader('X-RateLimit-Remaining', String(remaining));
-    res.setHeader('X-RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
-
-    if (bucket.count > max) {
+    // Check the limit before counting so rejected requests do not consume
+    // budget from the current window.
+    if (bucket.count >= max) {
       const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+      res.setHeader('X-RateLimit-Limit', String(max));
+      res.setHeader('X-RateLimit-Remaining', '0');
+      res.setHeader('X-RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
       res.setHeader('Retry-After', String(retryAfter));
       res.status(429).json({
         error: 'Too Many Requests',
@@ -120,6 +118,13 @@ export function rateLimit(options: RateLimitOptions) {
       });
       return;
     }
+
+    bucket.count += 1;
+
+    const remaining = Math.max(0, max - bucket.count);
+    res.setHeader('X-RateLimit-Limit', String(max));
+    res.setHeader('X-RateLimit-Remaining', String(remaining));
+    res.setHeader('X-RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
 
     next();
   };

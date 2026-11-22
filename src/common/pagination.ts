@@ -62,6 +62,38 @@ function compareDesc(a: PageKey, b: PageKey): number {
 }
 
 /**
+ * 1-based page number for a raw row `offset`. Uses `Math.floor` so a
+ * non-multiple offset (e.g. 15 with limit 10) still maps to the page that
+ * contains it (page 2) instead of truncating to the wrong page.
+ */
+export function pageFromOffset(offset: number, limit: number): number {
+  if (!Number.isFinite(offset) || !Number.isFinite(limit) || limit <= 0) {
+    throw new BadRequestException({ error: "Invalid pagination offset/limit" });
+  }
+  return Math.floor(Math.max(0, offset) / limit) + 1;
+}
+
+/**
+ * Offset-paginates `rows`: derives the page with `Math.floor(offset / limit)`
+ * while slicing from the raw offset, so partial offsets are honoured.
+ */
+export function paginateOffset<T>(
+  rows: readonly T[],
+  offset: number,
+  limit: number
+): { items: T[]; page: number; offset: number; limit: number; total: number } {
+  const page = pageFromOffset(offset, limit);
+  const start = Math.max(0, Math.floor(offset));
+  return {
+    items: rows.slice(start, start + limit),
+    page,
+    offset: start,
+    limit,
+    total: rows.length,
+  };
+}
+
+/**
  * Keyset-paginates `rows` newest first. A page after `cursor` holds only
  * rows strictly older than the cursor's key, so rows inserted between
  * requests (always newer) can't shift later pages into duplicates or
