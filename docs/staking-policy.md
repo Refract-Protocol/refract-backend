@@ -2,12 +2,13 @@
 
 **Status:** Draft for review
 **Implements:** Refract-Protocol/refract-backend#192
-**Code:** `src/services/staking.ts`, `src/routes/staking.ts`, `src/db/schema.sql`
+**Code:** `src/services/staking.ts`, `src/routes/staking.ts`
 
 Operators bond stake to serve payout-triggering feeds. They lose part of it
 when their submissions are proven faulty, and must wait out an unbonding period
 before withdrawing. This document is the published policy. Values marked
 "configurable" are set by environment variables and take effect at process start.
+Section 9 lists where they are read and which migrations touch staking.
 
 ## 1. Custody and roles
 
@@ -27,9 +28,9 @@ before withdrawing. This document is the published policy. Values marked
 
   | Tier | Env var | Default (base units, 7 decimals) |
   |---|---|---|
-  | `tier1` | `STAKING_MIN_BOND_TIER1` | 50,000 units |
-  | `tier2` | `STAKING_MIN_BOND_TIER2` | 25,000 units |
-  | `tier3` | `STAKING_MIN_BOND_TIER3` | 10,000 units |
+  | `tier1` | `STAKING_MIN_BOND_TIER1` | 500,000,000,000 (50,000 units) |
+  | `tier2` | `STAKING_MIN_BOND_TIER2` | 250,000,000,000 (25,000 units) |
+  | `tier3` | `STAKING_MIN_BOND_TIER3` | 100,000,000,000 (10,000 units) |
 
 - **Bond age:** `STAKING_MIN_BOND_AGE_SECONDS` (default 7 days). Age is anchored
   to the first bond, so top-ups do not reset it. This stops flash-bond-then-slash
@@ -122,3 +123,19 @@ authentication exists.
 - Cross-chain stake.
 - The Soroban staking contract. It lives outside this repository and is the
   authority for balances; this backend only mirrors its confirmed events.
+
+## 9. Configuration source and upgrade notes
+
+- **Where the values are read:** `loadStakingPolicy()` in `src/services/staking.ts`.
+  Each `STAKING_*` variable named above is read there. An unset variable uses the
+  default shown; a non-integer value throws when the staking service is constructed.
+- **`src/config/env.schema.ts` does not declare these variables.** The file is
+  empty at this commit, and `.env.example` does not list them. Set them in the
+  process environment directly until the schema is populated.
+- **No database enforcement.** The migrations in `migrations/` do not create
+  `operator_bonds`, `unbond_requests`, or `slashing_proposals`, and no staking
+  limit is a database constraint. The limits above are enforced by application code.
+- **Upgrade note:** `migrations/001_policy_on_chain_id.sql` and
+  `migrations/002_operator_controls.sql` contain no staking values, so no staking
+  limit changed between them. They cover policy ids and status (001) and feed
+  controls, source quarantine, and the operator audit log (002).
