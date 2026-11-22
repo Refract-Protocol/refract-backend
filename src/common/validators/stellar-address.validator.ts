@@ -1,4 +1,13 @@
 import { registerDecorator, ValidationArguments, ValidationOptions } from 'class-validator';
+import { StrKey } from '@stellar/stellar-sdk';
+
+/**
+ * Normalizes a candidate StrKey value: trims surrounding whitespace and
+ * uppercases it, since StrKey is base32 and therefore case-insensitive.
+ */
+export function normalizeStrKey(value: string): string {
+  return value.trim().toUpperCase();
+}
 
 /**
  * Shared validation logic for Stellar StrKey encoded values.
@@ -17,19 +26,21 @@ function validateStrKey(
     return false;
   }
 
-  if (value.length !== 56) {
+  const candidate = normalizeStrKey(value);
+
+  if (candidate.length !== 56) {
     return false;
   }
 
-  if (!value.startsWith(prefix)) {
+  if (!candidate.startsWith(prefix)) {
     return false;
   }
 
-  if (!/^[A-Za-z2-7]+$/.test(value.slice(1))) {
+  if (!/^[A-Z2-7]+$/.test(candidate.slice(1))) {
     return false;
   }
 
-  return isValid(value);
+  return isValid(candidate);
 }
 
 function buildMessage(value: unknown, expected: string): string {
@@ -37,7 +48,7 @@ function buildMessage(value: unknown, expected: string): string {
     return `${expected} must be a string`;
   }
 
-  if (value.length !== 56) {
+  if (normalizeStrKey(value).length !== 56) {
     return `${expected} must be exactly 56 characters long`;
   }
 
@@ -77,7 +88,7 @@ function registerStrKeyValidator(
  */
 export function IsStellarPublicKey(validationOptions?: ValidationOptions) {
   return registerStrKeyValidator(
-    () => true,
+    (candidate) => StrKey.isValidEd25519PublicKey(candidate),
     'Stellar public key',
     'G',
     validationOptions,
@@ -89,7 +100,7 @@ export function IsStellarPublicKey(validationOptions?: ValidationOptions) {
  */
 export function IsStellarContractId(validationOptions?: ValidationOptions) {
   return registerStrKeyValidator(
-    () => true,
+    (candidate) => StrKey.isValidContract(candidate),
     'Stellar contract id',
     'C',
     validationOptions,
@@ -104,7 +115,7 @@ export function IsStellarContractId(validationOptions?: ValidationOptions) {
  */
 export function IsStellarSecretSeed(validationOptions?: ValidationOptions) {
   return registerStrKeyValidator(
-    () => true,
+    (candidate) => StrKey.isValidEd25519SecretSeed(candidate),
     'Stellar secret seed',
     'S',
     validationOptions,
