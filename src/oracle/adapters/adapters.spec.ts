@@ -4,6 +4,7 @@ import { CoinGeckoAdapter } from "./coingecko.adapter";
 import { DefiLlamaAdapter } from "./defillama.adapter";
 import { HorizonAdapter } from "./horizon.adapter";
 import { AdapterSchemaError } from "./source-adapter";
+import { HttpJsonError } from "./http-json";
 
 /** Minimal axios stand-in: returns `body` as text for any GET and records calls. */
 function fakeHttp(body: unknown, status = 200) {
