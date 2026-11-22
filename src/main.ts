@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { isSandboxMode } from './config/configuration';
 import { resolveProcessRole } from './runtime/process-role';
 import { installGracefulShutdown } from './runtime/graceful-shutdown';
 
@@ -18,6 +19,14 @@ async function bootstrap(): Promise<void> {
     logger.warn(
       'PROCESS_ROLE is not set: running the API and the payout pipeline in one process. ' +
         'In deployed environments set PROCESS_ROLE=api here and run the worker separately (npm run start:worker).',
+    );
+  }
+
+  // Human-facing notices go to stderr so stdout stays clean for machine-readable output.
+  if (isSandboxMode()) {
+    // eslint-disable-next-line no-console
+    console.error(
+      '\n*** SANDBOX MODE: in-memory/mocked services, no persistence. Not a real environment. ***\n',
     );
   }
 
