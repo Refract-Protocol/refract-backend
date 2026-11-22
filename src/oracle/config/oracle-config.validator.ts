@@ -297,7 +297,7 @@ export function formatReport(report: OracleConfigReport, origin: string): string
     `Oracle feed config (${origin}): ${report.feedCount} feed(s), ${report.errors.length} error(s), ${report.warnings.length} warning(s)`,
   ];
   for (const issue of [...report.errors, ...report.warnings]) {
-    lines.push(`  ${issue.severity.toUpperCase()} ${issue.code} [${issue.feed}] ${issue.message}`);
+    lines.push(`  ${issue.severity}: ${issue.code} [${issue.feed}] ${issue.message}`);
   }
   return lines.join("\n");
 }
