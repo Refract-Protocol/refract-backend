@@ -2,9 +2,17 @@ import { BadRequestException, Body, Controller, Get, Param, Post, Req, UseGuards
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { Request } from "express";
 import { OpsAuthGuard } from "../../common/guards/ops-auth.guard";
-import { DisputeService, TransitionDisputeInput } from "./dispute.service";
+import { DisputeService, TransitionDisputeInput, UUID } from "./dispute.service";
 
 type OpsRequest = Request & { apiKey?: { name?: string } };
+
+// details.field surfaces in the global error envelope; a top-level `field` would be dropped by AllExceptionsFilter.
+const requireDisputeId = (value: string): string => {
+  if (!UUID.test(value)) {
+    throw new BadRequestException({ message: "Dispute id must be a UUID.", details: { field: "id" } });
+  }
+  return value;
+};
 
 const requireString = (value: unknown, field: string, max: number): string => {
   if (typeof value !== "string" || value.trim() === "" || value.length > max) {
@@ -44,7 +52,7 @@ export class DisputeController {
   @ApiOperation({ summary: "Get a dispute's status, bond state and reversal link" })
   @Get(":id")
   get(@Param("id") id: string) {
-    return this.disputes.get(id);
+    return this.disputes.get(requireDisputeId(id));
   }
 
   @ApiOperation({
@@ -59,6 +67,7 @@ export class DisputeController {
     @Param("id") id: string,
     @Body() body: { to?: unknown; note?: unknown; replacementDecisionId?: unknown },
   ) {
+    requireDisputeId(id);
     const to = body?.to;
     if (typeof to !== "string" || !(RESOLUTIONS as readonly string[]).includes(to)) {
       throw new BadRequestException(`to must be one of ${RESOLUTIONS.join(", ")}`);
