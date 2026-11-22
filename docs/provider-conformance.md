@@ -5,6 +5,13 @@ Third-party data sources must pass the conformance checks in
 weight. The same module runs locally for providers and inside the backend
 admission gate, so both use one definition of "compliant".
 
+## Conformance checklist
+
+1. Run the adapter checks with `runConformance` (see [Running the checks](#running-the-checks)).
+2. Run the sandbox sign-reading harness against a sandbox deployment (see [Sandbox sign-reading harness](#sandbox-sign-reading-harness)).
+3. Read the report's "does not prove" list and complete the manual checks it names.
+4. Certify with `buildCertificationRecord` (see [Certification and expiry](#certification-and-expiry)).
+
 ## Running the checks
 
 Implement the adapter contract:
@@ -45,6 +52,70 @@ submissions.
 
 A check passes only if it passes for every submission. The report lists the
 first failure detail for each failing check.
+
+## Sandbox sign-reading harness
+
+`scripts/sandbox-sign-reading.ts` produces the signed payloads that the
+oracle provider sandbox accepts. Use it to check that your key and signing
+code produce submissions the sandbox API accepts. Set up the sandbox first
+with [`docs/oracle-provider-sandbox.md`](./oracle-provider-sandbox.md).
+
+The harness only signs. It does not call the sandbox, check values, or
+verify signatures. The sandbox does all of that when it receives the
+payload.
+
+### Inputs
+
+| Input | Meaning |
+|---|---|
+| `PROVIDER_SECRET` env var | Required. Your Stellar secret key (`S…`). Use a throwaway testnet key. |
+| `register <name>` | Signs a registration. `name` defaults to `sandbox provider`. |
+| `reading <feed> <value>` | Signs a reading. `value` is a decimal string such as `0.9998`. `observedAt` is the current time and `nonce` is random. |
+
+```bash
+PROVIDER_SECRET=S... npx ts-node scripts/sandbox-sign-reading.ts register "Acme Feeds"
+PROVIDER_SECRET=S... npx ts-node scripts/sandbox-sign-reading.ts reading StablecoinDepeg 0.9998
+```
+
+### Output and exit codes
+
+On success the script prints one line of JSON to stdout and exits `0`.
+
+- `register` prints `{"providerId","name","signature"}`.
+- `reading` prints `{"providerId","feed","value","observedAt","nonce","signature"}`.
+
+| Exit code | Cause |
+|---|---|
+| `0` | Payload printed |
+| `1` | `PROVIDER_SECRET` is unset, a `reading` argument is missing, or the command is unknown |
+| `1` | `PROVIDER_SECRET` is not a valid secret key. Node prints an uncaught-exception stack trace. |
+
+### What a passing run looks like
+
+1. The script exits `0` and stdout is a single line of valid JSON with the
+   fields above.
+2. Piping the output to the sandbox API succeeds. `POST /readings` answers
+   `202`, and its `status` is `awaiting_corroboration` or `decided`, not
+   `rejected`. See [Rejection reasons](./oracle-provider-sandbox.md#rejection-reasons)
+   if it is `rejected`.
+
+### What the harness covers and what it does not
+
+The harness is a signer, so the sandbox is what verifies. Use the harness
+to confirm the signing path. Check these yourself:
+
+- Value shape and precision. The harness does not validate `value`. A bad
+  value is still signed, and the sandbox rejects it as `invalid_shape`.
+- Feed names. The harness does not check the feed against the sandbox feed
+  list. The sandbox rejects an unknown feed as `unknown_feed`.
+- Accuracy of the value. The harness takes whatever number you pass.
+- Corroboration. A single run never reaches `minProviders`. Test agreement
+  and outlier handling with several registered providers, and check
+  `GET /sandbox/oracle/decisions` and `/rejections`.
+- Timing and rate limits. Readings from the harness use the current time,
+  so the harness does not test staleness or per-minute rate limits.
+- Production signing. Sandbox signatures use the `sandbox` domain and never
+  verify on a production deployment. Production signing needs its own check.
 
 ## Report
 
