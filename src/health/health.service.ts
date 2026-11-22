@@ -1,6 +1,7 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
 import { CacheService } from "../cache/cache.service";
 import { DbService } from "../db/db.service";
+import { OracleControlRegistry } from "../oracle/admin/oracle-control.registry";
 import { OracleTrustService } from "../oracle/oracle-trust.service";
 import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 
@@ -14,6 +15,7 @@ export class HealthService {
     @Optional() private readonly dbService?: DbService,
     @Optional() private readonly database?: DbService,
     @Optional() private readonly cache?: CacheService,
+    @Optional() private readonly controls?: OracleControlRegistry,
   ) {}
 
   getLiveness(): { status: "ok" } {
@@ -22,7 +24,9 @@ export class HealthService {
 
   async getReadiness(): Promise<{
     ready: boolean;
-    status: "ready" | "not_ready";
+    status: "ready" | "degraded" | "not_ready";
+    /** Names the active operator pause(s) when the oracle is paused; null otherwise. */
+    reason: string | null;
     checks: {
       sourcesReachable: boolean;
       quorumSatisfiable: boolean;
@@ -45,10 +49,17 @@ export class HealthService {
       quorumSatisfiable: feedReadiness?.quorumSatisfiable ?? false,
       ...infrastructure.checks,
     };
-    const ready = Object.values(checks).every(Boolean) && postgres && redis;
+    const dependenciesOk = Object.values(checks).every(Boolean) && postgres && redis;
+    const paused = this.controls?.listFeeds().filter((feed) => feed.pause?.paused) ?? [];
+    const reason =
+      paused.length > 0
+        ? `Oracle paused: ${paused.map((feed) => `${feed.definition.id} (${feed.pause?.reason ?? "no reason given"})`).join("; ")}`
+        : null;
+    const ready = dependenciesOk && reason === null;
     return {
       ready,
-      status: ready ? "ready" : "not_ready",
+      status: ready ? "ready" : dependenciesOk ? "degraded" : "not_ready",
+      reason,
       checks,
       trustMode: feedReadiness?.trustMode ?? "strict",
       feeds: feedReadiness?.feeds ?? [],
@@ -81,6 +92,7 @@ export class HealthService {
     const readiness = await this.getReadiness();
     return {
       status: readiness.status,
+      reason: readiness.reason,
       trustMode: readiness.trustMode,
       dependencies: {
         ...readiness.checks,

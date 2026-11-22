@@ -35,7 +35,8 @@ export class HealthController {
 
   /**
    * Aggregated readiness across database, Redis, Soroban RPC and Stellar
-   * configuration. Returns 503 when any required dependency is not ready.
+   * configuration. Returns 503 when any required dependency is not ready or
+   * an operator has paused the oracle (status "degraded", reason in body).
    */
   @Public()
   @Get("ready")
