@@ -14,4 +14,10 @@ export class ClaimStatsResponseDto {
 export class ClaimStatsOpsResponseDto extends ClaimStatsResponseDto {
   @Expose()
   settlementConfigured!: boolean;
+
+  @Expose()
+  deadLetterClaims!: number;
+
+  @Expose()
+  settlementRetries!: number;
 }

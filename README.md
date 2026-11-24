@@ -223,7 +223,20 @@ npx ts-node scripts/operator-cli.ts audit
 Mutating commands require `--reason` and an operator identity (`--operator` or
 `OPERATOR_ID`). `pause` and `quarantine` also require `--yes` (or `--dry-run`).
 Each mutation writes its state change and a row in `operator_audit_log` in one
-transaction, then prints the before/after state. Any failure exits non-zero.
+transaction, then prints the before/after state.
+
+### Exit codes
+
+`operator-cli.ts` and `scripts/oracle-ops.ts` (the evidence-ledger CLI, see
+`src/oracle/consensus/cli.ts`) share one exit code contract
+(`src/common/cli-exit-codes.ts`), so a wrapping script can branch on the
+result the same way for either tool:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Usage error — bad flags, a missing required argument, an unknown command, or a missing `--yes`/confirmation. Nothing remote was attempted. |
+| `2` | Remote/operation failure — the command was well-formed but failed while actually running (database error, unreadable or malformed evidence ledger, etc). |
 
 ## API surface
 
