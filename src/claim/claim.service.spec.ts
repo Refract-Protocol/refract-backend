@@ -51,7 +51,7 @@ function buildDecision(overrides: Partial<ConsensusDecision> = {}): ConsensusDec
     ],
     failures: [],
     blockers: [],
-    decidedAt: 123,
+    decidedAt: Date.now(),
     evidenceSeq: 7,
     ...overrides,
   };

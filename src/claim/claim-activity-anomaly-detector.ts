@@ -14,11 +14,15 @@ export interface ClaimAnomalyConfig {
   maximumPolicyPayoutShare: number;
   minimumPolicyVolumeForConcentration: number;
   maximumObservations: number;
+  /** Optional: flags a per-coverage trigger count that grew too fast relative to the previous window. */
+  maximumTriggerGrowthRatio?: Record<string, number>;
+  /** Optional per-coverage override of the absolute trigger-count floor used in place of the ratio check when the previous window had zero triggers. Defaults to DEFAULT_MIN_ABSOLUTE_ANOMALY_CLAIMS. */
+  minimumAbsoluteTriggersForRatioAnomaly?: Record<string, number>;
 }
 
 export interface ClaimActivityAnomaly {
   coverageType: string;
-  code: 'settlement_volume' | 'policy_concentration' | 'trigger_frequency';
+  code: 'settlement_volume' | 'policy_concentration' | 'trigger_frequency' | 'trigger_growth_ratio';
   observed: number;
   limit: number;
   message: string;
@@ -36,6 +40,7 @@ const COVERAGE_TYPES = new Set([
   'FlightDelay',
 ]);
 const MAX_PAYOUT = 1e18;
+const DEFAULT_MIN_ABSOLUTE_ANOMALY_CLAIMS = 5;
 
 /**
  * Sliding-window claim activity detector. It is deliberately separate from
@@ -46,6 +51,7 @@ const MAX_PAYOUT = 1e18;
 export class ClaimActivityAnomalyDetector {
   private readonly observations = new Map<string, ClaimActivity>();
   private readonly trippedWindows = new Set<string>();
+  private readonly previousWindowTriggerCounts = new Map<string, number>();
 
   constructor(
     private readonly config: ClaimAnomalyConfig,
@@ -76,6 +82,20 @@ export class ClaimActivityAnomalyDetector {
     )) {
       if (!COVERAGE_TYPES.has(coverageType) || !Number.isInteger(limit) || limit < 1) {
         throw new Error('Invalid trigger-frequency anomaly limit');
+      }
+    }
+    for (const [coverageType, ratio] of Object.entries(
+      config.maximumTriggerGrowthRatio ?? {},
+    )) {
+      if (!COVERAGE_TYPES.has(coverageType) || !Number.isFinite(ratio) || ratio <= 0) {
+        throw new Error('Invalid trigger-growth-ratio anomaly limit');
+      }
+    }
+    for (const [coverageType, floor] of Object.entries(
+      config.minimumAbsoluteTriggersForRatioAnomaly ?? {},
+    )) {
+      if (!COVERAGE_TYPES.has(coverageType) || !Number.isInteger(floor) || floor < 0) {
+        throw new Error('Invalid absolute trigger-growth-ratio floor');
       }
     }
   }
@@ -129,8 +149,10 @@ export class ClaimActivityAnomalyDetector {
     const coverageTypes = new Set([
       ...Object.keys(this.config.maximumSettlementVolumeByCoverage),
       ...Object.keys(this.config.maximumTriggersByCoverage),
+      ...Object.keys(this.config.maximumTriggerGrowthRatio ?? {}),
     ]);
     const anomalies: ClaimActivityAnomaly[] = [];
+    const windowId = Math.floor(now / this.config.windowMs);
 
     for (const coverageType of coverageTypes) {
       const coverageEvents = active.filter(
@@ -170,6 +192,42 @@ export class ClaimActivityAnomalyDetector {
         });
       }
 
+      const triggerRatioLimit = this.config.maximumTriggerGrowthRatio?.[coverageType];
+      if (triggerRatioLimit !== undefined) {
+        const previousTriggerCount = this.previousWindowTriggerCounts.get(
+          `${windowId - 1}:${coverageType}`,
+        );
+        if (previousTriggerCount !== undefined && previousTriggerCount > 0) {
+          const ratio = triggers.length / previousTriggerCount;
+          if (ratio > triggerRatioLimit) {
+            anomalies.push({
+              coverageType,
+              code: 'trigger_growth_ratio',
+              observed: ratio,
+              limit: triggerRatioLimit,
+              message: `Trigger count ratio ${ratio.toFixed(2)}x exceeds limit ${triggerRatioLimit}x of the previous window`,
+            });
+          }
+        } else {
+          // A zero (or unseen) previous window makes the ratio Infinity,
+          // which is "no signal" rather than "infinite anomaly" — fall back
+          // to an absolute floor instead of dividing by zero.
+          const absoluteFloor =
+            this.config.minimumAbsoluteTriggersForRatioAnomaly?.[coverageType] ??
+            DEFAULT_MIN_ABSOLUTE_ANOMALY_CLAIMS;
+          if (triggers.length > absoluteFloor) {
+            anomalies.push({
+              coverageType,
+              code: 'trigger_growth_ratio',
+              observed: triggers.length,
+              limit: absoluteFloor,
+              message: `Trigger count ${triggers.length} exceeds the absolute anomaly floor ${absoluteFloor} after a quiet previous window`,
+            });
+          }
+        }
+      }
+      this.previousWindowTriggerCounts.set(`${windowId}:${coverageType}`, triggers.length);
+
       if (volume >= this.config.minimumPolicyVolumeForConcentration) {
         const byPolicy = new Map<string, number>();
         for (const event of settled) {
@@ -193,7 +251,6 @@ export class ClaimActivityAnomalyDetector {
       }
     }
 
-    const windowId = Math.floor(now / this.config.windowMs);
     for (const anomaly of anomalies) {
       const key = `${windowId}:${anomaly.coverageType}:${anomaly.code}`;
       if (!this.trippedWindows.has(key)) {
@@ -202,6 +259,7 @@ export class ClaimActivityAnomalyDetector {
       }
     }
     this.pruneTrippedWindows(windowId);
+    this.prunePreviousWindowTriggerCounts(windowId);
     return anomalies;
   }
 
@@ -210,6 +268,15 @@ export class ClaimActivityAnomalyDetector {
       const windowId = Number(key.slice(0, key.indexOf(':')));
       if (windowId < currentWindow - 1) {
         this.trippedWindows.delete(key);
+      }
+    }
+  }
+
+  private prunePreviousWindowTriggerCounts(currentWindow: number): void {
+    for (const key of this.previousWindowTriggerCounts.keys()) {
+      const windowId = Number(key.slice(0, key.indexOf(':')));
+      if (windowId < currentWindow - 1) {
+        this.previousWindowTriggerCounts.delete(key);
       }
     }
   }
