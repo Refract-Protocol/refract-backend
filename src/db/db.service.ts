@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationShutdown } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
-import { AppConfig } from "../config/configuration";
+import { AppConfig, isSandboxMode } from "../config/configuration";
 
 /**
  * Thin `pg` Pool wrapper. Construction is graceful when `DATABASE_URL` is
@@ -17,9 +17,17 @@ export class DbService implements OnApplicationShutdown {
     // typed config factory still supplies a localhost default.
     const fromEnv = process.env.DATABASE_URL?.trim();
     const fromConfig = configService.get("database", { infer: true })?.url?.trim();
-    const url = fromEnv === "" ? "" : fromEnv || fromConfig;
+    // #580: the typed config factory always supplies a localhost default
+    // even when DATABASE_URL is unset, which would otherwise make sandbox
+    // mode try to dial a real Postgres on first run. Sandbox mode must not
+    // fall back to that default — only an explicitly-set DATABASE_URL counts.
+    const url = isSandboxMode() ? fromEnv ?? "" : fromEnv === "" ? "" : fromEnv || fromConfig;
     if (!url) {
-      this.logger.warn("DATABASE_URL unset — DbService running without a pool");
+      this.logger.warn(
+        isSandboxMode()
+          ? "SANDBOX_MODE enabled and DATABASE_URL unset — DbService running without a pool"
+          : "DATABASE_URL unset — DbService running without a pool"
+      );
       this.pool = null;
       return;
     }

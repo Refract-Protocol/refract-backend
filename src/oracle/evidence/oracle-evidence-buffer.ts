@@ -159,6 +159,23 @@ export class OracleEvidenceBuffer implements OnModuleInit, OnApplicationShutdown
     }
   }
 
+  /**
+   * Admission-path helper (#578): records a reading the admission gate
+   * rejected (e.g. a future-dated observation), so operators can see which
+   * provider sent it even though the reading itself was never persisted.
+   * Never throws — a rejection that can't be durably recorded is logged,
+   * not escalated, since the rejection itself already protected the feed.
+   */
+  async recordRejection(entry: RejectedReadingInput): Promise<void> {
+    try {
+      await this.append([rejectedReadingToEvidence(entry)]);
+    } catch (err) {
+      this.logger.error(
+        `Oracle reading rejection not durably recorded: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   status(): EvidenceBufferStatus {
     const firstPending = this.pending[0];
     return {
@@ -297,6 +314,29 @@ export function readingToEvidence(reading: OracleReading): EvidenceEntry {
     source: reading.degraded ? "degraded" : reading.sources?.[0] ?? "unknown",
     recordedAt: latestObservedAt(reading) ?? Date.now(),
     payload: reading,
+  };
+}
+
+export interface RejectedReadingInput {
+  coverageType: string;
+  value: number;
+  severity: string;
+  /** The provider/source that sent the rejected reading. */
+  source: string;
+  reason: string;
+  observedAt?: Date;
+  recordedAt?: number;
+}
+
+export function rejectedReadingToEvidence(entry: RejectedReadingInput): EvidenceEntry {
+  return {
+    kind: "rejected_reading",
+    coverageType: entry.coverageType,
+    value: entry.value,
+    severity: entry.severity,
+    source: entry.source,
+    recordedAt: entry.recordedAt ?? entry.observedAt?.getTime() ?? Date.now(),
+    payload: { reason: entry.reason, observedAt: entry.observedAt?.toISOString() },
   };
 }
 

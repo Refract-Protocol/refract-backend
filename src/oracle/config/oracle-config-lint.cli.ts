@@ -13,6 +13,11 @@ ORACLE_FEEDS_JSON, or falls back to the built-in feeds.
   --strict          Treat warnings as errors
   --json            Print the report as JSON
 
+See docs/oracle-feeds.example.json for the canonical reference config shape.
+
+Example:
+  npx ts-node scripts/oracle-config-lint.ts --file docs/oracle-feeds.example.json
+
 Exit codes: 0 valid, 1 invalid, 2 usage error or unreadable/malformed config.`;
 
 export interface LintIo {

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { Pool } from "pg";
 import { PG_POOL } from "../db/db.module";
 import { OracleDeadLetterRepository } from "./oracle-dead-letter.repository";
@@ -6,6 +6,7 @@ import { CacheService } from "../cache/cache.service";
 import { OracleReading } from "./oracle-reading";
 import { ReadingAdmissionGate, SourceClockOffset, readingDigest } from "./oracle-timestamp";
 import { OracleStatusService } from "./oracle-status.service";
+import { OracleEvidenceBuffer } from "./evidence/oracle-evidence-buffer";
 
 type InsertParams = [string, number, string, string, Date, string];
 
@@ -58,7 +59,11 @@ export class OracleEventRepository {
   constructor(
     @Inject(PG_POOL) private readonly db: Pool,
     private readonly deadLetters: OracleDeadLetterRepository,
-    private readonly cache: CacheService
+    private readonly cache: CacheService,
+    // Optional: no provider is registered for this yet (#578 adds the
+    // capability without requiring the full evidence-store wiring that
+    // would be a separate, much larger undertaking — see report).
+    @Optional() private readonly evidenceBuffer?: OracleEvidenceBuffer
   ) {}
 
   /**
@@ -143,6 +148,14 @@ export class OracleEventRepository {
     const admission = this.admission.admit(source, reading.observedAt);
     if (!admission.accepted) {
       this.logger.warn(`Rejected oracle reading ${reading.coverageType} from ${source}: ${admission.reason}`);
+      void this.evidenceBuffer?.recordRejection({
+        coverageType: reading.coverageType,
+        value: reading.value,
+        severity: reading.severity,
+        source,
+        reason: admission.reason,
+        observedAt: admission.observedAt,
+      });
       return undefined;
     }
 

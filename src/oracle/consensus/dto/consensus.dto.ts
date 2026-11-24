@@ -30,6 +30,13 @@ class TriggerRuleDto {
   @IsNumber() threshold!: number;
 }
 
+export class SetConsensusWindowDto {
+  @IsString() @IsNotEmpty() @MaxLength(80) feedId!: string;
+  // A zero or negative window never accumulates enough readings to close,
+  // stalling the feed silently (#579) — reject it at the boundary instead.
+  @IsInt() @Min(1) windowDurationMs!: number;
+}
+
 export class SetQuorumPolicyDto {
   @IsString() @IsNotEmpty() @MaxLength(80) feedId!: string;
   @IsInt() @Min(1) minSources!: number;

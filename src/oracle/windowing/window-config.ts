@@ -68,18 +68,36 @@ export const DEFAULT_FEED_WINDOW_CONFIGS: FeedWindowConfig[] = [
   },
 ];
 
+/** Smallest window duration that can ever accumulate readings before closing. */
+export const MIN_WINDOW_DURATION_MS = 1;
+
+/**
+ * Rejects a zero-length or negative window at the boundary where configs
+ * enter the windowing system, naming the offending field. A window with
+ * duration <= 0 would never close (or would close before any reading could
+ * arrive), silently stalling the feed — see issue #579.
+ */
+export function assertValidFeedWindowConfig(config: FeedWindowConfig): FeedWindowConfig {
+  if (!Number.isFinite(config.windowDurationMs) || config.windowDurationMs < MIN_WINDOW_DURATION_MS) {
+    throw new Error(
+      `FeedWindowConfig.windowDurationMs must be >= ${MIN_WINDOW_DURATION_MS}ms for feed "${config.feedId}", got ${config.windowDurationMs}`,
+    );
+  }
+  return config;
+}
+
 /** Looks up a feed config, falling back to a default 30s window. */
 export function getFeedConfig(
   feedId: string,
   configs: FeedWindowConfig[] = DEFAULT_FEED_WINDOW_CONFIGS,
 ): FeedWindowConfig {
-  return (
+  const config =
     configs.find((c) => c.feedId === feedId) ?? {
       feedId,
       windowDurationMs: 30_000,
       allowedLatenessMs: 5_000,
       lateArrivalPolicy: "drop",
       bestEffort: false,
-    }
-  );
+    };
+  return assertValidFeedWindowConfig(config);
 }
