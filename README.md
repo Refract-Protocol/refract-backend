@@ -462,6 +462,7 @@ or on-chain state.
 - [Oracle incident runbooks](./docs/runbooks/oracle-incidents.md) — stale feeds, divergence, fail-safes, suspect sources, and restoring operation after a pause.
 - [Threat model](./docs/threat-model.md) — transaction lifecycle STRIDE assessment and prioritized follow-ups.
 - [Security policy](./SECURITY.md) — vulnerability reporting and HTTP security configuration.
+- [Submission SDK](./sdk/README.md) — client for signing and posting third-party oracle readings.
 
 ## License
 
