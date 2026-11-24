@@ -8,6 +8,7 @@
  */
 import { Pool } from "pg";
 import { MutationAction, OperatorControls } from "../src/oracle/operator-controls";
+import { CliUsageError, EXIT_REMOTE_ERROR, EXIT_USAGE_ERROR } from "../src/common/cli-exit-codes";
 
 const USAGE = `Usage: operator-cli <command> [args] [flags]
 
@@ -55,10 +56,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
       flags[name] = true;
     } else if (VALUE_FLAGS.has(name)) {
       const v = argv[++i];
-      if (v === undefined || v.startsWith("--")) throw new Error(`--${name} requires a value`);
+      if (v === undefined || v.startsWith("--")) throw new CliUsageError(`--${name} requires a value`);
       flags[name] = v;
     } else {
-      throw new Error(`unknown flag --${name}`);
+      throw new CliUsageError(`unknown flag --${name}`);
     }
   }
   const [command = "", ...positional] = rest;
@@ -68,7 +69,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 function limitOf(flags: ParsedArgs["flags"]): number {
   if (flags.limit === undefined) return 20;
   const n = Number(flags.limit);
-  if (!Number.isInteger(n) || n < 1 || n > 500) throw new Error("--limit must be an integer between 1 and 500");
+  if (!Number.isInteger(n) || n < 1 || n > 500) throw new CliUsageError("--limit must be an integer between 1 and 500");
   return n;
 }
 
@@ -79,7 +80,7 @@ async function main(): Promise<void> {
     return;
   }
   const url = process.env.DATABASE_URL?.trim();
-  if (!url) throw new Error("DATABASE_URL is not set");
+  if (!url) throw new CliUsageError("DATABASE_URL is not set");
   const pool = new Pool({ connectionString: url });
   const ops = new OperatorControls(pool);
 
@@ -97,7 +98,7 @@ async function main(): Promise<void> {
         }))
       );
     } else if (command === "readings") {
-      if (!positional[0]) throw new Error("readings requires <feed>");
+      if (!positional[0]) throw new CliUsageError("readings requires <feed>");
       for (const [source, rows] of await ops.recentReadings(positional[0], limitOf(flags))) {
         console.log(`\n${source}${rows[0].quarantined ? "  [QUARANTINED]" : ""}`);
         for (const r of rows) {
@@ -120,10 +121,10 @@ async function main(): Promise<void> {
     } else if (MUTATIONS[command]) {
       const { action, destructive } = MUTATIONS[command];
       const target = positional[0];
-      if (!target) throw new Error(`${command} requires a target`);
+      if (!target) throw new CliUsageError(`${command} requires a target`);
       const dryRun = flags["dry-run"] === true;
       if (destructive && !dryRun && flags.yes !== true) {
-        throw new Error(`${command} is high-impact: re-run with --yes to confirm, or --dry-run to preview`);
+        throw new CliUsageError(`${command} is high-impact: re-run with --yes to confirm, or --dry-run to preview`);
       }
       const res = await ops.mutate({
         action,
@@ -137,7 +138,7 @@ async function main(): Promise<void> {
       console.log(`  before:  ${JSON.stringify(res.before)}`);
       console.log(`  after:   ${JSON.stringify(res.after)}`);
     } else {
-      throw new Error(`unknown command "${command}"\n\n${USAGE}`);
+      throw new CliUsageError(`unknown command "${command}"\n\n${USAGE}`);
     }
   } finally {
     await pool.end();
@@ -146,7 +147,12 @@ async function main(): Promise<void> {
 
 if (require.main === module) {
   main().catch((err) => {
+    if (err instanceof CliUsageError) {
+      console.error(`usage error: ${err.message}`);
+      process.exit(EXIT_USAGE_ERROR);
+      return;
+    }
     console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
+    process.exit(EXIT_REMOTE_ERROR);
   });
 }

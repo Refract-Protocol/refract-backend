@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import { CliUsageError, EXIT_REMOTE_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR } from "../../common/cli-exit-codes";
 import { canonicalJson } from "./canonical";
 import { foldHolds, HoldStatus } from "./claim-hold.service";
 import { EvidenceLedger } from "./evidence-ledger";
@@ -47,7 +48,7 @@ export function parseFlags(argv: string[]): { command?: string; flags: Record<st
   const flags: Record<string, string> = {};
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
-    if (!arg.startsWith("--")) throw new Error(`unexpected argument: ${arg}`);
+    if (!arg.startsWith("--")) throw new CliUsageError(`unexpected argument: ${arg}`);
     const eq = arg.indexOf("=");
     if (eq > 0) {
       flags[arg.slice(2, eq)] = arg.slice(eq + 1);
@@ -62,19 +63,26 @@ export function parseFlags(argv: string[]): { command?: string; flags: Record<st
 
 export function loadLedgerEvents(flags: Record<string, string>, deps: CliDeps): EvidenceEvent[] {
   const file = flags["ledger-file"] ?? deps.env.EVIDENCE_LEDGER_PATH;
-  if (!file) throw new Error("no evidence ledger: pass --ledger-file or set EVIDENCE_LEDGER_PATH");
+  if (!file) throw new CliUsageError("no evidence ledger: pass --ledger-file or set EVIDENCE_LEDGER_PATH");
   return EvidenceLedger.parseJsonl(deps.readFile(file));
 }
 
 export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): CliResult {
   try {
     const { command, flags } = parseFlags(argv);
-    if (!command || command === "help" || flags.help) return { exitCode: command ? 0 : 1, stdout: USAGE, stderr: "" };
+    if (!command || command === "help" || flags.help) {
+      return { exitCode: command ? EXIT_SUCCESS : EXIT_USAGE_ERROR, stdout: USAGE, stderr: "" };
+    }
 
     if (command === "reconstruct") {
-      const query = parseReconstructionQuery(flags.feed ?? "", { at: flags.at, ledger: flags.ledger });
+      let query;
+      try {
+        query = parseReconstructionQuery(flags.feed ?? "", { at: flags.at, ledger: flags.ledger });
+      } catch (err) {
+        throw new CliUsageError(err instanceof Error ? err.message : String(err));
+      }
       const events = loadLedgerEvents(flags, deps);
-      return { exitCode: 0, stdout: serializeReconstruction(reconstructConsensusState(events, query)), stderr: "" };
+      return { exitCode: EXIT_SUCCESS, stdout: serializeReconstruction(reconstructConsensusState(events, query)), stderr: "" };
     }
 
     if (command === "holds") {
@@ -82,25 +90,28 @@ export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): Cl
       const holds = [...foldHolds(events).values()]
         .filter((h) => !flags.status || h.status === (flags.status as HoldStatus))
         .sort((a, b) => a.placedAt - b.placedAt);
-      return { exitCode: 0, stdout: `${canonicalJson({ holds })}\n`, stderr: "" };
+      return { exitCode: EXIT_SUCCESS, stdout: `${canonicalJson({ holds })}\n`, stderr: "" };
     }
 
     if (command === "mirror-backtest") {
       const events = loadLedgerEvents(flags, deps);
-      return { exitCode: 0, stdout: `${canonicalJson(mirrorBacktest(events, flags, deps.env))}\n`, stderr: "" };
+      return { exitCode: EXIT_SUCCESS, stdout: `${canonicalJson(mirrorBacktest(events, flags, deps.env))}\n`, stderr: "" };
     }
 
     if (command === "offboard-plan") {
-      if (!flags.source) throw new Error("--source is required");
+      if (!flags.source) throw new CliUsageError("--source is required");
       const events = loadLedgerEvents(flags, deps);
       const at = flags.at ? Date.parse(flags.at) : Date.now();
-      if (Number.isNaN(at)) throw new Error(`--at is not an ISO-8601 timestamp: ${flags.at}`);
-      return { exitCode: 0, stdout: `${canonicalJson(planOffboarding(events, flags.source, at))}\n`, stderr: "" };
+      if (Number.isNaN(at)) throw new CliUsageError(`--at is not an ISO-8601 timestamp: ${flags.at}`);
+      return { exitCode: EXIT_SUCCESS, stdout: `${canonicalJson(planOffboarding(events, flags.source, at))}\n`, stderr: "" };
     }
 
-    return { exitCode: 1, stdout: "", stderr: `unknown command: ${command}\n\n${USAGE}` };
+    return { exitCode: EXIT_USAGE_ERROR, stdout: "", stderr: `unknown command: ${command}\n\n${USAGE}` };
   } catch (err) {
-    return { exitCode: 1, stdout: "", stderr: `error: ${err instanceof Error ? err.message : String(err)}\n` };
+    if (err instanceof CliUsageError) {
+      return { exitCode: EXIT_USAGE_ERROR, stdout: "", stderr: `usage error: ${err.message}\n` };
+    }
+    return { exitCode: EXIT_REMOTE_ERROR, stdout: "", stderr: `error: ${err instanceof Error ? err.message : String(err)}\n` };
   }
 }
 
@@ -112,7 +123,7 @@ export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): Cl
 export function mirrorBacktest(events: EvidenceEvent[], flags: Record<string, string>, env: NodeJS.ProcessEnv) {
   const cfg = loadMirrorDetectionConfig(env);
   const step = flags["step-ms"] ? Number(flags["step-ms"]) : Math.max(1, Math.floor(cfg.windowMs / 2));
-  if (!(step > 0)) throw new Error("--step-ms must be a positive number");
+  if (!(step > 0)) throw new CliUsageError("--step-ms must be a positive number");
   const feeds = flags.feed ? [flags.feed] : governedFeeds(events);
   return {
     thresholds: cfg,

@@ -66,17 +66,32 @@ export class FeedDefinitionsService implements OnModuleInit, OnModuleDestroy {
     return this.cache.get(feedKey);
   }
 
+  /**
+   * Served from the in-process cache (same one the monitor reads), not a
+   * fresh query — the set of feeds changes rarely, and every write already
+   * calls `safeRefresh()` before returning, so the cache is never more than
+   * one `FEED_DEFINITIONS_RELOAD_MS` interval behind this instance's own writes.
+   */
   async listLatest(): Promise<FeedDefinitionRecord[]> {
-    const result = await this.db.query<FeedRow>(
-      `SELECT DISTINCT ON (feed_key) feed_key, version, definition, previous_definition,
-              change_type, changed_by, changed_at
-         FROM oracle_feed_definitions
-        ORDER BY feed_key, version DESC`,
-    );
-    return result.rows.map(toRecord);
+    return [...this.cache.values()];
   }
 
+  /** Cached read for callers that don't need the authoritative row — see `fetchLatestFromDb` for that. */
   async getLatest(feedKey: string): Promise<FeedDefinitionRecord> {
+    const record = this.cache.get(feedKey);
+    if (!record) {
+      throw new NotFoundException({ code: "FEED_NOT_FOUND", error: `Feed ${feedKey} does not exist.` });
+    }
+    return record;
+  }
+
+  /**
+   * Always hits the database. `update()`'s optimistic-concurrency check
+   * compares against `expectedVersion`, so it must never read a cached
+   * (possibly stale-by-up-to-one-interval) version — a false match there
+   * would silently defeat the conflict check.
+   */
+  private async fetchLatestFromDb(feedKey: string): Promise<FeedDefinitionRecord> {
     const result = await this.db.query<FeedRow>(
       `SELECT feed_key, version, definition, previous_definition, change_type, changed_by, changed_at
          FROM oracle_feed_definitions
@@ -115,7 +130,7 @@ export class FeedDefinitionsService implements OnModuleInit, OnModuleDestroy {
 
   async update(feedKey: string, input: UpdateFeedInput, actor: string): Promise<FeedDefinitionRecord> {
     const { expectedVersion, ...changes } = input;
-    const current = await this.getLatest(feedKey);
+    const current = await this.fetchLatestFromDb(feedKey);
     if (current.version !== expectedVersion) {
       throw new ConflictException({
         code: "FEED_VERSION_CONFLICT",
