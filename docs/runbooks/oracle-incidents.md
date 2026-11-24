@@ -243,9 +243,10 @@ policy.
 
 ## 5. Restore normal operation after a pause
 
-**Important:** there is **no operator pause switch** in code. A pause today is
-a configuration change and a restart. Writing a real pause command is
-**PLANNED**.
+> **Pause controls are now implemented.** Use the API documented in
+> [Oracle safety controls — Pause controls](../oracle-safety-controls.md#pause-controls)
+> as the first step. The manual relayer-removal procedure below is a fallback
+> for a full infrastructure-level stop only.
 
 **Pausing (manual):**
 

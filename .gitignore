@@ -26,3 +26,20 @@ coverage/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Test snapshots
+**/__snapshots__/
+*.snap
+
+# Jest cache
+.jest-cache/
+jest_cache/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS metadata
+Thumbs.db

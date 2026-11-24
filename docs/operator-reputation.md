@@ -4,6 +4,59 @@ Model version: `operator-reputation/v1`. Implementation: `src/oracle/reputation.
 
 Reputation weights each oracle operator's contribution to a corroborated value instead of counting every source equally. A long-running accurate operator outweighs a new or mediocre one, and a new operator has no influence on payout-triggering feeds until it has earned it.
 
+## Operator identity
+
+Operator credentials are configured in the `ORACLE_OPERATOR_KEYS` environment
+variable, a JSON array parsed and validated by `parseOperatorCredentials()` at
+startup (`src/oracle/admin/operator-identity.ts`). The server never stores a
+raw secret; only the SHA-256 of each key's secret part is kept in
+configuration.
+
+### Credential fields
+
+| Field | Type | Rule |
+|-------|------|------|
+| `keyId` | string | 2–63 chars, `[a-z0-9-]`, must start with `[a-z0-9]`. Duplicate key ids are rejected at startup. |
+| `actor` | string | 1–128 chars. Identifies the person or service account. |
+| `role` | string | One of `oracle:viewer`, `oracle:operator`, `oracle:admin`. |
+| `secretSha256` | string | 64 lowercase hex chars — the SHA-256 of the secret. The raw secret is never stored. |
+| `expiresAt` | string (optional) | ISO-8601 timestamp. The key is rejected after this time. |
+| `disabled` | boolean (optional) | If `true`, the key is rejected regardless of expiry. |
+
+### Token format
+
+Tokens are presented as `Authorization: Bearer <keyId>.<secret>`. The key id
+selects the credential; the secret is compared in constant time against the
+stored hash.
+
+### Roles and permissions
+
+| Role | Permissions |
+|------|-------------|
+| `oracle:viewer` | `feeds:read` |
+| `oracle:operator` | `feeds:read`, `feeds:pause`, `bootstrap:run` |
+| `oracle:admin` | `feeds:read`, `feeds:write`, `quorum:write`, `feeds:pause`, `quarantine:override`, `manual:override`, `bootstrap:run`, `audit:read` |
+
+Viewers can inspect feed state. Operators can make reversible safety-direction
+changes (pause/resume a feed, re-run a bootstrap). Only admins can alter what
+the oracle believes: feed definitions, quorum policy, quarantine overrides, and
+manual value overrides.
+
+### Authentication failure reasons
+
+Every auth failure returns a generic HTTP 401 to the caller. The specific
+reason is written to the audit log only, so callers cannot probe which key ids
+exist.
+
+| Reason | Cause |
+|--------|-------|
+| `missing_credentials` | No `Authorization` header present. |
+| `malformed_token` | Header is not in `Bearer <keyId>.<secret>` format. |
+| `unknown_key` | The key id is not in the configured list. |
+| `invalid_secret` | The key id is known but the secret does not match. |
+| `key_disabled` | The credential has `disabled: true`. |
+| `key_expired` | The credential's `expiresAt` is in the past. |
+
 ## Inputs
 
 Scoring is a pure function of an operator's history and a clock value `now` supplied by the caller. Nothing reads the system clock, so the same history and `now` always produce the same score.
