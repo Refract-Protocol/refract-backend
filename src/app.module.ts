@@ -43,6 +43,7 @@ import { OperatorsModule } from './routes/operators';
 import { StakingModule } from './routes/staking';
 import { EventsModule } from './events/events.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { destroyHttpJsonAgents } from './oracle/adapters/http-json';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -121,4 +122,8 @@ export const isSandboxMode = (): boolean =>
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements OnApplicationShutdown {
+  onApplicationShutdown(): void {
+    destroyHttpJsonAgents();
+  }
+}

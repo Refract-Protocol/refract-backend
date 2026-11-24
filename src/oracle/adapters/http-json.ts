@@ -1,8 +1,24 @@
 import { createHash } from "crypto";
+import { Agent as HttpAgent } from "http";
+import { Agent as HttpsAgent } from "https";
 import axios, { AxiosInstance } from "axios";
 import { ObservationEvidence } from "./source-adapter";
 
 const EXCERPT_CHARS = 512;
+
+// Created once per process so provider requests reuse TCP connections
+// instead of each call negotiating a fresh socket. Destroyed on shutdown
+// via destroyHttpJsonAgents().
+const httpAgent = new HttpAgent({ keepAlive: true });
+const httpsAgent = new HttpsAgent({ keepAlive: true });
+
+const sharedHttpClient: AxiosInstance = axios.create({ httpAgent, httpsAgent });
+
+/** Closes the pooled keep-alive sockets on process shutdown. */
+export function destroyHttpJsonAgents(): void {
+  httpAgent.destroy();
+  httpsAgent.destroy();
+}
 
 export interface JsonResponse<T> {
   data: T;
@@ -17,7 +33,7 @@ export async function getJsonWithEvidence<T>(
   url: string,
   params: Record<string, string | number | boolean> | undefined,
   timeoutMs: number,
-  http: AxiosInstance = axios,
+  http: AxiosInstance = sharedHttpClient,
 ): Promise<JsonResponse<T>> {
   const res = await http.get<string>(url, {
     params,
