@@ -24,6 +24,12 @@ export const freshnessStateSchema = z.enum(["live", "degraded", "paused", "unkno
 export const trustModeSchema = z.enum(["multi_source", "single_source", "none"]);
 export const sourceHealthSchema = z.enum(["healthy", "stale", "down"]);
 
+/**
+ * Severity levels produced by oracle readings and carried in decision records.
+ * Matches the `Severity` type in `src/oracle/oracle-reading.ts`.
+ */
+export const severitySchema = z.enum(["low", "medium", "high", "triggered"]);
+
 export const sourceStatusSchema = z
   .object({
     name: z.string(),
@@ -48,7 +54,7 @@ export const decisionSchema = z
     /** Opaque reference into the evidence ledger; never raw contents. */
     evidenceRef: z.string(),
     value: z.number(),
-    severity: z.string(),
+    severity: severitySchema,
     method: z.enum(["multi_source_median", "single_source"]),
     quorum: quorumSchema,
     divergenceBps: z.number().nonnegative(),
@@ -103,3 +109,4 @@ export type FeedListResponse = z.infer<typeof feedListResponseSchema>;
 export type FeedHistoryResponse = z.infer<typeof feedHistoryResponseSchema>;
 export type Decision = z.infer<typeof decisionSchema>;
 export type SourceStatus = z.infer<typeof sourceStatusSchema>;
+export type OracleStatusSeverity = z.infer<typeof severitySchema>;

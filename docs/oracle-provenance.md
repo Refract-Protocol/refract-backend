@@ -13,7 +13,7 @@ The backend side lives in `src/oracle/oracle-encoding.ts`
 `buildUpdateReadingArgs`). The contract must accept the third argument
 before the relayer switches to it.
 
-## Layout
+## Provenance bitmask layout
 
 Most significant bits first:
 
@@ -53,6 +53,46 @@ policy, the outcome and the evaluation time (`computeDecisionId` in
 `src/oracle/consensus/consensus.ts`). Re-running consensus over the logged
 inputs reproduces the id, which ties an on-chain value back to the exact
 observations behind it.
+
+## Evidence spool records
+
+The spool (`src/oracle/evidence/evidence-spool.ts`) writes `EvidenceRecord`
+values as NDJSON to a local write-ahead log and flushes them to Postgres via
+the `EvidenceStore` interface. `EvidenceRecord` is a discriminated union of
+`SequencedEvidence` (for real readings and decisions) and `EvidenceGap` (for
+runs of sequence numbers that could not be made durable).
+
+### SequencedEvidence fields
+
+`SequencedEvidence` extends `EvidenceEntry` with a sequence number assigned
+at the moment the record is accepted:
+
+| Field | Type | Description |
+|---|---|---|
+| `seq` | `number` | Strictly increasing sequence number; gaps indicate lost records |
+| `kind` | `"reading"` \| `"decision"` | Record kind |
+| `coverageType` | `string` | PascalCase coverage type, e.g. `"StablecoinDepeg"` |
+| `value` | `number` | Numeric value at the time of this record |
+| `severity` | `string` | Severity level, e.g. `"low"`, `"medium"`, `"high"`, `"triggered"` |
+| `source` | `string` | Primary source tag, e.g. `"coingecko"` or `"consensus"` |
+| `recordedAt` | `number` | Wall-clock time the evidence was produced (ms) |
+| `payload` | `unknown` | Full structured payload: the reading or decision with its observations |
+
+### EvidenceGap fields
+
+A gap record marks a run of sequence numbers that could not be made durable:
+
+| Field | Type | Description |
+|---|---|---|
+| `seq` | `number` | Sequence number of this gap record |
+| `kind` | `"gap"` | Always `"gap"` |
+| `firstSeq` | `number` | First sequence number in the lost run |
+| `lastSeq` | `number` | Last sequence number in the lost run |
+| `lostCount` | `number` | Number of records lost (`lastSeq - firstSeq + 1`) |
+| `openedAt` | `number` | Wall-clock time the gap started (ms) |
+| `closedAt` | `number` | Wall-clock time the gap was closed (ms) |
+| `reason` | `string` | Human-readable explanation of the loss |
+| `recordedAt` | `number` | Wall-clock time the gap record itself was written (ms) |
 
 ## Decoding in a contract (Rust sketch)
 
