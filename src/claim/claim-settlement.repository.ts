@@ -12,6 +12,16 @@ export interface ClaimSettlementRecord {
   lastError?: string;
 }
 
+export interface SettlementAttemptUpsert {
+  policyId: string;
+  holder: string;
+  attemptCount: number;
+  lastError?: string;
+  lastErrorClass?: "transient" | "permanent" | "indeterminate";
+  pendingTxHash?: string;
+  errorHistory: unknown[];
+}
+
 const UNIQUE_VIOLATION = "23505";
 
 /**
@@ -56,6 +66,46 @@ export class ClaimSettlementRepository {
       if ((err as { code?: string }).code === UNIQUE_VIOLATION) return false;
       throw err;
     }
+  }
+
+  /**
+   * Persists attempt-count/error-history updates for several policies in one
+   * round trip instead of one UPSERT per policy. The attempt-counter-cap
+   * decision (how many attempts a policy gets) is made by the caller before
+   * this is invoked; this only writes whatever rows it is given.
+   */
+  async recordAttemptsBatch(attempts: SettlementAttemptUpsert[]): Promise<void> {
+    if (attempts.length === 0) return;
+
+    const columns = ["policy_id", "holder", "attempt_count", "last_error", "last_error_class", "pending_tx_hash", "error_history"];
+    const values: unknown[] = [];
+    const rows = attempts.map((attempt, i) => {
+      const base = i * columns.length;
+      values.push(
+        attempt.policyId,
+        attempt.holder,
+        attempt.attemptCount,
+        attempt.lastError ?? null,
+        attempt.lastErrorClass ?? null,
+        attempt.pendingTxHash ?? null,
+        JSON.stringify(attempt.errorHistory)
+      );
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::jsonb)`;
+    });
+
+    await this.db.query(
+      `INSERT INTO settlement_attempts (policy_id, holder, attempt_count, last_error, last_error_class, pending_tx_hash, error_history)
+       VALUES ${rows.join(", ")}
+       ON CONFLICT (policy_id) DO UPDATE SET
+         attempt_count = EXCLUDED.attempt_count,
+         last_attempt_at = now(),
+         last_error = EXCLUDED.last_error,
+         last_error_class = EXCLUDED.last_error_class,
+         pending_tx_hash = EXCLUDED.pending_tx_hash,
+         error_history = EXCLUDED.error_history,
+         updated_at = now()`,
+      values
+    );
   }
 
   async findByDecisionId(decisionId: string): Promise<ClaimSettlementRecord | null> {
