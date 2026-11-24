@@ -1,11 +1,31 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { isSandboxMode } from './config/configuration';
 import { resolveProcessRole } from './runtime/process-role';
 import { installGracefulShutdown } from './runtime/graceful-shutdown';
 
+// Printed to stderr, never stdout, so it never mixes into the JSON a CLI
+// script emits on stdout when SANDBOX_MODE=true.
+function printSandboxBanner(): void {
+  process.stderr.write(
+    [
+      '',
+      '==============================================================',
+      '  SANDBOX_MODE=true — oracle bootstrap skips the Postgres pool',
+      '  and uses in-memory stores instead. Not for production use.',
+      '==============================================================',
+      '',
+    ].join('\n') + '\n',
+  );
+}
+
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
+
+  if (isSandboxMode()) {
+    printSandboxBanner();
+  }
 
   // API entrypoint. With PROCESS_ROLE=api this process only serves reads and
   // the WebSocket feed; the payout pipeline runs in src/worker.ts. Unset

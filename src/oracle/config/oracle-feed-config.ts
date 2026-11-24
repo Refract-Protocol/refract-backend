@@ -242,3 +242,25 @@ export function loadOracleConfig(
   }
   return { config: parseOracleConfig(json, origin), origin };
 }
+
+let cachedConfig: LoadedOracleConfig | undefined;
+
+/**
+ * Cached accessor over loadOracleConfig() for real-environment callers
+ * (anything reading from process.env/disk, not a test passing its own
+ * env/readFile). Reads and parses the file once per process; later callers
+ * get the same parsed object instead of re-reading disk. No reload path —
+ * a config change requires a restart, which matches how it's consumed today
+ * (module init / startup, not per-request).
+ */
+export function getOracleConfig(): LoadedOracleConfig {
+  if (!cachedConfig) {
+    cachedConfig = loadOracleConfig();
+  }
+  return cachedConfig;
+}
+
+/** Test-only: clears the cache so the next getOracleConfig() call re-reads. */
+export function resetOracleConfigCache(): void {
+  cachedConfig = undefined;
+}
