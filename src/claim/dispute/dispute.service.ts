@@ -36,6 +36,8 @@ const BOND_ON_RESOLUTION: Partial<Record<DisputeStatus, Exclude<BondStatus, "pos
 const DEFAULT_WINDOW_HOURS = 72;
 const UNIQUE_VIOLATION = "23505";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Matches the free-text limit DisputeController already enforces (reason/note); re-checked here since this service is exported for reuse beyond that controller. */
+const MAX_FREE_TEXT_LENGTH = 2000;
 
 export interface DisputeRecord {
   id: string;
@@ -148,6 +150,9 @@ export class DisputeService implements OnApplicationBootstrap {
   }
 
   async open(input: OpenDisputeInput): Promise<DisputeRecord> {
+    if (input.reason.length > MAX_FREE_TEXT_LENGTH) {
+      throw new BadRequestException(`reason must not exceed ${MAX_FREE_TEXT_LENGTH} characters`);
+    }
     const disputeId = await this.inTransaction(async (client) => {
       const settlement = (
         await client.query<{ status: string; policyId: string; coverageType: string }>(
@@ -201,6 +206,9 @@ export class DisputeService implements OnApplicationBootstrap {
 
   async transition(id: string, input: TransitionDisputeInput): Promise<DisputeRecord> {
     this.assertUuid(id);
+    if (input.note !== undefined && input.note.length > MAX_FREE_TEXT_LENGTH) {
+      throw new BadRequestException(`note must not exceed ${MAX_FREE_TEXT_LENGTH} characters`);
+    }
     await this.inTransaction(async (client) => {
       const row = (
         await client.query<{ status: DisputeStatus; decisionId: string; policyId: string; settlementStatus: string; amount: string }>(
