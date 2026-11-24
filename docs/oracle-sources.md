@@ -1,43 +1,55 @@
 # Oracle source independence
 
 Corroboration is only meaningful when sources have distinct upstream data.
-Each provider is a `SourceAdapter` (`src/oracle/sources/`) registered in the
-source registry (`createSourceRegistry`); `corroborate()` classifies a feed as
-`corroborated`, `single_source`, `divergent` or `unavailable`. Feed-to-source
-mapping lives in `COVERAGE_FEED_SOURCES` (`src/common/coverage-catalog.ts`).
+Each provider is an `OracleSourceAdapter` (`src/oracle/adapters/source-adapter.ts`)
+registered via `OracleSourceRegistry.register()` (`src/oracle/adapters/source-registry.ts`).
+`corroborate()` classifies a feed as `corroborated`, `single_source`, `divergent`
+or `unavailable`. Feed-to-source mapping lives in `COVERAGE_FEED_SOURCES`
+(`src/common/coverage-catalog.ts`).
 
-| Feed | Provider | Upstream origin | Cadence | Auth |
-|------|----------|-----------------|---------|------|
-| price | CoinGecko | Volume-weighted aggregate across many exchanges | ~1–5 min cache | none |
-| price | Kraken | Single-venue spot order book, last trade | real time | none |
-| TVL | DeFiLlama | Community adapters reading on-chain balances | ~hourly | none |
-| TVL | Token Terminal | Own indexing pipeline and TVL definition | daily, intraday on paid tiers | API key |
+## Registered adapters
 
-Horizon is deliberately not counted as a second price source: its view is
-derived from the same on-chain market the others describe.
+| Adapter class | File | `id` | Metrics provided | Auth |
+|---|---|---|---|---|
+| `CoinGeckoAdapter` | `src/oracle/adapters/coingecko.adapter.ts` | `coingecko` | `usdc.usd.price`, `xlm.usd.change_24h_pct` | none |
+| `DefiLlamaAdapter` | `src/oracle/adapters/defillama.adapter.ts` | `defillama` | `protocol.tvl.change_24h_pct` | none |
+| `HorizonAdapter` | `src/oracle/adapters/horizon.adapter.ts` | `horizon` | `stellar.ledger.latest` | none |
+
+Horizon supplies on-chain context for `MarketCrash` readings (latest closed
+ledger sequence) rather than a price signal. It is deliberately not counted as
+a second price source.
 
 ## Canonical values
 
-Every adapter returns USD (price per unit, or total TVL) plus the provider's
-own observation time. Adapters translate the provider-neutral subject (CoinGecko
-coin id / DeFiLlama protocol slug) to their own symbols and reject non-finite
-or non-positive values.
+Every adapter returns values in the unit specified by `METRIC_SPECS`
+(`src/oracle/adapters/metric-specs.ts`): USD for prices, percent for 24h
+changes, and ledger sequence number for chain context. Adapters translate the
+provider-neutral subject (CoinGecko coin id / DeFiLlama protocol slug) to their
+own symbols and reject non-finite or non-positive values.
 
 ## Known benign divergence
 
-- Price: Kraken is one venue; CoinGecko is an aggregate. A few bps of gap is
-  normal, more for USDC in thin liquidity. Set the corroboration tolerance
-  above that band.
-- TVL: Token Terminal lags by hours and defines TVL differently; persistent
-  single-digit-percent gaps are expected. Use a wide tolerance and do not
-  treat a stable offset as an anomaly.
-- Observations older than `maxAgeMs` are dropped, so reporting lag from a
-  slower provider degrades to `single_source` rather than a false divergence.
+- **Price** (`usdc.usd.price`): CoinGecko is a volume-weighted aggregate across
+  many exchanges. Set the corroboration tolerance to cover normal bid/ask spread.
+- **TVL** (`protocol.tvl.change_24h_pct`): DeFiLlama community adapters read
+  on-chain balances and may lag by hours. Use a wide tolerance and do not treat
+  a stable offset as an anomaly.
+- Observations older than `maxAgeMs` (from `METRIC_SPECS`) are dropped, so
+  reporting lag from a slower provider degrades to `single_source` rather than
+  producing a false divergence.
+
+## Metric bounds and freshness
+
+Bounds and maximum allowed age for each metric are defined in `METRIC_SPECS`:
+
+| Metric | Unit | Decimals | Min | Max | Max age |
+|---|---|---|---|---|---|
+| `usdc.usd.price` | usd | 6 | 0 | 2 | 10 min |
+| `xlm.usd.change_24h_pct` | percent | 4 | -100 | 1 000 | 10 min |
+| `protocol.tvl.change_24h_pct` | percent | 4 | -100 | 1 000 | 6 h |
+| `stellar.ledger.latest` | ledger | 0 | 1 | MAX_SAFE_INTEGER | 2 min |
 
 ## Configuration
 
-All endpoints and credentials are environment variables (see `.env.example`):
-`KRAKEN_ENABLED`, `KRAKEN_BASE_URL`, `TOKENTERMINAL_BASE_URL`,
-`TOKENTERMINAL_API_KEY`. Without `TOKENTERMINAL_API_KEY` the TVL feed stays
-single-source and is reported as such. Prefer keyed tiers in production; free
-public endpoints may rate-limit the poll interval.
+All endpoints are environment variables (see `.env.example`). No adapter
+currently requires an API key.

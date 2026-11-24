@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+build/
 *.tsbuildinfo
 
 # Env & secrets
@@ -20,6 +21,9 @@ npm-debug.log*
 
 # Coverage
 coverage/
+
+# Test snapshots
+**/__snapshots__/
 
 # Editor / OS
 .DS_Store
