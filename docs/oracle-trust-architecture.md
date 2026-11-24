@@ -57,7 +57,7 @@ made through the relayer. This document states what each hop trusts.
 | 1 | Source poll | `OracleService.check*()` (file not in snapshot; see caveat) | HTTP timeout `ORACLE_HTTP_TIMEOUT_MS` (default 5000 ms). On timeout or error the service returns `OracleService.degraded()`, a non-triggering reading with `degraded: true`. | The provider's HTTPS endpoint and the provider's data. | No response-shape, numeric-range, or timestamp validation is documented. Source authenticity is TLS only. |
 | 2 | Classification | `OracleReading` (`src/oracle/oracle-reading.ts`) | `severity` is one of `low`, `medium`, `high`, `triggered`. | The service's own threshold logic. | Thresholds are set in code; no independent check. |
 | 3 | Scheduled broadcast | `OracleScheduler` (`src/oracle/oracle.scheduler.ts`) | Errors are logged; a failed refresh does not stop the next tick. | The scheduler runs once per tick. Overlap protection is not present (see §6). | **PLANNED:** overlap guard. |
-| 4 | Evidence write | `OracleEventRepository.record()` (`src/oracle/oracle-event.repository.ts`) | `coverage_type` is mapped to the schema enum. Writes are fire-and-forget; errors are logged and not re-thrown. | Postgres accepts the row. | A failed write is not retried and is not visible except in logs. The source name is parsed back out of `reading.message` by `extractSource()`, so it is only as reliable as that message format. |
+| 4 | Evidence write | `OracleEventRepository.record()` (`src/oracle/oracle-event.repository.ts`) | `coverage_type` is mapped to the schema enum. Writes are fire-and-forget; errors are logged and not re-thrown. | Postgres accepts the row. | A failed write is not retried and is not visible except in logs. The source name is parsed back out of `reading.message` by `extractSource()`, so it is only as reliable as that message format. The trust engine pipeline (`002_oracle_trust_engine.sql`) writes to `oracle_readings` (after `oracle_sources` lookup), `oracle_decisions`, and `oracle_decision_readings` as separate pipeline stages after ingestion; these are not yet wired to the main service path (see §4). |
 | 5 | On-chain publish | `OraclePublisherService` (file not in snapshot) | Runs only when the relayer secret is configured. Degraded readings are never published (`OracleReading.degraded` contract). Cadence set by `ORACLE_PUBLISH_MODE` (`on_change` or `every_poll`) and `ORACLE_PUBLISH_MIN_INTERVAL_MS`. | The relayer key and the `REFRACT_ORACLE_CONTRACT_ID` contract. | The contract is the only consumer of the published value; there is no backend cross-check of the value before it is published. |
 | 6 | Claim evaluation | `ClaimService.processTriggered()` (`src/claim/claim.service.ts`) | Active policies only. Readings older than 1800 s are non-triggering. `FlightDelay` triggers when `value > threshold`; the other four coverages trigger when `value < threshold`. Each evaluated reading is persisted through hop 4. | The reading from hop 1. A single source decides. | No corroboration (**PLANNED**). A single bad value can trigger a payout for every matching active policy. |
 | 7 | Settlement | `ClaimSettlementService` (file not in snapshot) → `pool.process_claim(policy_id: u64)` | Submission retries across scans; the policy is deactivated only after on-chain confirmation. Relayer sequences are serialised with PostgreSQL advisory locks. Each relayer transaction is written to `relayer_transaction_audit`. Failures are exposed via `/api/v1/claims/dead-letter` after three scans. | The relayer key (AWS Secrets Manager) and the pool contract, which is the authority for payout execution. | Payout limits and per-claim bounds are not in code (**PLANNED**). The `process_claim` signature is documented as unverified in the README, and startup checks it against the deployed spec. |
@@ -85,11 +85,35 @@ and live results are distinguishable in dashboards.
 
 ## 4. Corroboration, quorum, and trust modes
 
-**Implemented today:** none. Every live feed is single-source. The only
-protections are the fail-safe degraded reading, the staleness limit, and the
-rule that degraded readings are never published.
+**Implemented today:** Every live feed is single-source. The only protections
+are the fail-safe degraded reading, the staleness limit, and the rule that
+degraded readings are never published.
 
-**PLANNED** (not built; no code, config, or table exists for these):
+### Trust engine schema
+
+`src/db/migrations/002_oracle_trust_engine.sql` now defines the storage layer
+for corroboration and quorum. The tables are created; application-level wiring
+into the main service path is still incomplete (see the snapshot caveat in §1).
+
+- **`oracle_sources`** — registry of feed sources. Each source has an
+  `independence_group` (sources in the same group are treated as one voice
+  during quorum counting) and a `trust_tier`.
+- **`oracle_readings`** — append-only, immutable readings per source. Columns
+  include `normalized_value`, `observed_at`, `ingested_at`, `submitter_ref`,
+  and `signature`. An UPDATE/DELETE trigger enforces immutability, so a
+  decision can always be re-derived from the readings it references.
+- **`oracle_decisions`** — one row per consensus outcome, recording
+  `chosen_value`, `method`, `quorum_required`, `quorum_achieved`,
+  `divergence_bps`, and `trust_mode`.
+- **`oracle_decision_readings`** — join table linking each decision to the
+  exact readings it was built from, enabling full provenance reconstruction
+  from a decision id alone.
+- **`oracle_source_health`** — rolling health state per source:
+  `consecutive_failures`, `failures_window`, `successes_window`,
+  `last_success_at`, `last_failure_at`, `quarantined_at`, `quarantine_reason`.
+  Clearing `quarantined_at` returns the source to consideration.
+
+**PLANNED** (schema exists; application logic not fully wired):
 
 - **Corroboration rules:** an evaluated value must agree with at least one
   independent source within a stated tolerance before it can trigger.
@@ -101,7 +125,7 @@ rule that degraded readings are never published.
 - **Staged rollout and staking:** a feed moves through stages before it can
   trigger payouts. Not designed in code yet.
 
-Until corroboration exists, `single_source` is the only live mode, and
+Until corroboration is wired, `single_source` is the only live mode, and
 `LiquidationShield` and `FlightDelay` must remain mocked and not be offered as
 live coverage.
 
@@ -115,6 +139,15 @@ live coverage.
   `OracleRetentionService` creates partitions ahead of time and drops
   partitions older than `DB_ORACLE_RETENTION_MONTHS` (default 6). **Dropped
   partitions are gone; this is not a permanent ledger.**
+- `oracle_readings` — append-only, immutable readings in the trust engine
+  pipeline (`002_oracle_trust_engine.sql`). Each row links to an
+  `oracle_sources` entry and stores `normalized_value`, `observed_at`,
+  `ingested_at`, `submitter_ref`, and `signature`. Protected by an
+  UPDATE/DELETE trigger; rows cannot be altered once written.
+- `oracle_decisions` — one consensus decision per row, with `chosen_value`,
+  `method`, `quorum_required`, `quorum_achieved`, `divergence_bps`, and
+  `trust_mode`. Each decision is linked to its participating readings via
+  `oracle_decision_readings`, making outcomes reproducible from their id alone.
 - `claims` — settlement status, `trigger_detected_at`, `settled_at`, and
   `payout_amount`.
 - `relayer_transaction_audit` — every relayer-signed transaction with its
@@ -167,7 +200,7 @@ changes, and any change to the source inventory above.
 ## 7. Known gaps (summary)
 
 1. Single-source live feeds. No corroboration, quorum, or divergence check.
-2. No automatic circuit breaker and no operator pause switch.
+2. No automatic circuit breaker. The trust engine schema (`002_oracle_trust_engine.sql`) now defines storage for corroboration, quorum, and source health, but application wiring into the main service path is still incomplete.
 3. Evidence is best-effort, not tamper-evident, and subject to partition drop.
 4. The claim scanner's cron runs every minute (`@Cron(CronExpression.EVERY_MINUTE)`);
    the `scheduler.claim.interval_seconds` registry value does not change that cron.

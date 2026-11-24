@@ -62,3 +62,43 @@ application paths are restored and composed with these components, do not
 enable automated publication or payouts based on them. This also prevents a
 meaningful repository build/test run; the intended Jest specs are included
 for when the source/test harness is restored.
+
+## Pause controls
+
+Operators can pause and resume individual oracle feeds through the admin API.
+The pause state is backed by two tables created by
+`src/db/migrations/004_oracle_pause_controls.sql`:
+
+- **`oracle_pause_state`** — one row per scope. The scope is either `'global'`
+  (applies across every coverage type) or a specific coverage-type key. A
+  missing row means the feed is not paused.
+- **`oracle_pause_audit`** — append-only log of every pause and resume action,
+  including the actor, reason, and the state that was replaced. Rows can never
+  be updated or deleted (enforced by a trigger).
+
+### Routes
+
+Both routes require a bearer token with the `feeds:pause` permission
+(`Authorization: Bearer <keyId>.<secret>`).
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| `POST` | `/api/v1/oracle/admin/feeds/:feedId/pause` | `{ "reason": "<3–500 chars>" }` | `200 OK` |
+| `POST` | `/api/v1/oracle/admin/feeds/:feedId/resume` | `{ "reason": "<3–500 chars, optional>" }` | `200 OK` |
+
+### Role access
+
+| Role | `feeds:pause` permission |
+|------|--------------------------|
+| `oracle:viewer` | No |
+| `oracle:operator` | Yes |
+| `oracle:admin` | Yes |
+
+### Behaviour while paused
+
+`OracleControlRegistry.isPaused(feedId)` returns `true` for a paused feed.
+Pollers and publishers that consult this method block local publication for
+that feed until a resume is confirmed. The pause takes effect immediately in
+the local process; see the Soroban contract requirement section above for the
+limitation that this backend cannot enforce a pause on-chain without a
+corresponding contract entrypoint.

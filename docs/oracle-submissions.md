@@ -199,3 +199,58 @@ await publishUsdcPrice(0.9998);
 `unit` and `observed_at` are filled in automatically. Pass `observedAt` and
 `nonce` to control them explicitly. Use `client.sign(...)` to build the signed
 body without sending it.
+
+## Rejection reasons (reading pipeline admission)
+
+Accepted submissions pass the nine-step verification above and are written to
+`oracle_submissions`. Before a reading reaches corroboration it also passes
+through the ingestion-side admission pipeline, which can mark it unusable.
+This section documents the admission schema and freshness-guard outcomes.
+
+### Admission schema
+
+`src/db/migrations/004_oracle_reading_admission.sql` adds two columns to
+`oracle_events` and a replay-guard table:
+
+- **`observed_at TIMESTAMPTZ`** — the upstream observation timestamp. Nullable
+  for rows written before this migration. New readings that omit it are rejected
+  with `missing_timestamp`.
+- **`payload_digest CHAR(64)`** — SHA-256 hex of the raw payload.
+- **`oracle_reading_receipts`** — a separate table with primary key
+  `(source, observed_at, payload_digest)`. One receipt per distinct observation
+  prevents replayed readings from being re-admitted even across monthly
+  partitions. Old receipts are pruned by `received_at`.
+
+`src/db/migrations/004_oracle_reading_validity.sql` adds usability columns to
+`oracle_events`:
+
+- **`usable BOOLEAN NOT NULL DEFAULT true`** — `false` for readings that failed
+  the freshness guard. Existing rows default to `true`.
+- **`rejection_reason VARCHAR(32)`** — constrained to `NULL`,
+  `'missing_timestamp'`, `'future_dated'`, `'too_old'`, or `'heartbeat_gap'`.
+  A row with `usable = false` must have a non-null `rejection_reason`
+  (enforced by a check constraint). Unusable readings are excluded from
+  corroboration but remain in the table for audit purposes.
+
+### Freshness-guard rejection reasons
+
+The freshness guard (`src/oracle/freshnessPolicy.ts`) evaluates readings in
+this order and stops at the first failure. Per-feed policy values
+(`freshnessWindowSeconds`, `maxClockSkewSeconds`, `heartbeatIntervalSeconds`)
+come from the coverage catalog and can be overridden per environment with
+`ORACLE_FRESHNESS_<FEED>_*` variables.
+
+| `rejection_reason` | Condition | Effect |
+|---|---|---|
+| `missing_timestamp` | Source sent no `observed_at`. Ingestion time is used as a stand-in for diagnostics only. | Reading is unusable. An ingestion-time stamp always looks fresh and would hide outages. |
+| `future_dated` | `observed_at` is more than `maxClockSkewSeconds` ahead of ingestion time. | Reading is unusable. Timestamps within the skew allowance are accepted and treated as age 0. |
+| `too_old` | Ingestion time minus `observed_at` exceeds `freshnessWindowSeconds`. | Reading is unusable. Replayed backlogs after an outage are rejected here, so recovery never produces a burst of "fresh" readings. |
+| `heartbeat_gap` | The source was silent for longer than `heartbeatIntervalSeconds`. The first reading after the silence is quarantined; the feed recovers once the source resumes a contiguous heartbeat. | Reading is unusable. |
+
+Rejected readings are logged at `WARN` level as `oracle_reading_rejected` JSON
+events. The feed's stale state (`oracle_feed_stale` / `oracle_feed_recovered`)
+is emitted separately by `FreshnessGuard.sweep()`, which is called on each
+poll cycle to catch sources that stop reporting entirely.
+
+For the broader admission controls and per-feed pause behaviour, see
+[Oracle safety controls](./oracle-safety-controls.md).
