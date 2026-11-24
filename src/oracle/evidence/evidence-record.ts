@@ -5,7 +5,7 @@
  * a hole in the sequence (and as an explicit gap record).
  */
 
-export type EvidenceKind = "reading" | "decision";
+export type EvidenceKind = "reading" | "decision" | "rejected_reading";
 
 /** Coverage types the evidence store can persist (PascalCase → coverage_type enum). */
 export const EVIDENCE_COVERAGE_TYPES: Readonly<Record<string, string>> = {

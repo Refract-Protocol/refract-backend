@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Pool, PoolClient, PoolConfig, QueryResult, QueryResultRow } from "pg";
-import { AppConfig } from "../config/configuration";
+import { AppConfig, isSandboxMode } from "../config/configuration";
 
 /**
  * Thin wrapper around `pg.Pool` that adds:
@@ -30,6 +30,20 @@ export class DatabaseService implements OnApplicationBootstrap, OnApplicationShu
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   async onApplicationBootstrap(): Promise<void> {
+    // Sandbox mode (#580) is the recommended first run and must work with no
+    // Postgres reachable. Skip opening a real pool/probe entirely rather than
+    // retrying for ~30s before giving up — any code path that actually tries
+    // to query in sandbox mode will get this.pool undefined and throw
+    // clearly (see query()/getClient() below), instead of silently serving
+    // fabricated data. Validation for non-sandbox runs is unchanged.
+    if (isSandboxMode()) {
+      this.logger.warn(
+        "SANDBOX_MODE enabled — skipping Postgres pool creation; DatabaseService will throw if actually queried"
+      );
+      this._ready = true;
+      return;
+    }
+
     const db = this.config.get("database", { infer: true });
 
     const poolConfig: PoolConfig = {
@@ -77,16 +91,25 @@ export class DatabaseService implements OnApplicationBootstrap, OnApplicationShu
     sql: string,
     values?: unknown[]
   ): Promise<QueryResult<T>> {
+    if (!this.pool) {
+      throw new Error("Database pool unavailable (SANDBOX_MODE is enabled; no Postgres was connected)");
+    }
     return this.pool.query<T>(sql, values);
   }
 
   /** Acquire a client for multi-statement transactions. Caller must release. */
   async getClient(): Promise<PoolClient> {
+    if (!this.pool) {
+      throw new Error("Database pool unavailable (SANDBOX_MODE is enabled; no Postgres was connected)");
+    }
     return this.pool.connect();
   }
 
   /** Pool saturation telemetry for the health endpoint. */
   getPoolStats(): { total: number; idle: number; waiting: number } {
+    if (!this.pool) {
+      return { total: 0, idle: 0, waiting: 0 };
+    }
     return {
       total: this.pool.totalCount,
       idle: this.pool.idleCount,
