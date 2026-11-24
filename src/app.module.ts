@@ -1,5 +1,6 @@
-import { Module, OnApplicationShutdown, OnModuleInit, Logger } from '@nestjs/common';
+import { Module, OnApplicationShutdown, OnModuleInit, Logger, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { jsonBodyDepthLimit } from './common/request-body-limits.middleware';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -121,4 +122,8 @@ export const isSandboxMode = (): boolean =>
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(jsonBodyDepthLimit).forRoutes('*');
+  }
+}

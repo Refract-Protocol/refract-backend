@@ -1,8 +1,10 @@
+import { json, urlencoded } from 'express';
 import { NestFactory } from '@nestjs/core';
 import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { resolveProcessRole } from './runtime/process-role';
 import { installGracefulShutdown } from './runtime/graceful-shutdown';
+import { MAX_REQUEST_BODY_SIZE, requestBodySizeLimit } from './common/request-body-limits.middleware';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -21,7 +23,13 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  const app: INestApplication = await NestFactory.create(AppModule);
+  // bodyParser: false so requestBodySizeLimit sees the request before any
+  // parser buffers it — Nest's default body parser would otherwise already
+  // have consumed the stream by the time a global middleware could run.
+  const app: INestApplication = await NestFactory.create(AppModule, { bodyParser: false });
+  app.use(requestBodySizeLimit);
+  app.use(json({ limit: MAX_REQUEST_BODY_SIZE }));
+  app.use(urlencoded({ extended: true, limit: MAX_REQUEST_BODY_SIZE }));
 
   // Let Nest propagate shutdown signals to every provider that implements
   // onApplicationShutdown / beforeApplicationShutdown (schedulers, DB pool,
