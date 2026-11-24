@@ -192,6 +192,26 @@ export class ClaimRepository {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * Bounded batch of open (not yet settled) claims, oldest-first by
+   * trigger_detected_at. The LIMIT is applied in SQL so callers never
+   * materialize the full open-claims set just to take a slice of it.
+   */
+  async findOpenClaimsBatch(limit: number): Promise<ClaimRecord[]> {
+    const bounded = Math.min(Math.max(Math.trunc(limit), 1), 1000);
+    const result = await this.db.query<ClaimRecord>(
+      `SELECT id, policy_id AS "policyId", coverage_type AS "coverageType", status,
+              payout_amount AS "payoutAmount", premium_amount AS "premiumAmount",
+              trigger_detected_at AS "triggerDetectedAt", processed_at AS "processedAt"
+       FROM claims
+       WHERE status <> 'settled'
+       ORDER BY trigger_detected_at ASC NULLS LAST, id ASC
+       LIMIT $1`,
+      [bounded],
+    );
+    return result.rows;
+  }
+
   async insertFromChain(input: OnChainClaimInput): Promise<void> {
     const coverageType = COVERAGE_TYPE_DB[input.coverageType];
     if (!coverageType) {
