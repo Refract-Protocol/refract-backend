@@ -6,6 +6,9 @@
  *
  * Do NOT regenerate to silence a failing test without first confirming whether
  * the contract ABI changed or the encoding regressed.
+ *
+ * CI drift check (writes nothing; exits non-zero if any fixture would change):
+ *   npx ts-node scripts/regenerate-xdr-fixtures.ts --check
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -380,9 +383,22 @@ const header =
   "// A mismatch means either the contract ABI changed or the encoding regressed —\n" +
   "// check both before regenerating.\n";
 
+const checkMode = process.argv.includes("--check");
+const diffs: string[] = [];
+
+function writeFixtureFile(name: string, body: string): void {
+  const filePath = path.join(outDir, name);
+  if (checkMode) {
+    const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : undefined;
+    if (existing !== body) diffs.push(filePath);
+    return;
+  }
+  fs.writeFileSync(filePath, body);
+}
+
 function writeB64(name: string, scVal: xdr.ScVal, note?: string): void {
   const body = header + (note ? `// ${note}\n` : "") + scVal.toXDR("base64") + "\n";
-  fs.writeFileSync(path.join(outDir, name), body);
+  writeFixtureFile(name, body);
 }
 
 fs.mkdirSync(outDir, { recursive: true });
@@ -430,8 +446,8 @@ const [, sharesSc] = encodeWithdrawCapitalArgs(kp.publicKey(), 5_000_000_000n);
 writeB64("provide-capital-provider.xdr.b64", providerSc);
 writeB64("provide-capital-amount.xdr.b64", amountSc);
 writeB64("withdraw-capital-shares.xdr.b64", sharesSc);
-fs.writeFileSync(
-  path.join(outDir, "provide-capital-meta.json"),
+writeFixtureFile(
+  "provide-capital-meta.json",
   JSON.stringify({ providerPubkey: kp.publicKey(), amount: "10000000000", shares: "5000000000" }, null, 2) + "\n"
 );
 
@@ -454,7 +470,16 @@ writeB64("oracle-update-reading-provenance.xdr.b64", provenance, "u128 provenanc
 void Address;
 void nativeToScVal;
 
-console.log(`Regenerated fixtures in ${outDir}`);
+if (checkMode) {
+  if (diffs.length > 0) {
+    console.error("Fixtures are out of date. Re-run without --check to regenerate:");
+    for (const d of diffs) console.error(`  - ${d}`);
+    process.exit(1);
+  }
+  console.log(`Fixtures in ${outDir} are up to date.`);
+} else {
+  console.log(`Regenerated fixtures in ${outDir}`);
+}
 
 // ---------------------------------------------------------------------------
 // Reference data importer (issue #287)

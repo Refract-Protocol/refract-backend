@@ -40,6 +40,8 @@ Commands (all read-only; they read the persisted evidence ledger):
 
 Common options:
   --ledger-file <path>   Evidence ledger JSONL (default: $EVIDENCE_LEDGER_PATH)
+  --json                 On error, print a JSON object (message + code) instead of
+                         a human-readable line.
 `;
 
 export function parseFlags(argv: string[]): { command?: string; flags: Record<string, string> } {
@@ -100,7 +102,12 @@ export function runOracleOpsCli(argv: string[], deps: CliDeps = defaultDeps): Cl
 
     return { exitCode: 1, stdout: "", stderr: `unknown command: ${command}\n\n${USAGE}` };
   } catch (err) {
-    return { exitCode: 1, stdout: "", stderr: `error: ${err instanceof Error ? err.message : String(err)}\n` };
+    const message = err instanceof Error ? err.message : String(err);
+    const code = err instanceof Error && typeof (err as { code?: unknown }).code === "string" ? (err as { code: string }).code : undefined;
+    if (argv.includes("--json")) {
+      return { exitCode: 1, stdout: "", stderr: `${canonicalJson({ error: message, ...(code ? { code } : {}) })}\n` };
+    }
+    return { exitCode: 1, stdout: "", stderr: `error: ${message}${code ? ` (code: ${code})` : ""}\n` };
   }
 }
 
