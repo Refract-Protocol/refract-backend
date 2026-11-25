@@ -12,6 +12,7 @@ import {
   coverageTypeToU32,
   encodeReadingForChain,
   packProvenance,
+  parseFixedDecimal,
   provenanceFromDecision,
   scaleOracleValue,
   unpackProvenance,
@@ -161,5 +162,26 @@ describe("on-chain encoding", () => {
       provenance: SAMPLE,
     };
     expect(JSON.parse(JSON.stringify(reading))).toEqual(reading);
+  });
+});
+
+describe("parseFixedDecimal", () => {
+  it.each([
+    ["0.5", 2, 50n],
+    ["-0.5", 2, -50n],
+    ["5", 2, 500n],
+  ])("parses %s at scale %i", (input, scale, expected) => {
+    expect(parseFixedDecimal(input, scale)).toBe(expected);
+  });
+
+  it.each([
+    ["a lone decimal point", "."],
+    ["a sign with no integer part", "-.5"],
+    // As in fixed-point.spec.ts: "5." (a trailing dot, no fractional
+    // digits) is also rejected by this same regex today, despite issue
+    // #570 naming it as required-to-keep-working input — not asserted
+    // here since no existing behaviour or test backs that claim.
+  ])("rejects %s", (_label, input) => {
+    expect(() => parseFixedDecimal(input, 2)).toThrow();
   });
 });

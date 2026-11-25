@@ -4,6 +4,17 @@ import { IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 
 export const MAX_PAGE_LIMIT = 100;
 
+/**
+ * 1-based page number for a given offset/limit. No endpoint is offset-paged
+ * today (list endpoints use `paginateDesc`'s keyset cursor instead), but
+ * this is kept available so any future offset-based listing or page-number
+ * display starts from a correct, tested conversion rather than a bare
+ * `Math.floor(offset / limit)`, which yields page 0 for offset 0.
+ */
+export function offsetToPageNumber(offset: number, limit: number): number {
+  return Math.floor(offset / limit) + 1;
+}
+
 /** `?limit=&cursor=` accepted by every paginated list endpoint. */
 export class PageQueryDto {
   @IsOptional()
