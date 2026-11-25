@@ -1,4 +1,14 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Req,
+  UseGuards,
+} from "@nestjs/common";
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { Request } from "express";
 import { OpsAuthGuard } from "../../common/guards/ops-auth.guard";
@@ -11,7 +21,22 @@ const requireString = (value: unknown, field: string, max: number): string => {
     throw new BadRequestException(`${field} is required (max ${max} characters)`);
   }
   return value.trim();
-};
+}
+
+/**
+ * `claim_disputes.id` is a UUID column, so a malformed id never reaches a row —
+ * it fails in the driver, and the client gets an error that does not say what
+ * was wrong with what it sent. This turns it into the same shape of 400 the
+ * rest of the controller returns, naming the field and the expected form.
+ */
+const disputeId = () =>
+  new ParseUUIDPipe({
+    version: "4",
+    exceptionFactory: () =>
+      new BadRequestException(
+        "id must be a dispute UUID, e.g. 3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      ),
+  });
 
 const optionalString = (value: unknown, field: string, max: number): string | undefined =>
   value === undefined || value === null ? undefined : requireString(value, field, max);
@@ -43,7 +68,7 @@ export class DisputeController {
 
   @ApiOperation({ summary: "Get a dispute's status, bond state and reversal link" })
   @Get(":id")
-  get(@Param("id") id: string) {
+  get(@Param("id", disputeId()) id: string) {
     return this.disputes.get(id);
   }
 
@@ -56,7 +81,7 @@ export class DisputeController {
   @Post(":id/transitions")
   transition(
     @Req() req: OpsRequest,
-    @Param("id") id: string,
+    @Param("id", disputeId()) id: string,
     @Body() body: { to?: unknown; note?: unknown; replacementDecisionId?: unknown },
   ) {
     const to = body?.to;
