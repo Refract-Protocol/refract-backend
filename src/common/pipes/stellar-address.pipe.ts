@@ -12,16 +12,23 @@ import { StrKey } from '@stellar/stellar-sdk';
 @Injectable()
 export class StellarAddressPipe implements PipeTransform<string, string> {
   transform(value: string, _metadata: ArgumentMetadata): string {
-    if (typeof value !== 'string' || value.length !== 56) {
+    // Trim surrounding whitespace before validating: a URL-encoded or
+    // copy-pasted address can arrive with leading/trailing spaces even
+    // though the address itself is valid. `StrKey` rejects any remaining
+    // internal whitespace on its own, since space is not part of the
+    // base32 charset it decodes.
+    const trimmed = typeof value === 'string' ? value.trim() : value;
+
+    if (typeof trimmed !== 'string' || trimmed.length !== 56) {
       throw new BadRequestException('address must be exactly 56 characters long');
     }
 
-    if (!StrKey.isValidEd25519PublicKey(value)) {
+    if (!StrKey.isValidEd25519PublicKey(trimmed)) {
       throw new BadRequestException(
         'address is not a valid Stellar public key (bad version byte or checksum)',
       );
     }
 
-    return value;
+    return trimmed;
   }
 }
