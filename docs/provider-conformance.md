@@ -61,6 +61,25 @@ unexpired record issued against the current `specVersion` and
 `reportVersion`. Any breaking change to the spec bumps `specVersion`, which
 requires re-certification.
 
+## Producing a signed submission
+
+The conformance run needs submissions your key has actually signed, and the
+signature is the part that is easy to get wrong: it is base64 over the UTF-8
+bytes of a specific message, and a signature made for one deployment domain
+does not verify against another.
+
+`scripts/sandbox-sign-reading.ts` produces both payloads, so you do not have
+to reimplement the message format to try the flow:
+
+```bash
+PROVIDER_SECRET=S... npx ts-node scripts/sandbox-sign-reading.ts register "My Feed Co"
+PROVIDER_SECRET=S... npx ts-node scripts/sandbox-sign-reading.ts reading StablecoinDepeg 0.9998
+```
+
+The output is ready to pipe into `curl`. The message formats it implements,
+and the domain line that binds a signature to one deployment, are set out in
+[`oracle-provider-sandbox.md`](./oracle-provider-sandbox.md#signing).
+
 ## What a passing report proves
 
 - The adapter returns well-formed submissions for the declared coverage types.
