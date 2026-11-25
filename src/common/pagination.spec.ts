@@ -6,7 +6,7 @@ import { ClaimResult } from "../claim/claim-result";
 import { ClaimService } from "../claim/claim.service";
 import { PolicyController } from "../policy/policy.controller";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
-import { PageKey, decodeCursor, encodeCursor, paginateDesc } from "./pagination";
+import { PageKey, decodeCursor, encodeCursor, offsetToPageNumber, paginateDesc } from "./pagination";
 
 interface Row {
   id: string;
@@ -76,6 +76,17 @@ describe("paginateDesc", () => {
     const input = [...rows];
     paginateDesc(input, keyOf, { limit: 2 }, 50);
     expect(input).toEqual(rows);
+  });
+});
+
+describe("offsetToPageNumber", () => {
+  it("returns page 1 for offset 0", () => {
+    expect(offsetToPageNumber(0, 10)).toBe(1);
+  });
+
+  it("returns the correct 1-based page for a multiple-of-limit offset", () => {
+    expect(offsetToPageNumber(10, 10)).toBe(2);
+    expect(offsetToPageNumber(20, 10)).toBe(3);
   });
 });
 

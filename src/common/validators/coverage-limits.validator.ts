@@ -68,6 +68,15 @@ export class CoverageLimitsConstraint implements ValidatorConstraintInterface {
       return true;
     }
 
+    // Zero/negative coverage is never meaningful, regardless of what a
+    // product's catalog entry happens to set as its minCoverageAmount —
+    // this floor must hold even if a future catalog entry sets that
+    // minimum to 0 or lower.
+    const rawCoverageAmount = toWholeUsdc(object.coverageAmount);
+    if (rawCoverageAmount !== undefined && rawCoverageAmount <= 0) {
+      return false;
+    }
+
     const limits = getCoverageLimits(coverageType);
     if (!limits) {
       return true;
@@ -94,6 +103,11 @@ export class CoverageLimitsConstraint implements ValidatorConstraintInterface {
     const object = args.object as Record<string, unknown>;
     const coverageType = object.coverageType as CoverageTypeName | undefined;
     const limits = coverageType ? getCoverageLimits(coverageType) : undefined;
+
+    const rawCoverageAmount = toWholeUsdc(object.coverageAmount);
+    if (rawCoverageAmount !== undefined && rawCoverageAmount <= 0) {
+      return "coverageAmount must be greater than 0";
+    }
 
     if (!limits) {
       return "coverageAmount or durationDays is outside the allowed range for this coverage type";
