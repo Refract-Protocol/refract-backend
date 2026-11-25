@@ -23,7 +23,7 @@ Mutating (require --reason; operator from --operator or OPERATOR_ID):
   quarantine <source>           Quarantine a source     (requires --yes)
   unquarantine <source>         Release a source
 
-Flags: --reason <text>  --operator <id>  --dry-run  --yes  --limit <n>  --help`;
+Flags: --reason <text>  --operator <id>  --dry-run  --yes  --limit <n>  --json  --help`;
 
 const MUTATIONS: Record<string, { action: MutationAction; destructive: boolean }> = {
   pause: { action: "pause_feed", destructive: true },
@@ -39,7 +39,7 @@ export interface ParsedArgs {
 }
 
 const VALUE_FLAGS = new Set(["reason", "operator", "limit"]);
-const BOOL_FLAGS = new Set(["dry-run", "yes", "help"]);
+const BOOL_FLAGS = new Set(["dry-run", "yes", "help", "json"]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
   const flags: Record<string, string | boolean> = {};
@@ -83,40 +83,62 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: url });
   const ops = new OperatorControls(pool);
 
+  const asJson = flags.json === true;
+
   try {
     if (command === "feeds") {
-      console.table(
-        (await ops.listFeeds()).map((f) => ({
-          feed: f.coverageType,
-          health: f.health,
-          paused: f.paused,
-          lastReading: f.lastReadingAt?.toISOString() ?? "-",
-          lastSource: f.lastSource ?? "-",
-          "readings/1h": f.readings1h,
-          pauseReason: f.pauseReason ?? "",
-        }))
-      );
+      const feeds = await ops.listFeeds();
+      if (asJson) {
+        console.log(JSON.stringify(feeds, null, 2));
+      } else {
+        console.table(
+          feeds.map((f) => ({
+            feed: f.coverageType,
+            health: f.health,
+            paused: f.paused,
+            lastReading: f.lastReadingAt?.toISOString() ?? "-",
+            lastSource: f.lastSource ?? "-",
+            "readings/1h": f.readings1h,
+            pauseReason: f.pauseReason ?? "",
+          }))
+        );
+      }
     } else if (command === "readings") {
       if (!positional[0]) throw new Error("readings requires <feed>");
-      for (const [source, rows] of await ops.recentReadings(positional[0], limitOf(flags))) {
-        console.log(`\n${source}${rows[0].quarantined ? "  [QUARANTINED]" : ""}`);
-        for (const r of rows) {
-          console.log(`  ${new Date(r.recorded_at).toISOString()}  value=${r.value}  severity=${r.severity}`);
+      const grouped = await ops.recentReadings(positional[0], limitOf(flags));
+      if (asJson) {
+        console.log(JSON.stringify(Object.fromEntries(grouped), null, 2));
+      } else {
+        for (const [source, rows] of grouped) {
+          console.log(`\n${source}${rows[0].quarantined ? "  [QUARANTINED]" : ""}`);
+          for (const r of rows) {
+            console.log(`  ${new Date(r.recorded_at).toISOString()}  value=${r.value}  severity=${r.severity}`);
+          }
         }
       }
     } else if (command === "decisions") {
-      console.table(
-        (await ops.recentDecisions(limitOf(flags))).map((d) => ({
-          claim: d.id,
-          feed: d.coverage_type,
-          triggerValue: d.trigger_value,
-          source: d.trigger_source,
-          processedAt: new Date(d.processed_at).toISOString(),
-          evidence: d.evidence ?? "-",
-        }))
-      );
+      const decisions = await ops.recentDecisions(limitOf(flags));
+      if (asJson) {
+        console.log(JSON.stringify(decisions, null, 2));
+      } else {
+        console.table(
+          decisions.map((d) => ({
+            claim: d.id,
+            feed: d.coverage_type,
+            triggerValue: d.trigger_value,
+            source: d.trigger_source,
+            processedAt: new Date(d.processed_at).toISOString(),
+            evidence: d.evidence ?? "-",
+          }))
+        );
+      }
     } else if (command === "audit") {
-      console.table(await ops.recentAudit(limitOf(flags)));
+      const audit = await ops.recentAudit(limitOf(flags));
+      if (asJson) {
+        console.log(JSON.stringify(audit, null, 2));
+      } else {
+        console.table(audit);
+      }
     } else if (MUTATIONS[command]) {
       const { action, destructive } = MUTATIONS[command];
       const target = positional[0];
@@ -132,10 +154,14 @@ async function main(): Promise<void> {
         reason: String(flags.reason ?? ""),
         dryRun,
       });
-      console.log(`${res.dryRun ? "[dry-run] would apply" : "applied"} ${res.action} on ${res.target}`);
-      console.log(`  changed: ${res.changed}`);
-      console.log(`  before:  ${JSON.stringify(res.before)}`);
-      console.log(`  after:   ${JSON.stringify(res.after)}`);
+      if (asJson) {
+        console.log(JSON.stringify(res, null, 2));
+      } else {
+        console.log(`${res.dryRun ? "[dry-run] would apply" : "applied"} ${res.action} on ${res.target}`);
+        console.log(`  changed: ${res.changed}`);
+        console.log(`  before:  ${JSON.stringify(res.before)}`);
+        console.log(`  after:   ${JSON.stringify(res.after)}`);
+      }
     } else {
       throw new Error(`unknown command "${command}"\n\n${USAGE}`);
     }

@@ -4,6 +4,9 @@
  * rather than calling `fetch` directly so that timeout, retry, rate-limit and
  * cache behaviour is uniform. See docs/provider-http-client.md.
  */
+import { Logger } from "@nestjs/common";
+
+const logger = new Logger("ProviderHttpClient");
 
 export type ProviderErrorKind =
   | "timeout"
@@ -283,6 +286,13 @@ export class ProviderHttpClient {
       } catch (err) {
         last = err as ProviderHttpError;
         if (!last.retryable) throw last;
+        if (attempts <= cfg.maxRetries) {
+          logger.warn(
+            `[${cfg.name}] attempt ${attempts} failed (${last.kind}${
+              last.status ? ` ${last.status}` : ""
+            }): ${last.message} — retrying`
+          );
+        }
       } finally {
         sem.release();
       }

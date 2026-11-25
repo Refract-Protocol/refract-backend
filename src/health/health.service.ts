@@ -1,5 +1,7 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { CacheService } from "../cache/cache.service";
+import { AppConfig } from "../config/configuration";
 import { DbService } from "../db/db.service";
 import { OracleTrustService } from "../oracle/oracle-trust.service";
 import { SorobanRpcService } from "../stellar/soroban-rpc.service";
@@ -14,6 +16,7 @@ export class HealthService {
     @Optional() private readonly dbService?: DbService,
     @Optional() private readonly database?: DbService,
     @Optional() private readonly cache?: CacheService,
+    @Optional() private readonly configService?: ConfigService<AppConfig, true>,
   ) {}
 
   getLiveness(): { status: "ok" } {
@@ -79,6 +82,7 @@ export class HealthService {
 
   async getDetail(): Promise<Record<string, unknown>> {
     const readiness = await this.getReadiness();
+    const { depth: deadLetterQueueDepth, warnings } = await this.getDeadLetterStatus();
     return {
       status: readiness.status,
       trustMode: readiness.trustMode,
@@ -88,7 +92,36 @@ export class HealthService {
         redis: this.cache ? this.cache.isConnected() : false,
       },
       feeds: readiness.feeds,
+      deadLetterQueueDepth,
+      warnings,
     };
+  }
+
+  /**
+   * Counts rows in oracle_dead_letters awaiting replay and flags a warning
+   * once the backlog exceeds the configured threshold. Returns depth -1
+   * when no DB connection is available, so a reader can distinguish
+   * "unknown" from "zero backlog" without a separate flag.
+   */
+  private async getDeadLetterStatus(): Promise<{ depth: number; warnings: string[] }> {
+    const db = this.database ?? this.dbService;
+    if (!db?.isAvailable()) return { depth: -1, warnings: [] };
+    try {
+      const { rows } = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM oracle_dead_letters WHERE replayed_at IS NULL`,
+      );
+      const depth = parseInt(rows[0]?.count ?? "0", 10);
+      const threshold =
+        this.configService?.get("oracleDeadLetterWarnThreshold", { infer: true }) ?? 50;
+      const warnings =
+        depth > threshold
+          ? [`Oracle dead-letter backlog is ${depth} rows (warn threshold ${threshold}); run scripts/replay-oracle-dead-letters.ts`]
+          : [];
+      return { depth, warnings };
+    } catch (error) {
+      this.logger.warn(`Dead-letter depth probe failed: ${errorMessage(error)}`);
+      return { depth: -1, warnings: [] };
+    }
   }
 
   private async checkRpc(): Promise<boolean> {
