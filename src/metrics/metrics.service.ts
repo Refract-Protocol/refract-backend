@@ -1,6 +1,8 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { Counter, Gauge, Histogram, Registry } from "@prometheus-io/client";
 import { NextFunction, Request, RequestHandler, Response } from "express";
+import type { Pool } from "pg";
+import { PG_POOL } from "../db/db.module";
 import type { RelayerMetricsSink } from "../stellar/relayer-monitor/relayer-balance-monitor.service";
 import { BalanceAssessment, FeeSpendSummary, tierRank } from "../stellar/relayer-monitor/relayer-balance.policy";
 
@@ -9,7 +11,10 @@ type OracleOutcome = Outcome | "mocked";
 
 @Injectable()
 export class MetricsService implements RelayerMetricsSink {
+  private readonly logger = new Logger(MetricsService.name);
   private readonly registry = new Registry();
+
+  constructor(@Optional() @Inject(PG_POOL) private readonly pool?: Pool) {}
   private readonly httpRequests = new Counter<"method" | "route" | "status_code">({
     name: "refract_http_requests_total",
     help: "Total HTTP requests completed by the backend.",
@@ -80,6 +85,12 @@ export class MetricsService implements RelayerMetricsSink {
   private readonly openDisputes = new Gauge({
     name: "refract_claim_disputes_open",
     help: "Claim disputes currently open or under review.",
+    registers: [this.registry],
+  });
+
+  private readonly oracleDeadLetterDepth = new Gauge({
+    name: "refract_oracle_dead_letter_queue_depth",
+    help: "Oracle readings in the dead-letter queue awaiting replay (see oracle_dead_letters).",
     registers: [this.registry],
   });
 
@@ -200,8 +211,28 @@ export class MetricsService implements RelayerMetricsSink {
     }
   }
 
-  metrics(): Promise<string> {
+  async metrics(): Promise<string> {
+    await this.refreshDeadLetterDepth();
     return this.registry.metrics();
+  }
+
+  /**
+   * Re-queries the dead-letter backlog on every scrape so the gauge never
+   * goes stale between polls. Swallows DB errors: a scrape must still
+   * succeed with the gauge's last-known value when Postgres is briefly down.
+   */
+  private async refreshDeadLetterDepth(): Promise<void> {
+    if (!this.pool) return;
+    try {
+      const { rows } = await this.pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM oracle_dead_letters WHERE replayed_at IS NULL`
+      );
+      this.oracleDeadLetterDepth.set(parseInt(rows[0]?.count ?? "0", 10));
+    } catch (error) {
+      this.logger.warn(
+        `Failed to refresh oracle dead-letter depth gauge: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   get contentType(): string {

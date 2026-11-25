@@ -3,6 +3,7 @@ import { Logger, INestApplication } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { resolveProcessRole } from './runtime/process-role';
 import { installGracefulShutdown } from './runtime/graceful-shutdown';
+import { correlationIdMiddleware } from './common/correlation-id.middleware';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -22,6 +23,7 @@ async function bootstrap(): Promise<void> {
   }
 
   const app: INestApplication = await NestFactory.create(AppModule);
+  app.use(correlationIdMiddleware);
 
   // Let Nest propagate shutdown signals to every provider that implements
   // onApplicationShutdown / beforeApplicationShutdown (schedulers, DB pool,
